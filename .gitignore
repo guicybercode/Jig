@@ -1,0 +1,17 @@
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+node_modules/
+dist/
+coverage/
+*.log
+
+target/
+**/src-tauri/gen/schemas/
+
+*.db
+*.db-shm
+*.db-wal
+diagnostics/

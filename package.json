@@ -1,0 +1,12 @@
+{
+  "name": "cli-master",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.9.0",
+  "scripts": {
+    "build": "pnpm --filter @cli-master/desktop build",
+    "check": "pnpm --filter @cli-master/desktop check && cargo check --workspace",
+    "dev": "pnpm --filter @cli-master/desktop dev",
+    "tauri": "pnpm --filter @cli-master/desktop tauri"
+  }
+}
