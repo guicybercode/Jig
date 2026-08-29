@@ -13,6 +13,7 @@ use cli_master_agents::{
     CustomAgentAdapter, CustomAgentDefinition, DetectionResult, GeminiCliAdapter, LaunchContext,
     LaunchEnvironment, OpenCodeAdapter, RegistryError,
 };
+use cli_master_core::CommandSpecError;
 use tempfile::TempDir;
 
 use common::{context, executable};
@@ -314,6 +315,33 @@ fn extra_args_are_appended_without_shell_joining() {
         .build_command(&context)
         .expect("command should build");
     assert_eq!(command.args(), ["--search", "foo bar", "$(uname)"]);
+}
+
+#[test]
+fn canonical_shell_alias_with_command_string_is_refused() {
+    let temp = TempDir::new().expect("temporary directory should be created");
+    let alias = temp.path().join("company-agent");
+    symlink("/bin/sh", &alias).expect("shell alias should be created");
+    let definition = CustomAgentDefinition::new(
+        "company-agent",
+        "Company Agent",
+        alias.to_str().expect("UTF-8 fixture"),
+    )
+    .expect("definition shape should be valid")
+    .with_args(["-c", "echo unsafe"])
+    .expect("arguments remain structurally valid before executable resolution");
+
+    let error = CustomAgentAdapter::new(definition)
+        .build_command(&LaunchContext::new(
+            temp.path(),
+            LaunchEnvironment::from_search_paths([temp.path()]),
+        ))
+        .expect_err("canonical shell target must not interpret a command string");
+
+    assert_eq!(
+        error,
+        AgentError::InvalidCommand(CommandSpecError::ShellCommandString)
+    );
 }
 
 #[test]

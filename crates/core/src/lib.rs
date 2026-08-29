@@ -13,8 +13,10 @@ mod protocol;
 mod redact;
 pub mod wire;
 
-pub use command::{CommandSpec, CommandSpecError, MAX_STARTUP_INPUT_BYTES};
-pub use error::ApiError;
+pub use command::{
+    CommandSpec, CommandSpecError, MAX_STARTUP_INPUT_BYTES, validate_structured_invocation,
+};
+pub use error::{ApiError, ApplicationError};
 pub use ids::{AgentId, DaemonInstanceId, ProjectId, RequestId, SessionId, WorktreeId};
 pub use model::{
     AgentDefinition, AgentSource, Project, Session, SessionStatus, Worktree, WorktreeState,

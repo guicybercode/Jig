@@ -10,10 +10,13 @@ and replaced parallel implementations with the current owners.
 
 | Concern | Integrated owner and behavior |
 |---|---|
-| Command launch | Existing `CommandSpec`, agent adapters, Git runner, and `SessionManager`; executable and argument arrays remain structured |
+| Command launch | Existing `CommandSpec`, agent adapters, Git runner, and `SessionManager`; executable and argument arrays remain structured, and command-string flags for known shells/direct wrappers are refused after executable resolution |
+| Helper processes | Agent probes and the constant login-shell PATH import run in an isolated process group with a hard deadline, capped capture, concurrent drains, and bounded handling of descendants that retain pipes |
 | Git safety | Existing modular `crates/git`; removal is clean-only, re-inspected, exact-state checked, and never passes `--force` |
 | Confirmation | Existing Beta v1 `worktree.prepare_remove` / `worktree.remove` contract; blocked responses cannot carry a token and bypass fields are rejected |
 | Redaction | Pure `crates/core::redact` helpers from the hardened PR, applied at every `ApiError` constructor/detail boundary |
+| Errors | `ApplicationError` is a pure application-boundary envelope over the specialized crate errors; technical/source fields are redacted and log-only, while its `ApiError` projection is stable and actionable |
+| Logs | Daemon and Tauri use JSON `tracing`; payloads, argv/env values, and PTY bytes are excluded, while dynamic diagnostic/application-error fields are redacted before logging |
 | Diagnostic issues | Existing bounded daemon ring, now defensively redacting code, message, and action before logging or retention |
 | Diagnostic export | Existing `diagnostics.get` daemon method now returns backend-generated recursively redacted JSON with home-relative paths |
 | Desktop UI | Diagnostics dialog uses the consolidated project-owned IPC client and shared accessible dialog; it copies only backend `exportText` |
@@ -40,6 +43,11 @@ Git, process lifecycle, IPC validation, and confirmation state.
   private-key blocks, common provider token prefixes, AWS keys, and JWT-like
   values are redacted
 - JSON details are recursively sanitized by key and content
+- `ApplicationError` keeps technical messages and source chains out of IPC
+- direct/canonical shell aliases and `env`/BusyBox wrappers cannot use a
+  command-string flag through `CommandSpec`
+- timed-out probe/login-shell process groups are killed, and inherited output
+  pipes cannot hold the caller beyond its deadline
 - loader failures do not render external error text
 - clipboard export never falls back to raw on-screen data
 - home prefixes are replaced by the daemon, keeping core free of environment
@@ -48,8 +56,10 @@ Git, process lifecycle, IPC validation, and confirmation state.
 ## Verification scope
 
 Rust coverage includes redaction patterns, recursive API-error sanitization,
-diagnostic issue sanitization, export sanitization, command debug projections,
-Git clean-only removal, state reinspection, event replay, and recovery.
+log-only `ApplicationError` fields, diagnostic issue sanitization, export
+sanitization, command debug projections, direct/wrapped/canonical shell-command
+refusal, bounded descendant-pipe handling, Git clean-only removal, state
+reinspection, event replay, and recovery.
 
 Frontend coverage includes typed `diagnostics.get` routing through the mock IPC
 client, accessible dialog behavior, backend-export-only clipboard use, no raw

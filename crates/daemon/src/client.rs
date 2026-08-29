@@ -91,7 +91,7 @@ pub(crate) async fn serve_client(
                 };
                 if !send_json(
                     &mut framed,
-                    &ResponseEnvelope::<Value>::failure(request_id, failure.error),
+                    &ResponseEnvelope::<Value>::failure(request_id, *failure.error),
                 )
                 .await
                 {
@@ -384,14 +384,16 @@ fn invalid_payload(request_id: RequestId, error: &serde_json::Error) -> Response
 
 struct RequestFailure {
     request_id: Option<RequestId>,
-    error: ApiError,
+    error: Box<ApiError>,
 }
 
 fn decode_request(bytes: &[u8]) -> Result<RequestEnvelope<Value>, RequestFailure> {
     let value: Value = serde_json::from_slice(bytes).map_err(|error| RequestFailure {
         request_id: None,
-        error: ApiError::new("invalid_json", "Request frame is not valid JSON")
-            .with_detail("reason", error.to_string()),
+        error: Box::new(
+            ApiError::new("invalid_json", "Request frame is not valid JSON")
+                .with_detail("reason", error.to_string()),
+        ),
     })?;
     let request_id = value
         .get("requestId")
@@ -400,11 +402,13 @@ fn decode_request(bytes: &[u8]) -> Result<RequestEnvelope<Value>, RequestFailure
 
     serde_json::from_value(value).map_err(|error| RequestFailure {
         request_id,
-        error: ApiError::new(
-            "invalid_request",
-            "Request does not match the IPC envelope schema",
-        )
-        .with_detail("reason", error.to_string()),
+        error: Box::new(
+            ApiError::new(
+                "invalid_request",
+                "Request does not match the IPC envelope schema",
+            )
+            .with_detail("reason", error.to_string()),
+        ),
     })
 }
 

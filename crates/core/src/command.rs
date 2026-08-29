@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, error::Error, fmt, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    fmt,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 
@@ -176,6 +181,7 @@ impl CommandSpec {
         for argument in &self.args {
             validate_no_nul("argument", argument)?;
         }
+        validate_structured_invocation(&self.executable, &self.args)?;
         for (key, value) in &self.env {
             validate_environment_key(key)?;
             validate_no_nul("environment value", value)?;
@@ -268,6 +274,8 @@ pub enum CommandSpecError {
     InvalidEnvironmentKey(String),
     /// A value contained a NUL byte and cannot be passed to an OS process API.
     ContainsNul(&'static str),
+    /// A known shell or wrapper was asked to interpret a command string.
+    ShellCommandString,
     /// Optional startup input exceeded the accepted size.
     StartupInputTooLarge {
         /// Actual byte length of the rejected input.
@@ -288,6 +296,9 @@ impl fmt::Display for CommandSpecError {
                 write!(formatter, "invalid environment variable name: {key:?}")
             }
             Self::ContainsNul(field) => write!(formatter, "{field} must not contain a NUL byte"),
+            Self::ShellCommandString => formatter.write_str(
+                "shell command strings are refused; pass an executable and argument array",
+            ),
             Self::StartupInputTooLarge { length, max } => write!(
                 formatter,
                 "startup input is {length} bytes; maximum is {max}"
@@ -297,6 +308,109 @@ impl fmt::Display for CommandSpecError {
 }
 
 impl Error for CommandSpecError {}
+
+/// Refuses command-string flags for known shells and direct shell wrappers.
+///
+/// Interactive shells without a command-string flag remain valid for PTY use.
+/// This check is lexical and performs no filesystem I/O; adapters should resolve
+/// executable aliases to canonical paths before constructing the command.
+///
+/// # Errors
+///
+/// Returns [`CommandSpecError::ShellCommandString`] for POSIX shells,
+/// `PowerShell`, `cmd`, `env`, or `BusyBox` invocations that would interpret a
+/// command string.
+pub fn validate_structured_invocation(
+    executable: &str,
+    args: &[String],
+) -> Result<(), CommandSpecError> {
+    if executable_has_name(executable, "env")
+        && args
+            .iter()
+            .any(|argument| argument == "-S" || argument == "--split-string")
+    {
+        return Err(CommandSpecError::ShellCommandString);
+    }
+    if let Some((nested, nested_args)) = wrapped_shell(executable, args) {
+        return validate_structured_invocation(nested, nested_args);
+    }
+
+    let shell = executable_name(executable).and_then(classify_shell);
+    let uses_command_string = match shell {
+        Some(ShellKind::Posix) => args.iter().any(|argument| {
+            let argument = argument.to_ascii_lowercase();
+            argument == "--command"
+                || argument.starts_with("--command=")
+                || argument == "--init-command"
+                || argument.starts_with("--init-command=")
+                || argument
+                    .strip_prefix('-')
+                    .is_some_and(|flags| !flags.starts_with('-') && flags.contains('c'))
+        }),
+        Some(ShellKind::PowerShell) => args.iter().any(|argument| {
+            let flag = argument.trim_start_matches(['-', '/']).to_ascii_lowercase();
+            !flag.is_empty()
+                && ("command".starts_with(&flag)
+                    || "commandwithargs".starts_with(&flag)
+                    || "encodedcommand".starts_with(&flag))
+        }),
+        Some(ShellKind::Cmd) => args.iter().any(|argument| {
+            let argument = argument.to_ascii_lowercase();
+            argument.starts_with("/c") || argument.starts_with("/k")
+        }),
+        None => false,
+    };
+    if uses_command_string {
+        Err(CommandSpecError::ShellCommandString)
+    } else {
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ShellKind {
+    Posix,
+    PowerShell,
+    Cmd,
+}
+
+fn executable_name(executable: &str) -> Option<&str> {
+    Path::new(executable).file_name()?.to_str()
+}
+
+fn classify_shell(name: &str) -> Option<ShellKind> {
+    let name = name.to_ascii_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    match name {
+        "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish" | "csh" | "tcsh" | "nu" | "xonsh" => {
+            Some(ShellKind::Posix)
+        }
+        "powershell" | "pwsh" => Some(ShellKind::PowerShell),
+        "cmd" => Some(ShellKind::Cmd),
+        _ => None,
+    }
+}
+
+fn executable_has_name(executable: &str, expected: &str) -> bool {
+    executable_name(executable)
+        .is_some_and(|name| name.trim_end_matches(".exe").eq_ignore_ascii_case(expected))
+}
+
+fn wrapped_shell<'a>(executable: &str, args: &'a [String]) -> Option<(&'a str, &'a [String])> {
+    if executable_has_name(executable, "busybox") {
+        let (nested, rest) = args.split_first()?;
+        return classify_shell(nested).map(|_| (nested.as_str(), rest));
+    }
+    if !executable_has_name(executable, "env") {
+        return None;
+    }
+    for (index, argument) in args.iter().enumerate() {
+        if classify_shell(argument).is_some() {
+            return Some((argument, &args[index + 1..]));
+        }
+    }
+    None
+}
 
 fn unique_preserving_order(keys: impl IntoIterator<Item = String>) -> Vec<String> {
     let mut ordered = Vec::new();
@@ -410,6 +524,39 @@ mod tests {
             error,
             CommandSpecError::StartupInputTooLarge { .. }
         ));
+    }
+
+    #[test]
+    fn rejects_shell_command_strings_and_direct_wrappers() {
+        for (executable, args) in [
+            ("/bin/bash", vec!["-lc", "echo unsafe"]),
+            ("zsh", vec!["--command=echo unsafe"]),
+            ("pwsh.exe", vec!["-EncodedCommand", "ZQBjAGgAbwA="]),
+            ("cmd.exe", vec!["/C", "echo unsafe"]),
+            ("/usr/bin/env", vec!["bash", "-c", "echo unsafe"]),
+            ("busybox", vec!["sh", "-c", "echo unsafe"]),
+            ("env", vec!["-S", "bash -c 'echo unsafe'"]),
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert_eq!(
+                validate_structured_invocation(executable, &args),
+                Err(CommandSpecError::ShellCommandString),
+                "accepted {executable} {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn allows_interactive_shells_and_metacharacters_as_plain_arguments() {
+        CommandSpec::new("/bin/sh", "/tmp/project")
+            .expect("an interactive PTY shell has no command string");
+        CommandSpec::try_from_parts(
+            "codex",
+            ["exec", "; rm -rf -- definitely-not-executed"],
+            "/tmp/project",
+            BTreeMap::new(),
+        )
+        .expect("metacharacters remain one argument without a shell");
     }
 
     #[test]

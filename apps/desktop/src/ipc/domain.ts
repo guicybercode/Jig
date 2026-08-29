@@ -29,6 +29,8 @@ export type ApiError = {
   message: string;
   action?: string;
   details?: Record<string, unknown>;
+  title?: string;
+  recoverable?: boolean;
 };
 
 export type CommandSpec = {

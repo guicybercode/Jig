@@ -1,4 +1,4 @@
-use cli_master_core::CommandSpec;
+use cli_master_core::{CommandSpec, redact_text};
 
 use crate::error::SessionError;
 
@@ -107,7 +107,7 @@ fn spawn_native(spec: &CommandSpec, size: PtySize) -> Result<SpawnedPty, Session
 
 fn redact_spawn_error(message: &str) -> String {
     const KEEP: usize = 180;
-    if message.len() <= KEEP {
+    let bounded = if message.len() <= KEEP {
         message.to_owned()
     } else {
         let mut end = KEEP;
@@ -115,7 +115,8 @@ fn redact_spawn_error(message: &str) -> String {
             end -= 1;
         }
         format!("{}…", &message[..end])
-    }
+    };
+    redact_text(&bounded)
 }
 
 #[cfg(test)]
@@ -136,5 +137,12 @@ mod tests {
     fn preserves_spawn_errors_within_the_limit() {
         let message = "falha ao iniciar: caminho inválido";
         assert_eq!(redact_spawn_error(message), message);
+    }
+
+    #[test]
+    fn redacts_secrets_from_spawn_errors() {
+        let redacted = redact_spawn_error("could not start with TOKEN=spawn-secret");
+        assert!(!redacted.contains("spawn-secret"));
+        assert!(redacted.contains("[redacted]"));
     }
 }
