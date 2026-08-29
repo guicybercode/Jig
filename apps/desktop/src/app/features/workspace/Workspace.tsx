@@ -11,9 +11,10 @@ import type {
 import { Icon } from "../../components/Icon";
 import { StatusBadge } from "../../components/StatusBadge";
 import { DiagnosticsView } from "../diagnostics/DiagnosticsView";
+import { CanvasWorkspace } from "../canvas/CanvasWorkspace";
 import { SessionWorkspace } from "../sessions/SessionWorkspace";
 
-type WorkspaceViewName = "session" | "grid" | "settings" | "diagnostics";
+type WorkspaceViewName = "canvas" | "session" | "grid" | "settings" | "diagnostics";
 type ConnectionStatus = "connecting" | "connected" | "disconnected" | "fatal";
 
 interface WorkspaceProps {
@@ -66,6 +67,19 @@ export function Workspace(props: WorkspaceProps) {
         snapshot={props.snapshot}
         onLoad={props.onLoadDiagnostics}
         onRetryConnection={props.onRetry}
+      />
+    );
+  }
+  if (props.view === "canvas") {
+    return (
+      <CanvasWorkspace
+        isConnected={props.connectionStatus === "connected"}
+        projects={props.projects}
+        project={props.project}
+        sessions={props.sessions}
+        onAddProject={props.onAddProject}
+        onNewSession={props.onNewSession}
+        onSelectSession={props.onSelectSession}
       />
     );
   }

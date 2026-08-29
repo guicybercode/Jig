@@ -236,6 +236,12 @@ export function AppShell() {
         },
       },
       {
+        id: "view.canvas",
+        label: "Open Canvas",
+        description: "Arrange terminals and notes in the spatial workspace.",
+        onSelect: () => workspace.setView("canvas"),
+      },
+      {
         id: "view.grid",
         label: "Open Grid",
         description: "Show sessions for the selected project in a grid.",
@@ -277,7 +283,13 @@ export function AppShell() {
   ]);
 
   return (
-    <div className="app-shell">
+    <div
+      className={
+        workspace.view === "canvas"
+          ? "app-shell app-shell--canvas"
+          : "app-shell"
+      }
+    >
       <a className="skip-link" href="#workspace">Skip to workspace</a>
       <AppHeader
         project={workspace.selectedProject ?? undefined}

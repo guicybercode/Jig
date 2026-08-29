@@ -47,6 +47,7 @@ import type {
 
 /** Main application destinations controlled independently from dialog state. */
 export type WorkspaceView =
+  | "canvas"
   | "session"
   | "grid"
   | "settings"
@@ -139,6 +140,8 @@ export interface WorkspaceProviderProps {
   readonly children: ReactNode;
   /** Production uses the shared Tauri client; tests inject a strict fake. */
   readonly client?: IpcClient;
+  /** Allows legacy/detail surfaces to opt in while canvas remains the default. */
+  readonly initialView?: WorkspaceView;
 }
 
 interface WorkspaceState {
@@ -244,7 +247,7 @@ const INITIAL_WORKSPACE_STATE: WorkspaceState = {
   selectedProjectId: null,
   selectedSessionId: null,
   navigationRevision: 0,
-  view: "session",
+  view: "canvas",
   overlay: null,
   operationError: null,
   retrySequence: 0,
@@ -258,10 +261,12 @@ const WorkspaceContext = createContext<WorkspaceContextValue | undefined>(
 export function WorkspaceProvider({
   children,
   client = tauriIpcClient,
+  initialView = "canvas",
 }: WorkspaceProviderProps) {
   const [state, dispatch] = useReducer(
     workspaceReducer,
-    INITIAL_WORKSPACE_STATE,
+    initialView,
+    (view): WorkspaceState => ({ ...INITIAL_WORKSPACE_STATE, view }),
   );
   const requestGenerationRef = useRef(0);
   const navigationRevisionRef = useRef(state.navigationRevision);

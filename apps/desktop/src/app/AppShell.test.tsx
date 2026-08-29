@@ -957,7 +957,7 @@ describe("AppShell project and session workflows", () => {
 
 async function renderApp(client: MockIpcClient) {
   const user = userEvent.setup();
-  render(<App client={client} />);
+  render(<App client={client} initialView="session" />);
   await screen.findByText("Daemon connected · v0.1.0-test");
   return user;
 }
