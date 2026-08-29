@@ -57,8 +57,8 @@ pub fn run() {
 mod tests {
     use serde_json::json;
 
-    use super::*;
     use super::sidecar;
+    use super::*;
 
     #[test]
     fn rust_catalog_matches_desktop_mirror() {
