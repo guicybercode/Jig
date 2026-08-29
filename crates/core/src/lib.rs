@@ -10,11 +10,14 @@ mod error;
 mod ids;
 mod model;
 mod protocol;
+pub mod wire;
 
 pub use command::{CommandSpec, CommandSpecError, MAX_STARTUP_INPUT_BYTES};
 pub use error::ApiError;
-pub use ids::{AgentId, ProjectId, RequestId, SessionId, WorktreeId};
-pub use model::{AgentDefinition, AgentSource, Project, Session, SessionStatus, Worktree};
+pub use ids::{AgentId, DaemonInstanceId, ProjectId, RequestId, SessionId, WorktreeId};
+pub use model::{
+    AgentDefinition, AgentSource, Project, Session, SessionStatus, Worktree, WorktreeState,
+};
 pub use protocol::{
     EnvelopeKind, EventEnvelope, PROTOCOL_V1, RequestEnvelope, ResponseEnvelope, ResponsePayload,
 };

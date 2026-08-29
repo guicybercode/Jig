@@ -11,6 +11,8 @@ use tempfile::TempDir;
 
 pub fn executable(directory: &Path, name: &str) -> PathBuf {
     script(directory, name, "echo ok")
+        .canonicalize()
+        .expect("fixture executable should canonicalize")
 }
 
 pub fn script(directory: &Path, name: &str, body: &str) -> PathBuf {

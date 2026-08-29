@@ -49,7 +49,9 @@ fn test_executable_does_not_depend_on_real_agents() {
 #[test]
 fn diagnostics_include_path_and_launch_test_without_environment() {
     let temp = TempDir::new().expect("temporary directory should be created");
-    let path = script(temp.path(), "claude", "echo 'claude 1.2.3'");
+    let path = script(temp.path(), "claude", "echo 'claude 1.2.3'")
+        .canonicalize()
+        .expect("fixture executable should canonicalize");
     let diagnostics = AgentRegistry::new()
         .diagnostics(
             "claude",

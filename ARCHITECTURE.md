@@ -21,6 +21,27 @@ Workspace (the local application)
 `Task` is intentionally not persisted in v0.1. A session name carries the
 task-like label until multi-agent task orchestration has a concrete use case.
 
+These words are not interchangeable:
+
+| Word | Meaning |
+|---|---|
+| Project | Registered Git repository. Metadata only. Path is the canonical root. Removing it never deletes the directory. |
+| Session | One agent invocation: persisted metadata plus, when live, a process. Create does not imply start. |
+| Process | OS child in its own process group. Owned by the daemon. Not a React object. |
+| PTY | The pseudo-terminal pair attached to that process. The master lives in `SessionManager`. It is not on the wire. |
+| Agent | A catalog definition (`codex`, `claude`, `gemini`, `opencode`, or a custom row). Detection is observed at runtime. |
+| Worktree | Extra Git working copy the app created. Independent of session delete. |
+| Branch | Git ref name. Observed via Git, stored on the worktree row when we created it. |
+| Persisted metadata | SQLite: projects, agents, sessions, worktrees, settings. Survives daemon restart. |
+| Observed runtime | PTY handles, PIDs, output buffers, Git status, agent detection, daemon lifecycle. |
+
+Public IPC DTOs carry persisted metadata plus a few observed fields that are
+safe to show (session status, Git counts, detection status). They do not
+carry PTY handles, portable-pty types, or SQLite rows.
+
+Accepted architecture decisions live in `docs/adr/`. `AGENTS.md` is the
+working agreement for parallel implementation sessions.
+
 ## 2. Architectural decisions
 
 ### 2.1 Separate daemon owns every live session
@@ -123,14 +144,17 @@ unbounded database growth or write amplification.
 │   ├── storage/                    # SQLite repositories and migrations
 │   ├── agents/                     # registry, built-ins, custom definitions
 │   ├── git/                        # repository and worktree operations
-│   ├── session/                    # PTY backend and SessionManager
-│   └── daemon/                     # cli-masterd binary, socket, orchestration
+│   ├── session/                    # PTY backend and SessionManager (planned)
+│   └── daemon/                     # cli-masterd binary, socket, orchestration foundation
+├── protocol/                       # frozen IPC catalog JSON
+├── docs/adr/                       # accepted architecture decisions
 ├── tests/
 │   └── fixtures/                   # cross-crate integration fixtures
 ├── Cargo.toml                      # Rust workspace
 ├── package.json
 ├── pnpm-workspace.yaml
 ├── ARCHITECTURE.md
+├── AGENTS.md
 ├── CONTRIBUTING.md
 └── README.md
 ```
@@ -143,7 +167,7 @@ isolation, or integration testing benefits from it.
 
 | Module | Owns | Must not own |
 |---|---|---|
-| `core` | UUID-backed IDs, domain enums, serialized DTOs, protocol envelopes, stable error codes | SQLite connections, PTYs, UI types |
+| `core` | IDs, domain enums, serialized DTOs, protocol catalog, stable error codes | SQLite connections, PTYs, UI types |
 | `storage` | connection setup, migrations, transactions, repository queries | child processes or Git commands |
 | `agents` | built-in adapters, custom definitions, PATH detection, safe `CommandSpec` creation | process lifetime or terminal rendering |
 | `git` | repository validation, status/diff, branch naming, worktree create/list/remove safety | arbitrary shell execution or UI confirmation |
@@ -182,7 +206,7 @@ pub trait AgentAdapter: Send + Sync {
 }
 
 pub struct AgentDefinition {
-    pub id: String, // "codex" | "claude" | "gemini" | "opencode" | custom key
+    pub id: String, // adapter discovery key, not the persisted AgentId
     pub display_name: String,
     pub executable: String,
     pub default_args: Vec<String>,
@@ -198,14 +222,21 @@ pub struct CommandSpec {
     pub executable: String,
     pub args: Vec<String>,
     pub cwd: PathBuf,
-    pub env_additions: BTreeMap<String, String>,
+    pub env: BTreeMap<String, String>,
     pub env_removals: Vec<String>,
     pub terminal_title: Option<String>,
     pub startup_input: Option<String>,
 }
 ```
 
-Built-in adapter IDs are stable: `codex`, `claude`, `gemini`, and `opencode`.
+The adapter crate's `AgentDefinition` (also exported as `AdapterDefinition`) is
+a runtime discovery snapshot keyed by the adapter registry key. It is distinct
+from the persisted `cli_master_core::AgentDefinition`, whose `id` is an
+`AgentId` and whose structured default launch is a `CommandSpec`.
+
+Persisted built-in and custom definitions both receive UUIDv7 `AgentId` values.
+Adapter registry keys such as `codex`, `claude`, `gemini`, and `opencode`
+identify discovery implementations; they are not wire or database entity IDs.
 Adapters do not guess optional vendor flags. In v0.1 they resolve the executable
 and launch the CLI in its normal interactive mode. Flags are added only after
 validation against the installed CLI version. User-configured extra arguments
@@ -251,7 +282,7 @@ SessionManager
 2. If isolation is requested, reserve a worktree record as `creating`.
 3. Create the branch/worktree through `GitService`; mark it `active`, or perform
    a safe compensating cleanup and record the actionable failure.
-4. Insert the session with `starting` status before spawning.
+4. Insert the session metadata before spawning and report `starting` while launch proceeds.
 5. Build a `CommandSpec`, open a PTY, set its initial size, and spawn the child
    in its own process group with the worktree/project as `cwd`.
 6. Attach output and exit readers, record volatile PID/daemon instance data,
@@ -265,7 +296,7 @@ atomic.
 
 - `session.write` accepts bytes, not a command string, and writes them to the
   PTY master. Ctrl+C is ordinary terminal input (`0x03`).
-- Reader tasks batch output for up to 8 ms or 32 KiB, whichever happens first.
+- Reader tasks batch output for up to 8 ms or 8 KiB, whichever happens first.
   Each chunk has a monotonically increasing per-session sequence number.
 - A live session retains a configurable bounded replay buffer (default 8 MiB).
   On subscription the daemon sends a snapshot followed by chunks after the
@@ -280,23 +311,34 @@ atomic.
 ### 6.3 Status state machine
 
 ```text
-create ──> starting ──> running <──> idle ──> exited
-              │            │          │
-              └────────────┴──────────┴────> failed
+start/restart ──> starting ──> running <──> idle ──> exited
+                         │          │          │
+                         └──────────┴──────────┴──> failed
 
 daemon recovery of a formerly live row ──> unknown
 unknown ── restart ──> starting
+exited | failed ── restart ──> starting
 ```
 
-- `starting`: metadata exists and launch is in progress.
+- `starting`: launch is in progress.
 - `running`: the process exists and recent PTY input/output indicates activity.
 - `idle`: the process exists but no PTY activity occurred for the configured
   heuristic interval (10 seconds initially). This is not an LLM semantic state.
-- `exited`: the process ended normally; the exit code is recorded.
+- `exited`: the process ended; the exit code is recorded.
 - `failed`: validation, spawn, PTY, or abnormal exit failed with an actionable
   error.
 - `unknown`: metadata claims a live session from another daemon instance, but
   v0.1 cannot safely prove or reattach its PTY.
+
+Only `SessionManager` in the daemon may change status. The UI sends commands
+and cannot write `Session.status`. The frozen wire enum defines public values;
+the daemon owns transition and stop-in-progress policy without adding a second
+wire-only state.
+
+Persisted status is a snapshot. On `session.list` / `state.snapshot` the
+daemon reconciles each row with the live map. After a daemon crash, live
+rows become `unknown` and stale PIDs are never signaled. Closing the UI does
+not change status. Restart always goes through `starting`.
 
 Status changes are edge-triggered events. React does not poll each process.
 Process liveness checks run inside the daemon at a modest interval only as a
@@ -304,9 +346,9 @@ fallback to exit notification.
 
 ### 6.4 Stop, restart, and delete
 
-Stop and delete are separate commands. Stop sends an interrupt/termination to
-the session process group, waits a short grace period, then offers a separately
-confirmed force-kill. Restart reuses session metadata and the same working
+Stop and delete are separate commands. Stop applies the daemon's bounded
+graceful process-group policy; there is no generic signal or force-kill IPC.
+Restart reuses session metadata and the same working
 directory but creates a new PTY and PID. Delete is allowed only after the
 process stops; it removes metadata, never repository files. A worktree remains
 a separately managed resource.
@@ -345,9 +387,11 @@ processes may require manual inspection.
 
 ## 8. SQLite schema and migrations
 
-All timestamps are UTC RFC 3339 strings. IDs are UUIDv7 strings. Paths are
-stored as canonical absolute paths after validation; the UI may separately
-abbreviate them for display. The first migration creates:
+All timestamps are Unix epoch milliseconds. IDs for projects, agents, sessions,
+worktrees, requests, and daemon instances are UUIDv7 strings. Adapter keys are
+not entity IDs. Paths are stored as canonical absolute paths after
+validation; the UI may separately abbreviate them for display. The first
+migration creates:
 
 ```sql
 PRAGMA foreign_keys = ON;
@@ -379,7 +423,10 @@ CREATE TABLE sessions (
     name                TEXT NOT NULL CHECK (length(trim(name)) > 0),
     cwd                 TEXT NOT NULL,
     status              TEXT NOT NULL CHECK (
-                            status IN ('starting','running','idle','exited','failed','unknown')
+                            status IN (
+                                'starting','running','idle',
+                                'exited','failed','unknown'
+                            )
                         ),
     runtime_pid         INTEGER,
     daemon_instance_id  TEXT,
@@ -415,6 +462,15 @@ CREATE INDEX sessions_by_project_updated
 CREATE INDEX sessions_by_status ON sessions(status);
 CREATE INDEX worktrees_by_project ON worktrees(project_id);
 ```
+
+Migration `0002` adds the persisted `worktrees.is_dirty` boolean used by the
+public worktree DTO and conservative removal checks. Historical timestamp
+columns keep their original SQLite declarations, but repository adapters read
+and write Unix epoch millisecond values.
+
+Migration `0003` adds optional session branch/worktree association fields,
+integer `started_at`/`exited_at` history, and project, agent, and session lookup
+indexes. These fields do not make a persisted PID or PTY reattachable.
 
 Built-in agent rows are idempotently seeded/upserted at startup. A user can
 disable but not mutate their executable/argument defaults; custom rows are
@@ -471,49 +527,53 @@ binary frame type can be added without changing domain commands.
   "kind": "response",
   "version": 1,
   "requestId": "019...",
-  "ok": false,
+  "status": "error",
   "error": {
-    "code": "AGENT_EXECUTABLE_NOT_FOUND",
-    "message": "Could not start Codex because executable 'codex' was not found.",
-    "action": "Install Codex or configure an executable search path.",
+    "code": "executable_not_found",
+    "message": "Could not start the selected agent.",
+    "action": "Install the executable or update the custom agent.",
     "details": { "searchedPath": ["/usr/local/bin", "/usr/bin"] }
   }
 }
 ```
 
-Supported v0.1 requests:
+Supported v0.1 requests. Names are authoritative in
+`crates/core/src/wire/method.rs`; `protocol/catalog.json` is a tested mirror.
 
 | Method | Purpose |
 |---|---|
 | `system.hello` | negotiate protocol and report daemon instance/version |
 | `state.snapshot` | projects, agents, sessions, worktrees, current statuses |
-| `project.add`, `project.list` | validate/canonicalize and register repositories |
+| `project.list`, `project.add` | validate/canonicalize and register repositories |
 | `project.rename`, `project.remove` | update app metadata; never delete the directory |
-| `agent.list`, `agent.detect` | definitions and installation status |
-| `agent.custom.create`, `agent.custom.update`, `agent.custom.remove` | manage structured custom commands |
-| `session.create`, `session.list`, `session.get` | create and inspect sessions |
-| `session.subscribe`, `session.unsubscribe` | snapshot/replay and live terminal events |
+| `agent.list`, `agent.detect`, `agent.set_enabled` | definitions, installation status, enablement |
+| `agent.custom.create`, `agent.custom.update`, `agent.custom.remove` | structured custom commands |
+| `session.list`, `session.create`, `session.rename`, `session.start` | daemon-derived cwd/worktree and metadata lifecycle |
 | `session.write`, `session.resize` | PTY byte input and dimensions |
-| `session.stop`, `session.kill`, `session.restart` | explicit lifecycle operations |
-| `session.rename`, `session.delete` | metadata operations independent of worktrees |
+| `session.stop`, `session.restart`, `session.delete` | stop is not delete; restart goes through `starting` |
+| `session.subscribe`, `session.unsubscribe` | bounded replay followed by live terminal events |
 | `git.status`, `git.diff` | branch, changed files, counts, bounded textual diff |
-| `worktree.create`, `worktree.list` | isolated branch/worktree operations |
-| `worktree.prepare_remove`, `worktree.remove` | two-step safe removal |
-| `diagnostics.get`, `diagnostics.export` | sanitized versions, paths, and recent logs |
+| `worktree.prepare_remove`, `worktree.remove` | re-inspect then remove with a state-bound token |
+| `diagnostics.get` | sanitized versions, paths, and live session count |
 
 Supported v0.1 events:
 
 | Event | Payload notes |
 |---|---|
-| `session.created`, `session.updated`, `session.deleted` | complete public session DTO |
 | `session.output` | session ID, sequence, base64 bytes |
-| `session.output_gap` | session ID and last available sequence |
-| `session.status_changed` | previous/new state, timestamp, safe reason code |
+| `session.replay_complete`, `session.output_gap` | replay/live-stream boundary and retained-output gaps |
+| `session.status_changed` | previous/new state, timestamp, optional reason |
 | `session.exited` | exit code and final status |
-| `project.updated` | complete public project DTO |
-| `worktree.updated` | complete public worktree DTO |
+| `project.updated`, `project.removed` | current public DTO or removed ID |
+| `agent.updated`, `agent.removed` | current public agent record or removed ID |
+| `session.created`, `session.updated`, `session.deleted` | session metadata lifecycle |
+| `worktree.updated`, `worktree.removed` | managed worktree lifecycle |
 | `git.status_changed` | emitted only after an explicit/low-rate refresh in v0.1 |
-| `daemon.shutting_down` | reason and whether active sessions remain |
+| `daemon.shutting_down` | safe reason and count of still-active sessions |
+
+`session.kill` / `diagnostics.export` are deferred. Snapshot-on-connect,
+cursor-based replay, and live events cover reload. Force-kill can wait until
+graceful stop is real. Extra methods need a catalog change, not a side channel.
 
 Every error has a stable machine code, a safe user-facing message, and a
 suggested action when available. Internal causes appear in structured logs with
@@ -544,13 +604,11 @@ The suffix prevents collisions without silently reusing an existing branch or
 directory. The daemon validates that generated worktree paths remain below its
 managed worktree root after path normalization.
 
-Worktree removal is deliberately two-step:
-
-1. `worktree.prepare_remove` checks process use, tracked changes, staged
-   changes, untracked files, and Git's current worktree registry. It returns the
-   findings and a short-lived confirmation token tied to that exact state.
-2. `worktree.remove` requires the token, rechecks state, and refuses if state
-   changed. Dirty removal requires an explicit `allowDirty` confirmation.
+Worktree removal uses two distinct methods. `worktree.prepare_remove` inspects
+process use, tracked, staged, untracked, ignored and special index state, plus
+Git's worktree registry. It returns explicit blockers or a short-lived token
+bound to the exact clean state. `worktree.remove` requires that token, rechecks
+state, and deletes. No dirty or force bypass exists in the v1 request shape.
 
 The backend never performs `git reset --hard`, discards changes, deletes the
 main repository, or recursively deletes an unvalidated path. A running session
@@ -563,8 +621,9 @@ recovery instructions.
 React owns view composition, selection, dialogs, shortcuts, and cached public
 metadata. It does not own processes or infer lifecycle from component mounts.
 
-- A single IPC client completes `system.hello` and `state.snapshot`, then routes
-  events into small feature stores.
+- A single IPC client in `apps/desktop/src/ipc` types every method against
+  `protocol/catalog.json`. It completes `system.hello` and `state.snapshot`,
+  then routes events into small feature stores.
 - Project/session metadata may use a lightweight external store; ephemeral
   dialog and form state stays local to components.
 - Each terminal controller owns its xterm.js instance and addons outside React

@@ -2,7 +2,6 @@ use std::{
     env,
     ffi::{OsStr, OsString},
     fmt, fs,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Command,
     time::Duration,
@@ -12,6 +11,7 @@ use crate::{
     PathImportError,
     process::{PATH_IMPORT_OUTPUT_LIMIT, run_limited},
 };
+use rustix::fs::{Access, AtFlags, CWD, accessat};
 
 const LOGIN_PATH_BEGIN: &str = "__CLI_MASTER_PATH_BEGIN__";
 const LOGIN_PATH_END: &str = "__CLI_MASTER_PATH_END__";
@@ -182,7 +182,9 @@ impl LaunchEnvironment {
     }
 
     /// Resolves an absolute executable path or a bare name against this
-    /// environment without invoking a shell.
+    /// environment without invoking a shell. A successful result contains a
+    /// canonical absolute path, so changing the process working directory
+    /// cannot change which file a later launch addresses.
     #[must_use]
     pub fn detect(&self, executable: impl AsRef<Path>) -> DetectionResult {
         let executable = executable.as_ref();
@@ -435,14 +437,19 @@ fn merge_unique(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
 }
 
 fn inspect_candidate(candidate: PathBuf) -> DetectionResult {
-    match fs::metadata(&candidate) {
-        Ok(metadata) if metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 => {
-            DetectionResult::Found {
-                executable: candidate,
-            }
-        }
-        Ok(_) => DetectionResult::NotExecutable { candidate },
-        Err(_) => DetectionResult::NotFound,
+    let Ok(resolved) = fs::canonicalize(&candidate) else {
+        return DetectionResult::NotFound;
+    };
+    let Ok(metadata) = fs::metadata(&resolved) else {
+        return DetectionResult::NotFound;
+    };
+
+    if !metadata.is_file() || accessat(CWD, &resolved, Access::EXEC_OK, AtFlags::EACCESS).is_err() {
+        return DetectionResult::NotExecutable { candidate };
+    }
+
+    DetectionResult::Found {
+        executable: resolved,
     }
 }
 
