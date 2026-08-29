@@ -6,7 +6,7 @@ use crate::{AgentId, AgentSource};
 
 /// Stable public identifiers for the four built-in adapters.
 ///
-/// These are `UUIDv7` values used on the wire and in SQLite. Adapter keys such as
+/// These are `UUIDv7` values used on the wire and in `SQLite`. Adapter keys such as
 /// `codex` remain internal lookup names and must never be used as [`AgentId`].
 pub mod builtin_agent_ids {
     use uuid::Uuid;
