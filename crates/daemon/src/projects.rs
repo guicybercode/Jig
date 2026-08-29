@@ -1,0 +1,213 @@
+use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use cli_master_core::wire::{
+    EmptyResponse, ProjectAddRequest, ProjectListResponse, ProjectRemoveRequest,
+    ProjectRenameRequest,
+};
+use cli_master_core::{ApiError, Project, ProjectId};
+use cli_master_git::{Git, GitError, GitErrorKind};
+use cli_master_storage::{Storage, StorageError};
+
+/// Owns project validation and persistence for daemon IPC handlers.
+#[derive(Debug)]
+pub(super) struct ProjectRegistry {
+    storage: Mutex<Storage>,
+    git: Result<Git, ApiError>,
+}
+
+impl ProjectRegistry {
+    pub(super) fn new(storage: Storage) -> Self {
+        Self {
+            storage: Mutex::new(storage),
+            git: Git::discover().map_err(|error| git_error(&error)),
+        }
+    }
+
+    pub(super) fn snapshot(&self) -> Result<Vec<Project>, ApiError> {
+        let mut projects = self.storage()?.list_projects().map_err(storage_error)?;
+        if let Ok(git) = &self.git {
+            for project in &mut projects {
+                enrich_project(git, project);
+            }
+        }
+        Ok(projects)
+    }
+
+    pub(super) fn list(&self) -> Result<ProjectListResponse, ApiError> {
+        self.snapshot()
+            .map(|projects| ProjectListResponse { projects })
+    }
+
+    pub(super) fn add(&self, request: ProjectAddRequest) -> Result<Project, ApiError> {
+        let git = self.git.as_ref().map_err(Clone::clone)?;
+        let inspection = git
+            .inspect_repository(request.path.as_str())
+            .map_err(|error| git_error(&error))?;
+        let Some(repository_root) = inspection.repository_root else {
+            return Err(ApiError::new(
+                "not_git_repository",
+                "The selected folder is not inside a Git repository.",
+            )
+            .with_action("Choose a Git repository or initialize this folder with Git."));
+        };
+        let name = request.name.map_or_else(
+            || default_project_name(&repository_root),
+            |name| Ok(name.into_inner()),
+        )?;
+        let now = unix_timestamp_ms()?;
+        let project = Project {
+            id: ProjectId::new(),
+            name,
+            path: inspection.path,
+            repository_root: Some(repository_root),
+            current_branch: inspection.branch,
+            created_at_ms: now,
+            last_opened_at_ms: now,
+        };
+        self.storage()?
+            .insert_project(&project)
+            .map_err(storage_error)?;
+        Ok(project)
+    }
+
+    pub(super) fn rename(&self, request: &ProjectRenameRequest) -> Result<Project, ApiError> {
+        let storage = self.storage()?;
+        storage
+            .rename_project(request.project_id, request.name.as_str())
+            .map_err(storage_error)?;
+        let mut project = storage
+            .get_project(request.project_id)
+            .map_err(storage_error)?
+            .ok_or_else(|| project_not_found(request.project_id))?;
+        drop(storage);
+        if let Ok(git) = &self.git {
+            enrich_project(git, &mut project);
+        }
+        Ok(project)
+    }
+
+    pub(super) fn remove(&self, request: ProjectRemoveRequest) -> Result<EmptyResponse, ApiError> {
+        self.storage()?
+            .remove_project_metadata(request.project_id)
+            .map_err(storage_error)?;
+        Ok(EmptyResponse::default())
+    }
+
+    fn storage(&self) -> Result<MutexGuard<'_, Storage>, ApiError> {
+        self.storage.lock().map_err(|_| {
+            ApiError::new(
+                "storage_unavailable",
+                "Project storage is temporarily unavailable.",
+            )
+            .with_action("Restart CLI Master and try again.")
+        })
+    }
+}
+
+fn enrich_project(git: &Git, project: &mut Project) {
+    let Ok(inspection) = git.inspect_repository(&project.path) else {
+        return;
+    };
+    project.path = inspection.path;
+    project.repository_root = inspection.repository_root;
+    project.current_branch = inspection.branch;
+}
+
+fn default_project_name(repository_root: &Path) -> Result<String, ApiError> {
+    repository_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            ApiError::new(
+                "project_name_unavailable",
+                "CLI Master could not derive a project name from this folder.",
+            )
+            .with_action("Enter a display name and try again.")
+        })
+}
+
+fn unix_timestamp_ms() -> Result<i64, ApiError> {
+    let elapsed = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| {
+        ApiError::new(
+            "system_clock_invalid",
+            "The system clock cannot be used to register this project.",
+        )
+        .with_action("Correct the system date and time, then try again.")
+    })?;
+    i64::try_from(elapsed.as_millis()).map_err(|_| {
+        ApiError::new(
+            "system_clock_invalid",
+            "The system clock is outside the supported range.",
+        )
+        .with_action("Correct the system date and time, then try again.")
+    })
+}
+
+fn git_error(error: &GitError) -> ApiError {
+    let code = match error.kind() {
+        GitErrorKind::NotFound => "git_or_path_not_found",
+        GitErrorKind::InvalidInput => "invalid_project_path",
+        GitErrorKind::NotRepository => "not_git_repository",
+        GitErrorKind::CommandFailed => "git_command_failed",
+        GitErrorKind::Timeout => "git_timeout",
+        GitErrorKind::InvalidOutput => "git_invalid_output",
+        GitErrorKind::Io => "git_io_error",
+        GitErrorKind::DirtyWorktree
+        | GitErrorKind::WorktreeInUse
+        | GitErrorKind::UnsafePath
+        | GitErrorKind::PartialWorktree => "git_validation_failed",
+    };
+    let mut api_error = ApiError::new(code, error.message()).with_action(error.action());
+    if let Some(path) = error.path() {
+        api_error = api_error.with_detail("path", path.to_string_lossy().into_owned());
+    }
+    if let Some(status) = error.exit_status() {
+        api_error = api_error.with_detail("exitStatus", status);
+    }
+    api_error
+}
+
+fn storage_error(error: StorageError) -> ApiError {
+    match error {
+        StorageError::AlreadyExists { entity: "project" } => ApiError::new(
+            "project_already_registered",
+            "This project folder is already registered.",
+        )
+        .with_action("Choose another repository or open the existing project."),
+        StorageError::NotFound {
+            entity: "project",
+            id,
+        } => ApiError::new("project_not_found", "This project is no longer registered.")
+            .with_action("Refresh the workspace and try again.")
+            .with_detail("projectId", id),
+        StorageError::RelationshipViolation {
+            entity: "project", ..
+        } => ApiError::new(
+            "project_in_use",
+            "This project still has sessions or worktrees attached.",
+        )
+        .with_action("Remove its sessions and worktrees before removing the project."),
+        StorageError::InvalidInput { field, reason } => {
+            ApiError::new("invalid_project", "The project details are invalid.")
+                .with_action("Review the folder and display name, then try again.")
+                .with_detail("field", field)
+                .with_detail("reason", reason)
+        }
+        other => ApiError::new(
+            "project_storage_failed",
+            "CLI Master could not update the project database.",
+        )
+        .with_action("Restart CLI Master and try again.")
+        .with_detail("reason", other.to_string()),
+    }
+}
+
+fn project_not_found(project_id: ProjectId) -> ApiError {
+    ApiError::new("project_not_found", "This project is no longer registered.")
+        .with_action("Refresh the workspace and try again.")
+        .with_detail("projectId", project_id.to_string())
+}

@@ -2,11 +2,12 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
 
 use cli_master_core::{
-    EnvelopeKind, PROTOCOL_V1, RequestEnvelope, RequestId, ResponseEnvelope, ResponsePayload,
-    wire::DiagnosticsResponse,
+    EnvelopeKind, PROTOCOL_V1, Project, RequestEnvelope, RequestId, ResponseEnvelope,
+    ResponsePayload, wire::DiagnosticsResponse,
 };
 use cli_master_daemon::{
     Daemon, DaemonConfig, DaemonError, HelloResponse, MAX_FRAME_LENGTH, StateSnapshot,
@@ -91,6 +92,21 @@ fn failure_code(response: ResponseEnvelope<Value>) -> String {
         ResponsePayload::Error { error } => error.code,
         ResponsePayload::Success { data } => panic!("expected failure, received {data}"),
     }
+}
+
+fn create_git_repository(path: &Path) {
+    fs::create_dir(path).expect("repository directory should exist");
+    let output = Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .current_dir(path)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .expect("Git should start");
+    assert!(
+        output.status.success(),
+        "Git init failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[tokio::test]
@@ -188,6 +204,111 @@ async fn diagnostics_report_sanitized_runtime_metadata() {
     );
     assert!(diagnostics.recent_issues.is_empty());
 
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn project_registration_is_validated_persisted_and_mutable() {
+    let temporary = TempDir::new().expect("temporary directory should exist");
+    let repository = temporary.path().join("repository");
+    create_git_repository(&repository);
+    let daemon = RunningDaemon::start(temporary.path());
+    let mut client = connect(daemon.config.socket_path()).await;
+
+    let response = exchange(
+        &mut client,
+        &RequestEnvelope::v1(
+            "project.add",
+            json!({ "path": repository.to_string_lossy() }),
+        ),
+    )
+    .await;
+    let ResponsePayload::Success { data } = response.payload else {
+        panic!("project registration should succeed");
+    };
+    let project: Project = serde_json::from_value(data).expect("project should decode");
+    assert_eq!(project.name, "repository");
+    assert_eq!(project.path, repository.canonicalize().unwrap());
+    assert_eq!(project.repository_root, Some(project.path.clone()));
+    assert_eq!(project.current_branch.as_deref(), Some("main"));
+
+    let duplicate = exchange(
+        &mut client,
+        &RequestEnvelope::v1(
+            "project.add",
+            json!({ "path": repository.to_string_lossy() }),
+        ),
+    )
+    .await;
+    assert_eq!(failure_code(duplicate), "project_already_registered");
+    daemon.stop().await;
+
+    let daemon = RunningDaemon::start(temporary.path());
+    let mut client = connect(daemon.config.socket_path()).await;
+    let response = exchange(
+        &mut client,
+        &RequestEnvelope::v1("state.snapshot", json!({})),
+    )
+    .await;
+    let ResponsePayload::Success { data } = response.payload else {
+        panic!("snapshot should succeed");
+    };
+    let snapshot: StateSnapshot = serde_json::from_value(data).expect("snapshot should decode");
+    assert_eq!(snapshot.projects, vec![project.clone()]);
+
+    let response = exchange(
+        &mut client,
+        &RequestEnvelope::v1(
+            "project.rename",
+            json!({ "projectId": project.id, "name": "Renamed project" }),
+        ),
+    )
+    .await;
+    let ResponsePayload::Success { data } = response.payload else {
+        panic!("project rename should succeed");
+    };
+    let renamed: Project = serde_json::from_value(data).expect("renamed project should decode");
+    assert_eq!(renamed.name, "Renamed project");
+
+    let response = exchange(&mut client, &RequestEnvelope::v1("project.list", json!({}))).await;
+    let ResponsePayload::Success { data } = response.payload else {
+        panic!("project list should succeed");
+    };
+    assert_eq!(data["projects"][0]["name"], json!("Renamed project"));
+
+    let response = exchange(
+        &mut client,
+        &RequestEnvelope::v1("project.remove", json!({ "projectId": project.id })),
+    )
+    .await;
+    assert!(matches!(response.payload, ResponsePayload::Success { .. }));
+
+    let response = exchange(&mut client, &RequestEnvelope::v1("project.list", json!({}))).await;
+    let ResponsePayload::Success { data } = response.payload else {
+        panic!("project list should succeed");
+    };
+    assert_eq!(data["projects"], json!([]));
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn project_registration_rejects_a_non_repository_with_recovery_guidance() {
+    let temporary = TempDir::new().expect("temporary directory should exist");
+    let folder = temporary.path().join("plain-folder");
+    fs::create_dir(&folder).expect("plain folder should exist");
+    let daemon = RunningDaemon::start(temporary.path());
+    let mut client = connect(daemon.config.socket_path()).await;
+
+    let response = exchange(
+        &mut client,
+        &RequestEnvelope::v1("project.add", json!({ "path": folder.to_string_lossy() })),
+    )
+    .await;
+    let ResponsePayload::Error { error } = response.payload else {
+        panic!("a non-repository should be rejected");
+    };
+    assert_eq!(error.code, "not_git_repository");
+    assert!(error.action.is_some());
     daemon.stop().await;
 }
 

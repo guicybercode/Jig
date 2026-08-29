@@ -8,7 +8,9 @@ use std::sync::Arc;
 use cli_master_core::{
     AgentDefinition, ApiError, DaemonInstanceId, EnvelopeKind, PROTOCOL_V1, Project,
     RequestEnvelope, RequestId, ResponseEnvelope, Session, Worktree,
-    wire::{DiagnosticsResponse, method},
+    wire::{
+        DiagnosticsResponse, ProjectAddRequest, ProjectRemoveRequest, ProjectRenameRequest, method,
+    },
 };
 use cli_master_storage::Storage;
 use futures_util::{SinkExt, StreamExt};
@@ -22,6 +24,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::lock::InstanceLock;
+use crate::projects::ProjectRegistry;
 use crate::{DaemonConfig, DaemonError};
 
 /// Largest accepted JSON frame, excluding the four-byte length prefix.
@@ -60,6 +63,7 @@ struct ServerState {
     hello: HelloResponse,
     schema_version: u32,
     diagnostics: DiagnosticsResponse,
+    projects: ProjectRegistry,
 }
 
 /// Bound, single-instance local daemon.
@@ -72,7 +76,6 @@ pub struct Daemon {
     listener: UnixListener,
     socket_owner: SocketOwner,
     _instance_lock: InstanceLock,
-    _storage: Storage,
     state: Arc<ServerState>,
 }
 
@@ -122,6 +125,7 @@ impl Daemon {
             },
             schema_version,
             diagnostics,
+            projects: ProjectRegistry::new(storage),
         });
 
         info!(
@@ -137,7 +141,6 @@ impl Daemon {
             listener,
             socket_owner,
             _instance_lock: instance_lock,
-            _storage: storage,
             state,
         })
     }
@@ -305,15 +308,27 @@ fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> ResponseEnv
     }
 
     let result = match request.method.as_str() {
-        method::SYSTEM_HELLO => serde_json::to_value(&state.hello),
-        method::STATE_SNAPSHOT => serde_json::to_value(StateSnapshot {
-            schema_version: state.schema_version,
-            projects: Vec::new(),
-            agents: Vec::new(),
-            sessions: Vec::new(),
-            worktrees: Vec::new(),
+        method::SYSTEM_HELLO => encode_response(&state.hello),
+        method::STATE_SNAPSHOT => state.projects.snapshot().and_then(|projects| {
+            encode_response(StateSnapshot {
+                schema_version: state.schema_version,
+                projects,
+                agents: Vec::new(),
+                sessions: Vec::new(),
+                worktrees: Vec::new(),
+            })
         }),
-        method::DIAGNOSTICS_GET => serde_json::to_value(&state.diagnostics),
+        method::PROJECT_ADD => decode_payload(request.payload)
+            .and_then(|payload: ProjectAddRequest| state.projects.add(payload))
+            .and_then(encode_response),
+        method::PROJECT_LIST => state.projects.list().and_then(encode_response),
+        method::PROJECT_RENAME => decode_payload(request.payload)
+            .and_then(|payload: ProjectRenameRequest| state.projects.rename(&payload))
+            .and_then(encode_response),
+        method::PROJECT_REMOVE => decode_payload(request.payload)
+            .and_then(|payload: ProjectRemoveRequest| state.projects.remove(payload))
+            .and_then(encode_response),
+        method::DIAGNOSTICS_GET => encode_response(&state.diagnostics),
         _ => {
             return ResponseEnvelope::failure(
                 request.request_id,
@@ -325,12 +340,26 @@ fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> ResponseEnv
 
     match result {
         Ok(value) => ResponseEnvelope::success(request.request_id, value),
-        Err(error) => ResponseEnvelope::failure(
-            request.request_id,
-            ApiError::new("internal_error", "The daemon could not encode its response")
-                .with_detail("reason", error.to_string()),
-        ),
+        Err(error) => ResponseEnvelope::failure(request.request_id, error),
     }
+}
+
+fn decode_payload<T>(payload: Value) -> Result<T, ApiError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    serde_json::from_value(payload).map_err(|error| {
+        ApiError::new("invalid_payload", "The request details are invalid.")
+            .with_action("Review the submitted values and try again.")
+            .with_detail("reason", error.to_string())
+    })
+}
+
+fn encode_response(value: impl Serialize) -> Result<Value, ApiError> {
+    serde_json::to_value(value).map_err(|error| {
+        ApiError::new("internal_error", "The daemon could not encode its response")
+            .with_detail("reason", error.to_string())
+    })
 }
 
 fn effective_executable_paths() -> Vec<PathBuf> {
@@ -452,11 +481,18 @@ impl Drop for SocketOwner {
 mod tests {
     use cli_master_core::ResponsePayload;
     use serde_json::json;
+    use tempfile::TempDir;
 
     use super::*;
 
-    #[test]
-    fn dispatch_rejects_non_request_kind() {
+    #[tokio::test]
+    async fn dispatch_rejects_non_request_kind() {
+        let temporary = TempDir::new().expect("temporary directory should exist");
+        let daemon = Daemon::bind(DaemonConfig::from_paths(
+            temporary.path().join("data"),
+            temporary.path().join("run"),
+        ))
+        .expect("daemon should bind");
         let request_id = RequestId::new();
         let response = dispatch(
             RequestEnvelope {
@@ -466,25 +502,7 @@ mod tests {
                 method: "system.hello".to_owned(),
                 payload: json!({}),
             },
-            &ServerState {
-                hello: HelloResponse {
-                    protocol_version: PROTOCOL_V1,
-                    daemon_version: "test".to_owned(),
-                    instance_id: Uuid::now_v7(),
-                },
-                schema_version: 1,
-                diagnostics: DiagnosticsResponse {
-                    daemon_version: "test".to_owned(),
-                    protocol_version: PROTOCOL_V1,
-                    schema_version: 1,
-                    daemon_instance_id: DaemonInstanceId::new(),
-                    data_path: PathBuf::from("/tmp/cli-master-data"),
-                    runtime_path: PathBuf::from("/tmp/cli-master-runtime"),
-                    log_path: PathBuf::from("/tmp/cli-master-data/logs"),
-                    effective_path: Vec::new(),
-                    recent_issues: Vec::new(),
-                },
-            },
+            &daemon.state,
         );
 
         match response.payload {

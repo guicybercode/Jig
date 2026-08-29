@@ -12,6 +12,7 @@ compile_error!("cli-master-daemon supports Linux and macOS only");
 mod config;
 mod error;
 mod lock;
+mod projects;
 mod server;
 
 pub use config::DaemonConfig;
