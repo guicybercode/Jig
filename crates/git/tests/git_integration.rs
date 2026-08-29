@@ -127,7 +127,7 @@ fn status_reports_renames_ignored_paths_and_preserves_non_utf8() {
     command(&fixture.repository, ["add", ".gitignore"]);
     command(&fixture.repository, ["commit", "-m", "ignore noise"]);
     command(&fixture.repository, ["mv", "tracked.txt", "renamed.txt"]);
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
         use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;
@@ -155,7 +155,7 @@ fn status_reports_renames_ignored_paths_and_preserves_non_utf8() {
     );
     assert_eq!(status.counts.renamed, 1);
     assert!(status.counts.ignored >= 1);
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
         use std::os::unix::ffi::OsStrExt;
         assert!(status.files.iter().any(|file| {
