@@ -154,6 +154,10 @@ pub enum GitChangeKind {
     Deleted,
     /// A path is not tracked by Git.
     Untracked,
+    /// A tracked path was renamed or copied from another path.
+    Renamed,
+    /// A path matches an ignore rule and is reported when ignored files are listed.
+    Ignored,
 }
 
 /// One changed repository-relative path.
@@ -179,12 +183,18 @@ pub struct GitChangedFile {
 pub struct GitStatusCounts {
     /// Modified tracked paths.
     pub modified: u32,
-    /// Added, copied, or renamed paths.
+    /// Added paths that are not renames.
     pub added: u32,
     /// Deleted tracked paths.
     pub deleted: u32,
     /// Untracked paths.
     pub untracked: u32,
+    /// Renamed or copied paths.
+    #[serde(default)]
+    pub renamed: u32,
+    /// Ignored paths reported by porcelain.
+    #[serde(default)]
+    pub ignored: u32,
 }
 
 /// Structured Git status for a daemon-resolved target.
@@ -217,6 +227,9 @@ pub struct GitDiffResponse {
     pub text: String,
     /// Whether the daemon omitted bytes at its fixed safety limit.
     pub truncated: bool,
+    /// Whether Git reported binary content instead of a textual patch.
+    #[serde(default)]
+    pub binary: bool,
 }
 
 /// Safe reason a worktree cannot currently be removed.

@@ -503,6 +503,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "cli-master-core",
+ "cli-master-git",
  "cli-master-storage",
  "futures-util",
  "rustix",
