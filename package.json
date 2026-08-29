@@ -7,6 +7,9 @@
     "build": "pnpm --filter @cli-master/desktop build",
     "check": "pnpm --filter @cli-master/desktop check && cargo check --workspace",
     "check:versions": "bash scripts/check-versions.sh",
+    "sidecar:stage": "bash scripts/stage-sidecar.sh",
+    "tauri:build": "bash scripts/stage-sidecar.sh && pnpm tauri build",
+    "package": "bash scripts/package.sh",
     "dev": "pnpm --filter @cli-master/desktop dev",
     "tauri": "pnpm --filter @cli-master/desktop tauri",
     "test": "pnpm --filter @cli-master/desktop test && cargo test --workspace"

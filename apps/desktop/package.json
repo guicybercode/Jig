@@ -9,6 +9,7 @@
     "check": "tsc --noEmit && vitest run && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "tauri:build": "bash ../../scripts/stage-sidecar.sh && tauri build",
     "test": "vitest run",
     "test:watch": "vitest"
   },
