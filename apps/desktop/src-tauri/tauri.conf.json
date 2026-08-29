@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "CLI Master",
+  "productName": "Jig",
   "version": "0.1.0",
   "identifier": "com.guicybercode.climaster",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "CLI Master",
+        "title": "Jig",
         "width": 1280,
         "height": 800,
         "minWidth": 960,
@@ -28,8 +28,8 @@
     "active": true,
     "targets": ["app", "dmg", "appimage"],
     "category": "DeveloperTool",
-    "shortDescription": "Local control center for CLI coding agents",
-    "longDescription": "CLI Master coordinates locally installed coding-agent CLIs in Git-aware terminal sessions. It does not proxy agent traffic through a cloud service.",
+    "shortDescription": "Terminals on a canvas for coding agents",
+    "longDescription": "Jig hosts coding-agent CLIs in real terminals with projects and Git worktrees. A local-first desktop app that coordinates Codex, Claude Code, Gemini CLI, OpenCode, and custom executables.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
