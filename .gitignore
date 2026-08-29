@@ -15,3 +15,7 @@ target/
 *.db-shm
 *.db-wal
 diagnostics/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/

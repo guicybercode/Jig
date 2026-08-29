@@ -20,6 +20,8 @@ It does not proxy vendor traffic. Windows is out of scope for Beta v0.1.
 | Git argv and worktree safety | `crates/git` |
 | PTY, process groups, `SessionManager` | `crates/session` |
 | Unix socket, composition, recovery | `crates/daemon` |
+| Deterministic coding-agent stand-in | `crates/fake-agent` |
+| Beta runtime acceptance | `crates/e2e` |
 | Tauri window, dialogs, event relay | `apps/desktop/src-tauri` |
 | React views and typed IPC client | `apps/desktop/src` |
 | Authoritative Beta wire contract | `crates/core/src/wire` |

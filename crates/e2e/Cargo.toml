@@ -1,0 +1,25 @@
+[package]
+name = "cli-master-e2e"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Beta acceptance tests that drive production crates without weakening them"
+publish = false
+
+[lib]
+name = "cli_master_e2e"
+path = "src/lib.rs"
+
+[dependencies]
+cli-master-core = { path = "../core" }
+cli-master-daemon = { path = "../daemon" }
+cli-master-fake-agent = { path = "../fake-agent" }
+cli-master-git = { path = "../git" }
+cli-master-session = { path = "../session" }
+cli-master-storage = { path = "../storage" }
+rustix = { version = "1.1.4", features = ["process"] }
+tempfile = "3.23.0"
+tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[lints]
+workspace = true
