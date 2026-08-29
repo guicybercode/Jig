@@ -2,7 +2,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentId, AgentSource, DaemonInstanceId, Project, Session, Worktree, WorktreeId};
+use crate::{
+    AgentId, AgentSource, DaemonInstanceId, Project, Session, Worktree, WorktreeId,
+    redact_json_value,
+};
 
 use super::{AgentCommand, ConfirmationToken, DisplayName};
 
@@ -313,6 +316,47 @@ pub struct DiagnosticsResponse {
     pub effective_path: Vec<PathBuf>,
     /// Recent safe startup or lifecycle issue summaries.
     pub recent_issues: Vec<DiagnosticIssue>,
+    /// Backend-generated, recursively redacted JSON safe for clipboard export.
+    pub export_text: String,
+}
+
+impl DiagnosticsResponse {
+    /// Rebuilds the clipboard export from typed fields after backend path
+    /// sanitization. Environment maps and terminal output are not represented
+    /// by this DTO and therefore cannot enter the export.
+    pub fn refresh_export_text(&mut self) {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct ExportView<'a> {
+            daemon_version: &'a str,
+            protocol_version: u16,
+            schema_version: u32,
+            daemon_instance_id: DaemonInstanceId,
+            data_path: &'a PathBuf,
+            runtime_path: &'a PathBuf,
+            log_path: &'a PathBuf,
+            effective_path: &'a [PathBuf],
+            recent_issues: &'a [DiagnosticIssue],
+        }
+
+        let view = ExportView {
+            daemon_version: &self.daemon_version,
+            protocol_version: self.protocol_version,
+            schema_version: self.schema_version,
+            daemon_instance_id: self.daemon_instance_id,
+            data_path: &self.data_path,
+            runtime_path: &self.runtime_path,
+            log_path: &self.log_path,
+            effective_path: &self.effective_path,
+            recent_issues: &self.recent_issues,
+        };
+        self.export_text = serde_json::to_value(view)
+            .map(|value| redact_json_value("diagnostics", value))
+            .and_then(|value| serde_json::to_string_pretty(&value))
+            .unwrap_or_else(|_| {
+                "{\n  \"error\": \"diagnostics serialization failed\"\n}".to_owned()
+            });
+    }
 }
 
 #[cfg(test)]
@@ -432,5 +476,37 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn diagnostics_export_redacts_all_untrusted_strings() {
+        let mut diagnostics = DiagnosticsResponse {
+            daemon_version: "0.1.0 TOKEN=version-secret".to_owned(),
+            protocol_version: 1,
+            schema_version: 3,
+            daemon_instance_id: DaemonInstanceId::new(),
+            data_path: PathBuf::from("~/.local/share/cli-master"),
+            runtime_path: PathBuf::from("/tmp/cli-master"),
+            log_path: PathBuf::from("~/.local/share/cli-master/logs"),
+            effective_path: vec![PathBuf::from("~/.local/bin")],
+            recent_issues: vec![DiagnosticIssue {
+                code: "probe_failed".to_owned(),
+                message: "Authorization: Basic issue-secret".to_owned(),
+                action: Some("Retry without PASSWORD=action-secret".to_owned()),
+            }],
+            export_text: String::new(),
+        };
+
+        diagnostics.refresh_export_text();
+
+        for secret in ["version-secret", "issue-secret", "action-secret"] {
+            assert!(
+                !diagnostics.export_text.contains(secret),
+                "leaked {secret}: {}",
+                diagnostics.export_text
+            );
+        }
+        assert!(diagnostics.export_text.contains("[redacted]"));
+        assert!(!diagnostics.export_text.contains("exportText"));
     }
 }

@@ -10,6 +10,7 @@ mod error;
 mod ids;
 mod model;
 mod protocol;
+mod redact;
 pub mod wire;
 
 pub use command::{CommandSpec, CommandSpecError, MAX_STARTUP_INPUT_BYTES};
@@ -20,4 +21,7 @@ pub use model::{
 };
 pub use protocol::{
     EnvelopeKind, EventEnvelope, PROTOCOL_V1, RequestEnvelope, ResponseEnvelope, ResponsePayload,
+};
+pub use redact::{
+    REDACTED, is_sensitive_name, redact_json_value, redact_map, redact_text, redact_value,
 };
