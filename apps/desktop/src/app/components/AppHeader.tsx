@@ -1,7 +1,17 @@
 import { Icon } from "./Icon";
+import {
+  useDaemonReady,
+  useSelectedProject,
+  useWorkspaceActions,
+} from "../workspace";
 
 /** Renders global product identity and session actions. */
 export function AppHeader() {
+  const ready = useDaemonReady();
+  const project = useSelectedProject();
+  const actions = useWorkspaceActions();
+  const canCreate = ready && project !== null;
+
   return (
     <header className="app-header">
       <div className="app-header__brand" aria-label="CLI Master">
@@ -18,8 +28,9 @@ export function AppHeader() {
         <button
           className="button button--primary"
           type="button"
-          disabled
+          disabled={!canCreate}
           aria-describedby="new-session-requirement"
+          onClick={() => actions.openDialog("newSession")}
         >
           <Icon name="plus" />
           <span>New Session</span>

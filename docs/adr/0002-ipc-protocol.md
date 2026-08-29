@@ -31,9 +31,10 @@ recognize. Payload structs reject unknown fields where accepting them would
 hide client/server drift.
 
 Filesystem paths, session cwd, branch names, and destructive bypass flags are
-not generic client inputs. Git inspection targets registered project/session
-IDs. Worktree deletion requires `worktree.prepare_remove` followed by
-`worktree.remove` with a short-lived state-bound token.
+not generic client inputs. Git inspection targets registered project, session,
+or worktree IDs; `git.diff` accepts only an optional validated
+repository-relative path. Worktree deletion requires `worktree.prepare_remove`
+followed by `worktree.remove` with a short-lived state-bound token.
 
 Terminal input/output uses canonical padded base64 with explicit decoded-size
 limits. Subscriptions carry an output cursor and events make replay completion

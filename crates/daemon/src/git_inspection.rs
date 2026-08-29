@@ -1,7 +1,6 @@
 //! Git inspection handlers for registered daemon targets.
 
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 use cli_master_core::ApiError;
 use cli_master_core::wire::{
@@ -27,7 +26,7 @@ pub(crate) fn discover_git() -> Option<Git> {
 }
 
 pub(crate) async fn status(
-    storage: &Mutex<Storage>,
+    storage: &Storage,
     git: Option<&Git>,
     request: GitStatusRequest,
 ) -> Result<GitStatusResponse, ApiError> {
@@ -38,7 +37,7 @@ pub(crate) async fn status(
 }
 
 pub(crate) async fn diff(
-    storage: &Mutex<Storage>,
+    storage: &Storage,
     git: Option<&Git>,
     request: GitDiffRequest,
 ) -> Result<GitDiffResponse, ApiError> {
@@ -53,10 +52,7 @@ pub(crate) async fn diff(
     Ok(wire_diff(diff))
 }
 
-fn resolve_target(storage: &Mutex<Storage>, target: GitTarget) -> Result<PathBuf, ApiError> {
-    let storage = storage
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+fn resolve_target(storage: &Storage, target: GitTarget) -> Result<PathBuf, ApiError> {
     let path = match target {
         GitTarget::Project { project_id } => storage
             .get_project(project_id)

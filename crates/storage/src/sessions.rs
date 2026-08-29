@@ -3,7 +3,7 @@
 use std::str::FromStr;
 
 use cli_master_core::{AgentId, ProjectId, SessionId};
-use rusqlite::{Row, params};
+use rusqlite::{Connection, Row, params};
 
 use crate::Storage;
 use crate::error::{StorageError, corrupt_data, map_write_error, persisted_validation};
@@ -27,33 +27,35 @@ impl Storage {
     pub fn insert_session(&self, session: &StoredSession) -> Result<(), StorageError> {
         session.validate()?;
         let cwd = path_to_sql_value(&session.cwd, "session cwd")?;
-        self.connection
-            .execute(
-                "INSERT INTO sessions (
+        self.with_connection("insert session", |connection| {
+            connection
+                .execute(
+                    "INSERT INTO sessions (
                     id, project_id, agent_id, name, cwd, status, runtime_pid,
                     daemon_instance_id, exit_code, error_code, created_at,
                     updated_at, last_activity_at
                  ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13
                  )",
-                params![
-                    session.id.to_string(),
-                    session.project_id.to_string(),
-                    session.agent_id.to_string(),
-                    session.name,
-                    cwd,
-                    session_status_to_database(session.status),
-                    session.runtime_pid.map(i64::from),
-                    session.daemon_instance_id,
-                    session.exit_code,
-                    session.error_code,
-                    session.created_at_ms,
-                    session.updated_at_ms,
-                    session.last_activity_at_ms,
-                ],
-            )
-            .map_err(|error| map_write_error(error, "session"))?;
-        Ok(())
+                    params![
+                        session.id.to_string(),
+                        session.project_id.to_string(),
+                        session.agent_id.to_string(),
+                        session.name,
+                        cwd,
+                        session_status_to_database(session.status),
+                        session.runtime_pid.map(i64::from),
+                        session.daemon_instance_id,
+                        session.exit_code,
+                        session.error_code,
+                        session.created_at_ms,
+                        session.updated_at_ms,
+                        session.last_activity_at_ms,
+                    ],
+                )
+                .map_err(|error| map_write_error(error, "session"))?;
+            Ok(())
+        })
     }
 
     /// Lists all sessions, most recently updated first.
@@ -62,13 +64,7 @@ impl Storage {
     ///
     /// Returns an error if rows cannot be loaded or decoded.
     pub fn list_sessions(&self) -> Result<Vec<StoredSession>, StorageError> {
-        let sql = format!(
-            "SELECT {SESSION_COLUMNS} FROM sessions
-             ORDER BY CAST(updated_at AS INTEGER) DESC, id"
-        );
-        let mut statement = self.connection.prepare(&sql)?;
-        let mut rows = statement.query([])?;
-        collect_sessions(&mut rows)
+        self.with_connection("list sessions", list_sessions_from_connection)
     }
 
     /// Lists sessions owned by one project, most recently updated first.
@@ -80,13 +76,15 @@ impl Storage {
         &self,
         project_id: ProjectId,
     ) -> Result<Vec<StoredSession>, StorageError> {
-        let sql = format!(
-            "SELECT {SESSION_COLUMNS} FROM sessions WHERE project_id = ?1
-             ORDER BY CAST(updated_at AS INTEGER) DESC, id"
-        );
-        let mut statement = self.connection.prepare(&sql)?;
-        let mut rows = statement.query([project_id.to_string()])?;
-        collect_sessions(&mut rows)
+        self.with_connection("list project sessions", |connection| {
+            let sql = format!(
+                "SELECT {SESSION_COLUMNS} FROM sessions WHERE project_id = ?1
+                 ORDER BY CAST(updated_at AS INTEGER) DESC, id"
+            );
+            let mut statement = connection.prepare(&sql)?;
+            let mut rows = statement.query([project_id.to_string()])?;
+            collect_sessions(&mut rows)
+        })
     }
 
     /// Loads one session by ID.
@@ -95,10 +93,12 @@ impl Storage {
     ///
     /// Returns an error if the row cannot be loaded or decoded.
     pub fn get_session(&self, id: SessionId) -> Result<Option<StoredSession>, StorageError> {
-        let sql = format!("SELECT {SESSION_COLUMNS} FROM sessions WHERE id = ?1");
-        let mut statement = self.connection.prepare(&sql)?;
-        let mut rows = statement.query([id.to_string()])?;
-        rows.next()?.map(decode_session).transpose()
+        self.with_connection("get session", |connection| {
+            let sql = format!("SELECT {SESSION_COLUMNS} FROM sessions WHERE id = ?1");
+            let mut statement = connection.prepare(&sql)?;
+            let mut rows = statement.query([id.to_string()])?;
+            rows.next()?.map(decode_session).transpose()
+        })
     }
 
     /// Renames a session and updates its metadata timestamp atomically.
@@ -114,11 +114,13 @@ impl Storage {
     ) -> Result<(), StorageError> {
         validate_display_name("session name", name)?;
         validate_timestamp("session updated_at_ms", updated_at_ms)?;
-        let changed = self.connection.execute(
-            "UPDATE sessions SET name = ?1, updated_at = ?2 WHERE id = ?3",
-            params![name, updated_at_ms, id.to_string()],
-        )?;
-        require_changed(changed, id)
+        self.with_connection("rename session", |connection| {
+            let changed = connection.execute(
+                "UPDATE sessions SET name = ?1, updated_at = ?2 WHERE id = ?3",
+                params![name, updated_at_ms, id.to_string()],
+            )?;
+            require_changed(changed, id)
+        })
     }
 
     /// Replaces daemon-owned runtime fields in one atomic statement.
@@ -133,24 +135,26 @@ impl Storage {
         update: &SessionRuntimeUpdate,
     ) -> Result<(), StorageError> {
         update.validate()?;
-        let changed = self.connection.execute(
-            "UPDATE sessions
-             SET status = ?1, runtime_pid = ?2, daemon_instance_id = ?3,
-                 exit_code = ?4, error_code = ?5, updated_at = ?6,
-                 last_activity_at = ?7
-             WHERE id = ?8",
-            params![
-                session_status_to_database(update.status),
-                update.runtime_pid.map(i64::from),
-                update.daemon_instance_id,
-                update.exit_code,
-                update.error_code,
-                update.updated_at_ms,
-                update.last_activity_at_ms,
-                id.to_string(),
-            ],
-        )?;
-        require_changed(changed, id)
+        self.with_connection("update session runtime", |connection| {
+            let changed = connection.execute(
+                "UPDATE sessions
+                 SET status = ?1, runtime_pid = ?2, daemon_instance_id = ?3,
+                     exit_code = ?4, error_code = ?5, updated_at = ?6,
+                     last_activity_at = ?7
+                 WHERE id = ?8",
+                params![
+                    session_status_to_database(update.status),
+                    update.runtime_pid.map(i64::from),
+                    update.daemon_instance_id,
+                    update.exit_code,
+                    update.error_code,
+                    update.updated_at_ms,
+                    update.last_activity_at_ms,
+                    id.to_string(),
+                ],
+            )?;
+            require_changed(changed, id)
+        })
     }
 
     /// Marks live sessions owned by prior daemon instances as unknown.
@@ -170,15 +174,16 @@ impl Storage {
     ) -> Result<usize, StorageError> {
         validate_daemon_instance_id(current_daemon_instance_id)?;
         validate_timestamp("session updated_at_ms", updated_at_ms)?;
-        let changed = self.connection.execute(
-            "UPDATE sessions
-             SET status = 'unknown', runtime_pid = NULL, daemon_instance_id = NULL,
-                 exit_code = NULL, error_code = 'daemon_restarted', updated_at = ?1
-             WHERE status IN ('starting', 'running', 'idle')
-               AND (daemon_instance_id IS NULL OR daemon_instance_id <> ?2)",
-            params![updated_at_ms, current_daemon_instance_id],
-        )?;
-        Ok(changed)
+        self.with_connection("recover stale sessions", |connection| {
+            Ok(connection.execute(
+                "UPDATE sessions
+                 SET status = 'unknown', runtime_pid = NULL, daemon_instance_id = NULL,
+                     exit_code = NULL, error_code = 'daemon_restarted', updated_at = ?1
+                 WHERE status IN ('starting', 'running', 'idle')
+                   AND (daemon_instance_id IS NULL OR daemon_instance_id <> ?2)",
+                params![updated_at_ms, current_daemon_instance_id],
+            )?)
+        })
     }
 
     /// Removes session metadata without terminating a process or deleting files.
@@ -189,11 +194,24 @@ impl Storage {
     ///
     /// Returns an error if the session is missing or deletion fails.
     pub fn remove_session_metadata(&self, id: SessionId) -> Result<(), StorageError> {
-        let changed = self
-            .connection
-            .execute("DELETE FROM sessions WHERE id = ?1", [id.to_string()])?;
-        require_changed(changed, id)
+        self.with_connection("remove session", |connection| {
+            let changed =
+                connection.execute("DELETE FROM sessions WHERE id = ?1", [id.to_string()])?;
+            require_changed(changed, id)
+        })
     }
+}
+
+pub(crate) fn list_sessions_from_connection(
+    connection: &Connection,
+) -> Result<Vec<StoredSession>, StorageError> {
+    let sql = format!(
+        "SELECT {SESSION_COLUMNS} FROM sessions
+         ORDER BY CAST(updated_at AS INTEGER) DESC, id"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let mut rows = statement.query([])?;
+    collect_sessions(&mut rows)
 }
 
 fn collect_sessions(rows: &mut rusqlite::Rows<'_>) -> Result<Vec<StoredSession>, StorageError> {

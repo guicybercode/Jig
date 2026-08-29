@@ -275,7 +275,7 @@ atomic.
 
 - `session.write` accepts bytes, not a command string, and writes them to the
   PTY master. Ctrl+C is ordinary terminal input (`0x03`).
-- Reader tasks batch output for up to 8 ms or 32 KiB, whichever happens first.
+- Reader tasks batch output for up to 8 ms or 8 KiB, whichever happens first.
   Each chunk has a monotonically increasing per-session sequence number.
 - A live session retains a configurable bounded replay buffer (default 8 MiB).
   On subscription the daemon sends a snapshot followed by chunks after the
@@ -446,6 +446,10 @@ Migration `0002` adds the persisted `worktrees.is_dirty` boolean used by the
 public worktree DTO and conservative removal checks. Historical timestamp
 columns keep their original SQLite declarations, but repository adapters read
 and write Unix epoch millisecond values.
+
+Migration `0003` adds optional session branch/worktree association fields,
+integer `started_at`/`exited_at` history, and project, agent, and session lookup
+indexes. These fields do not make a persisted PID or PTY reattachable.
 
 Built-in agent rows are idempotently seeded/upserted at startup. A user can
 disable but not mutate their executable/argument defaults; custom rows are
