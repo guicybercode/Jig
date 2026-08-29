@@ -16,8 +16,8 @@ use cli_master_e2e::{
 use cli_master_fake_agent::{ACK_PREFIX, CWD_PREFIX, INTERRUPT, READY, REDACTED};
 use cli_master_git::Git;
 use cli_master_session::{
-    CreateSession, CreatedSession, SessionLaunchRequest, SessionManager, SessionManagerConfig,
-    SessionWorktreeSaga,
+    CreateSession, CreatedSession, SessionManager, SessionManagerConfig, SessionWorktreeSaga,
+    TerminalSize,
 };
 use cli_master_storage::{Storage, StoredAgent, StoredSession};
 
@@ -30,7 +30,15 @@ async fn adds_a_local_repository_and_runs_two_isolated_sessions() {
     let second = fixture.create_isolated("Hotfix", "cc33dd44");
     wait_live(&fixture.manager, first.session.id).await;
     wait_live(&fixture.manager, second.session.id).await;
-    assert_eq!(fixture.manager.live_count(), 2);
+    assert_eq!(
+        fixture
+            .manager
+            .list()
+            .into_iter()
+            .filter(|session| session.status.is_live())
+            .count(),
+        2
+    );
 
     let first_tree = first.worktree.as_ref().expect("first worktree");
     let second_tree = second.worktree.as_ref().expect("second worktree");
@@ -66,42 +74,36 @@ async fn adds_a_local_repository_and_runs_two_isolated_sessions() {
         &second,
     )
     .await;
-    fixture.manager.shutdown().await;
+    fixture.manager.shutdown().expect("manager shutdown");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fake_agent_exit_codes_are_captured_by_the_session_manager() {
     let cwd = tempfile::TempDir::new().expect("runtime cwd");
-    let manager = SessionManager::new(SessionManagerConfig::for_tests());
-    let project_id = ProjectId::new();
-    let agent_id = AgentId::new();
-    let start = |name: &str| {
-        manager.create(SessionLaunchRequest {
-            project_id,
-            agent_id,
-            name: name.to_owned(),
-            command: fake_agent_command(cwd.path(), &[]),
-            cols: 80,
-            rows: 24,
-        })
+    let manager = SessionManager::new(SessionManagerConfig::default()).expect("test manager");
+    let start = || {
+        manager.spawn(
+            &fake_agent_command(cwd.path(), &[]),
+            TerminalSize::new(24, 80).expect("terminal size"),
+        )
     };
 
-    let zero = start("zero").expect("zero session");
-    let mut subscription = manager.subscribe(zero.id).expect("subscribe");
+    let zero = start().expect("zero session");
+    let mut subscription = manager.reconnect(zero.id, 0).expect("subscribe");
     let mut output = Vec::new();
     wait_for_bytes(&mut subscription, &mut output, READY.as_bytes()).await;
     manager.write(zero.id, b"exit 0\n").expect("exit 0");
     let exited = wait_status(&manager, zero.id, SessionStatus::Exited).await;
     assert_eq!(exited.exit_code, Some(0));
 
-    let failed = start("fail").expect("fail session");
-    let mut subscription = manager.subscribe(failed.id).expect("subscribe");
+    let failed = start().expect("fail session");
+    let mut subscription = manager.reconnect(failed.id, 0).expect("subscribe");
     let mut output = Vec::new();
     wait_for_bytes(&mut subscription, &mut output, READY.as_bytes()).await;
     manager.write(failed.id, b"fail\n").expect("fail command");
     let failed = wait_status(&manager, failed.id, SessionStatus::Failed).await;
     assert_eq!(failed.exit_code, Some(17));
-    manager.shutdown().await;
+    manager.shutdown().expect("manager shutdown");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -111,11 +113,7 @@ async fn dirty_worktree_never_receives_a_removal_token() {
     let session_id = created.session.id;
     let worktree = created.worktree.expect("managed worktree");
     wait_live(&fixture.manager, session_id).await;
-    fixture
-        .manager
-        .stop(session_id)
-        .await
-        .expect("stop session");
+    fixture.manager.stop(session_id).expect("stop session");
     let exited = wait_status(&fixture.manager, session_id, SessionStatus::Exited).await;
     fixture
         .saga
@@ -147,7 +145,7 @@ async fn dirty_worktree_never_receives_a_removal_token() {
         }
     }
     assert!(worktree.path.exists());
-    fixture.manager.shutdown().await;
+    fixture.manager.shutdown().expect("manager shutdown");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -242,7 +240,7 @@ impl AcceptanceFixture {
         let git = Git::discover().expect("Git should be on PATH");
         let storage = Storage::open_migrated(&repo.database).expect("database should migrate");
         let (project, agent) = register_local_repository(&storage, &git, &repo, now_ms());
-        let manager = SessionManager::new(SessionManagerConfig::for_tests());
+        let manager = SessionManager::new(SessionManagerConfig::default()).expect("test manager");
         let saga = SessionWorktreeSaga::new(git, storage, manager.clone(), DAEMON_ID)
             .expect("session saga should construct");
         Self {
@@ -333,10 +331,10 @@ async fn drive_grid_and_reconnect(
     let first_tree = first.worktree.as_ref().expect("first worktree");
     let second_tree = second.worktree.as_ref().expect("second worktree");
     let mut first_subscription = manager
-        .subscribe(first.session.id)
+        .reconnect(first.session.id, 0)
         .expect("first tile should subscribe");
     let mut second_subscription = manager
-        .subscribe(second.session.id)
+        .reconnect(second.session.id, 0)
         .expect("second tile should subscribe");
     let mut first_output = Vec::new();
     let mut second_output = Vec::new();
@@ -418,7 +416,9 @@ async fn interact_with_both_tiles(
 
     manager.write(first_id, b"dump-env\n").expect("env probe");
     wait_for_bytes(first_subscription, first_output, REDACTED.as_bytes()).await;
-    manager.resize(first_id, 40, 12).expect("first tile resize");
+    manager
+        .resize(first_id, TerminalSize::new(12, 40).expect("terminal size"))
+        .expect("first tile resize");
     manager.write(first_id, b"size\n").expect("size probe");
     wait_for_bytes(first_subscription, first_output, b"cols=40 rows=12").await;
     manager
@@ -440,10 +440,10 @@ async fn stop_one_tile_and_reopen(
     mut second_subscription: cli_master_session::SessionSubscription,
     mut second_output: Vec<u8>,
 ) {
-    manager.stop(first_id).await.expect("stop first tile");
+    manager.stop(first_id).expect("stop first tile");
     wait_status(manager, first_id, SessionStatus::Exited).await;
     let second_after_stop = manager
-        .get(second_id)
+        .snapshot(second_id)
         .expect("second session should remain");
     assert!(second_after_stop.status.is_live());
     manager
@@ -460,14 +460,21 @@ async fn stop_one_tile_and_reopen(
     drop(second_subscription);
     assert!(
         manager
-            .get(second_id)
+            .snapshot(second_id)
             .expect("surviving session")
             .status
             .is_live()
     );
 
-    let reopened = manager.subscribe(second_id).expect("reopen subscription");
-    let replay = reopened.snapshot.concatenated();
+    let reopened = manager
+        .reconnect(second_id, 0)
+        .expect("reopen subscription");
+    let replay = reopened
+        .snapshot
+        .output
+        .iter()
+        .flat_map(|chunk| chunk.bytes.iter().copied())
+        .collect::<Vec<_>>();
     assert!(contains(
         &replay,
         format!("{ACK_PREFIX}hotfix-ping").as_bytes()
