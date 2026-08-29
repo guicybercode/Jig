@@ -61,7 +61,10 @@ feature in one commit.
 
 Tests must be headless, deterministic, and independent. Use temporary
 directories and databases for filesystem, Git, and SQLite integration tests.
-Use short-lived real child programs for PTY lifecycle tests.
+Use short-lived real child programs for PTY lifecycle tests. Beta acceptance
+that needs an interactive agent should launch `cli-master-fake-agent` through
+`CommandSpec`, never `sh -c`. Wait on readiness lines, session status, Git
+errors, or SQLite rows. Do not add `sleep(3)` calls to hide races.
 
 Frontend tests should query semantic roles and labels. Mock the project-owned
 backend client rather than scattering Tauri mocks through components. Do not

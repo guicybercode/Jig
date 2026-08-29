@@ -106,11 +106,14 @@ pnpm check
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+pnpm --filter @cli-master/desktop test:e2e
 ```
 
 `pnpm check` type-checks and builds the frontend, then checks every Rust crate.
-Platform-specific PTY and packaging tests run in their Linux and macOS CI jobs
-as those subsystems land.
+Runtime acceptance for two live sessions, worktree isolation, UI close/reopen,
+and daemon recovery lives in `crates/e2e`. Playwright covers the empty desktop
+shell; see [docs/playwright-testing.md](docs/playwright-testing.md).
+Platform-specific PTY tests run in the Linux and macOS CI jobs.
 
 ## Build packages
 
@@ -125,12 +128,16 @@ local development build.
 ## Repository layout
 
 ```text
-apps/desktop/                  React, TypeScript, Vite, and Tauri bridge
-crates/                        Rust domain, storage, Git, PTY, and daemon crates
+apps/desktop/                  React, TypeScript, Vite, Tauri bridge, Playwright
+crates/                        Rust domain, storage, Git, PTY, daemon, e2e
+crates/fake-agent              Interactive coding-agent stand-in for Beta tests
+crates/e2e                     Acceptance tests against production crates
 design-system/cli-master/      UI tokens and interaction rules
 ARCHITECTURE.md                accepted architecture and protocol design
 AGENTS.md                      crate ownership and IPC rules for agents
 protocol/catalog.json          frozen v1 method and event names
+docs/playwright-testing.md     UI E2E scope and skipped Tauri grid tests
+docs/test-coverage-review.md   Beta criteria mapped onto real tests
 ```
 
 ## Safety principles

@@ -16,3 +16,7 @@ target/
 *.db-wal
 # Exported support bundles at the repository root, not source folders.
 /diagnostics/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
