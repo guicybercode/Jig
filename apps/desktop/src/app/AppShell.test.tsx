@@ -22,6 +22,26 @@ import {
 const TEST_TIME = 1_725_000_000_000;
 
 describe("AppShell project and session workflows", () => {
+  it("keeps settings inside the minimal canvas shell", async () => {
+    const client = createMockIpcClient({ bootstrap: EMPTY_BOOTSTRAP });
+    const user = await renderApp(client);
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+
+    const shell = document.querySelector(".app-shell");
+    expect(shell).toHaveClass("app-shell--canvas");
+    expect(screen.getByRole("heading", { name: "Settings", level: 1 })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Settings" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(document.querySelector(".project-rail")).not.toBeInTheDocument();
+    expect(document.querySelector(".session-pane")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Back to canvas" }));
+    expect(screen.getByRole("main")).toHaveClass("canvas-workspace");
+  });
+
   it("hides and restores the canvas workspace sidebar", async () => {
     localStorage.removeItem("cli-master.canvas.sidebar-collapsed");
     const client = createMockIpcClient({ bootstrap: EMPTY_BOOTSTRAP });

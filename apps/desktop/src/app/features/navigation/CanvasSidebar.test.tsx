@@ -66,19 +66,37 @@ describe("CanvasSidebar", () => {
 
     expect(onHide).toHaveBeenCalledOnce();
   });
+
+  it("returns to the canvas from the settings view", async () => {
+    const user = userEvent.setup();
+    const onOpenCanvas = vi.fn();
+    renderSidebar([], vi.fn(), vi.fn(), "settings", onOpenCanvas);
+
+    expect(screen.getByRole("button", { name: "Settings" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    await user.click(screen.getByRole("button", { name: /My Workspace/ }));
+
+    expect(onOpenCanvas).toHaveBeenCalledOnce();
+  });
 });
 
 function renderSidebar(
   projects: readonly Project[],
   onSelectProject = vi.fn(),
   onHide = vi.fn(),
+  activeView: "canvas" | "settings" = "canvas",
+  onOpenCanvas = vi.fn(),
 ) {
   return render(
     <CanvasSidebar
       projects={projects}
       sessions={[]}
+      activeView={activeView}
       canManageProjects
       onSelectProject={onSelectProject}
+      onOpenCanvas={onOpenCanvas}
       onHide={onHide}
       onAddProject={vi.fn()}
       onOpenSettings={vi.fn()}

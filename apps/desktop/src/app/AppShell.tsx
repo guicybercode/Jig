@@ -41,6 +41,8 @@ export function AppShell() {
   const selectedAgent = workspace.agents.find(
     (agent) => agent.id === workspace.selectedSession?.agentId,
   );
+  const usesCanvasShell =
+    workspace.view === "canvas" || workspace.view === "settings";
 
   const openAddProject = useCallback(() => {
     if (workspace.isConnected) {
@@ -73,6 +75,7 @@ export function AppShell() {
   const selectCanvasProject = useCallback(
     (projectId: string) => {
       workspace.selectProject(projectId);
+      workspace.setView("canvas");
       setNavigationOpen(false);
     },
     [workspace],
@@ -310,7 +313,7 @@ export function AppShell() {
   return (
     <div
       className={
-        workspace.view === "canvas"
+        usesCanvasShell
           ? `app-shell app-shell--canvas${
               canvasSidebarCollapsed
                 ? " app-shell--canvas-sidebar-collapsed"
@@ -357,12 +360,12 @@ export function AppShell() {
           className="navigation-pane"
           data-open={navigationOpen ? "true" : "false"}
           aria-hidden={
-            workspace.view === "canvas" && canvasSidebarCollapsed
+            usesCanvasShell && canvasSidebarCollapsed
               ? true
               : undefined
           }
           inert={
-            workspace.view === "canvas" && canvasSidebarCollapsed
+            usesCanvasShell && canvasSidebarCollapsed
               ? true
               : undefined
           }
@@ -373,13 +376,18 @@ export function AppShell() {
               <Icon name="close" />
             </button>
           </div>
-          {workspace.view === "canvas" ? (
+          {usesCanvasShell ? (
             <CanvasSidebar
               projects={workspace.projects}
               sessions={workspace.sessions}
               selectedProjectId={workspace.selectedProjectId ?? undefined}
+              activeView={workspace.view === "settings" ? "settings" : "canvas"}
               canManageProjects={workspace.isConnected}
               onSelectProject={selectCanvasProject}
+              onOpenCanvas={() => {
+                workspace.setView("canvas");
+                setNavigationOpen(false);
+              }}
               onHide={() => setCanvasSidebarCollapsed(true)}
               onAddProject={openAddProject}
               onOpenSettings={() => {
@@ -424,7 +432,7 @@ export function AppShell() {
             </>
           )}
         </div>
-        {workspace.view === "canvas" && canvasSidebarCollapsed ? (
+        {usesCanvasShell && canvasSidebarCollapsed ? (
           <button
             className="canvas-sidebar-reveal"
             type="button"
@@ -452,6 +460,7 @@ export function AppShell() {
           onRetry={workspace.retry}
           onAddProject={openAddProject}
           onNewSession={openNewSession}
+          onOpenCanvas={() => workspace.setView("canvas")}
           onSelectProject={selectProject}
           onSelectSession={selectSession}
           onStartSession={(sessionId) => workspace.startSession({ sessionId })}

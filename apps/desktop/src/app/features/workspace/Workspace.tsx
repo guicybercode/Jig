@@ -33,6 +33,7 @@ interface WorkspaceProps {
   readonly onRetry: () => void;
   readonly onAddProject: () => void;
   readonly onNewSession: () => void;
+  readonly onOpenCanvas: () => void;
   readonly onSelectProject: (projectId: string) => void;
   readonly onSelectSession: (sessionId: string) => void;
   readonly onStartSession: (sessionId: string) => Promise<Session>;
@@ -58,7 +59,7 @@ export function Workspace(props: WorkspaceProps) {
     return <ConnectionWorkspace error={props.connectionError} onRetry={props.onRetry} />;
   }
   if (props.view === "settings") {
-    return <SettingsWorkspace platform={props.platform} />;
+    return <SettingsWorkspace platform={props.platform} onOpenCanvas={props.onOpenCanvas} />;
   }
   if (props.view === "diagnostics") {
     return (
@@ -225,14 +226,62 @@ function GridWorkspace({ project, sessions, onSelectSession }: { readonly projec
   );
 }
 
-function SettingsWorkspace({ platform }: { readonly platform: AppPlatform }) {
+function SettingsWorkspace({
+  platform,
+  onOpenCanvas,
+}: {
+  readonly platform: AppPlatform;
+  readonly onOpenCanvas: () => void;
+}) {
   const modifier = platform === "macos" ? "Command" : "Control";
   return (
-    <main id="workspace" className="workspace workspace--document" tabIndex={-1}>
-      <header className="workspace-header"><div><p className="workspace-header__eyebrow">Application</p><h1>Settings</h1></div></header>
-      <div className="document-view">
-        <section className="document-section"><h2>Keyboard</h2><dl className="shortcut-list"><div><dt>Command palette</dt><dd><kbd>{modifier} K</kbd></dd></div><div><dt>New session</dt><dd><kbd>{modifier} T</kbd></dd></div><div><dt>Session grid</dt><dd><kbd>{modifier} Shift G</kbd></dd></div><div><dt>Focus session</dt><dd><kbd>{modifier} 1–9</kbd></dd></div></dl><p className="document-note">Application shortcuts are not captured while a terminal owns focus.</p></section>
-        <section className="document-section"><h2>Local-first behavior</h2><p>Projects, sessions, agents, and settings are managed by the local daemon. Terminal output is not persisted in application metadata or sent to React state.</p></section>
+    <main id="workspace" className="canvas-settings" tabIndex={-1}>
+      <div className="canvas-settings__content">
+        <button className="canvas-settings__back" type="button" onClick={onOpenCanvas}>
+          <Icon name="chevronRight" /> Back to canvas
+        </button>
+
+        <header className="canvas-settings__header">
+          <p>Workspace</p>
+          <h1>Settings</h1>
+          <span>Simple preferences and shortcuts for your local workspace.</span>
+        </header>
+
+        <div className="canvas-settings__grid">
+          <section className="canvas-settings__section" aria-labelledby="settings-interface-title">
+            <div className="canvas-settings__section-heading">
+              <span aria-hidden="true"><Icon name="map" /></span>
+              <div><h2 id="settings-interface-title">Interface</h2><p>How your workspace is presented.</p></div>
+            </div>
+            <dl className="canvas-settings__rows">
+              <div><dt>Default workspace</dt><dd>Spatial canvas</dd></div>
+              <div><dt>Navigation</dt><dd>Collapsible sidebar</dd></div>
+              <div><dt>Canvas position</dt><dd>Saved automatically</dd></div>
+            </dl>
+          </section>
+
+          <section className="canvas-settings__section" aria-labelledby="settings-local-title">
+            <div className="canvas-settings__section-heading">
+              <span aria-hidden="true"><Icon name="repository" /></span>
+              <div><h2 id="settings-local-title">Local data</h2><p>Your project stays on this computer.</p></div>
+            </div>
+            <p className="canvas-settings__copy">CLI Master stores project references, sessions, and canvas layouts locally. Terminal output is not copied into application metadata.</p>
+          </section>
+
+          <section className="canvas-settings__section canvas-settings__section--wide" aria-labelledby="settings-keyboard-title">
+            <div className="canvas-settings__section-heading">
+              <span aria-hidden="true"><Icon name="terminal" /></span>
+              <div><h2 id="settings-keyboard-title">Keyboard</h2><p>Move quickly without leaving the canvas.</p></div>
+            </div>
+            <dl className="canvas-settings__shortcuts">
+              <div><dt>Command palette</dt><dd><kbd>{modifier}</kbd><kbd>K</kbd></dd></div>
+              <div><dt>New session</dt><dd><kbd>{modifier}</kbd><kbd>T</kbd></dd></div>
+              <div><dt>Session grid</dt><dd><kbd>{modifier}</kbd><kbd>Shift</kbd><kbd>G</kbd></dd></div>
+              <div><dt>Focus session</dt><dd><kbd>{modifier}</kbd><kbd>1–9</kbd></dd></div>
+            </dl>
+            <p className="canvas-settings__note">Application shortcuts pause while a terminal owns keyboard focus.</p>
+          </section>
+        </div>
       </div>
     </main>
   );

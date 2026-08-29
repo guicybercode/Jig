@@ -13,8 +13,10 @@ interface CanvasSidebarProps {
   readonly projects: readonly Project[];
   readonly sessions: readonly Session[];
   readonly selectedProjectId?: string;
+  readonly activeView: "canvas" | "settings";
   readonly canManageProjects: boolean;
   readonly onSelectProject: (projectId: string) => void;
+  readonly onOpenCanvas: () => void;
   readonly onHide: () => void;
   readonly onAddProject: () => void;
   readonly onOpenSettings: () => void;
@@ -26,8 +28,10 @@ export function CanvasSidebar({
   projects,
   sessions,
   selectedProjectId,
+  activeView,
   canManageProjects,
   onSelectProject,
+  onOpenCanvas,
   onHide,
   onAddProject,
   onOpenSettings,
@@ -99,13 +103,18 @@ export function CanvasSidebar({
       <nav aria-label="Workspaces">
         <h2>Workspaces</h2>
         {projects.length === 0 ? (
-          <div className="canvas-sidebar__workspace is-selected">
+          <button
+            className="canvas-sidebar__workspace"
+            type="button"
+            aria-current={activeView === "canvas" ? "page" : undefined}
+            onClick={onOpenCanvas}
+          >
             <Icon name="monitor" />
             <span>My Workspace</span>
             <small aria-label={`${canvasTerminalCount} canvas terminals`}>
               <Icon name="terminal" /> {canvasTerminalCount}
             </small>
-          </div>
+          </button>
         ) : visibleProjects.length > 0 ? (
           <ul>
             {visibleProjects.map((project) => {
@@ -119,7 +128,9 @@ export function CanvasSidebar({
                   <button
                     type="button"
                     aria-current={
-                      project.id === selectedProjectId ? "page" : undefined
+                      activeView === "canvas" && project.id === selectedProjectId
+                        ? "page"
+                        : undefined
                     }
                     onClick={() => onSelectProject(project.id)}
                   >
@@ -139,7 +150,11 @@ export function CanvasSidebar({
       </nav>
 
       <footer>
-        <button type="button" onClick={onOpenSettings}>
+        <button
+          type="button"
+          aria-current={activeView === "settings" ? "page" : undefined}
+          onClick={onOpenSettings}
+        >
           <Icon name="settings" />
           <span>Settings</span>
         </button>
