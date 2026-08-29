@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.guicybercode.climaster",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "cargo build -p cli-master-daemon && pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "cargo build -p cli-master-daemon --release && pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
