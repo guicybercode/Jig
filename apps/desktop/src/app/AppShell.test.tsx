@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
@@ -91,6 +91,102 @@ describe("AppShell", () => {
     expect(opener).toHaveFocus();
   });
 
+  it("opens commands from the header and restores focus on Escape", async () => {
+    const user = userEvent.setup();
+    render(<AppShell />);
+
+    const opener = screen.getByRole("button", { name: "Commands" });
+    await user.click(opener);
+
+    const palette = screen.getByRole("dialog", { name: "Command palette" });
+    expect(palette).toBeVisible();
+    expect(
+      screen.getByRole("searchbox", { name: "Search commands" }),
+    ).toHaveFocus();
+    expect(
+      within(palette).getByRole("button", { name: "New Session" }),
+    ).toHaveAccessibleDescription(
+      "Connect the daemon and select a project first.",
+    );
+
+    await user.keyboard("{Escape}");
+    expect(
+      screen.queryByRole("dialog", { name: "Command palette" }),
+    ).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
+  });
+
+  it("opens commands globally while preserving text and xterm input", async () => {
+    const user = userEvent.setup();
+    renderConnectedShell();
+    await screen.findByRole("heading", { name: "Demo", level: 1 });
+
+    await user.keyboard("{Control>}k{/Control}");
+    expect(
+      screen.getByRole("dialog", { name: "Command palette" }),
+    ).toBeVisible();
+    await user.keyboard("{Escape}");
+
+    const commandButton = screen.getByRole("button", { name: "Commands" });
+    commandButton.focus();
+    await user.keyboard("{Meta>}k{/Meta}");
+    expect(
+      screen.getByRole("dialog", { name: "Command palette" }),
+    ).toBeVisible();
+    await user.keyboard("{Escape}");
+
+    const projectPath = screen.getByRole("textbox", {
+      name: "Repository path",
+    });
+    projectPath.focus();
+    await user.keyboard("{Control>}k{/Control}");
+    expect(
+      screen.queryByRole("dialog", { name: "Command palette" }),
+    ).not.toBeInTheDocument();
+    expect(projectPath).toHaveFocus();
+    await user.keyboard("{Meta>}k{/Meta}");
+    expect(
+      screen.queryByRole("dialog", { name: "Command palette" }),
+    ).not.toBeInTheDocument();
+    expect(projectPath).toHaveFocus();
+
+    render(
+      <section data-terminal-root="true">
+        <div
+          className="xterm"
+          role="group"
+          aria-label="Terminal viewport"
+          tabIndex={0}
+        />
+      </section>,
+    );
+    const terminalInput = screen.getByRole("group", {
+      name: "Terminal viewport",
+    });
+    terminalInput.focus();
+    await user.keyboard("{Control>}k{/Control}");
+    expect(
+      screen.queryByRole("dialog", { name: "Command palette" }),
+    ).not.toBeInTheDocument();
+    expect(terminalInput).toHaveFocus();
+  });
+
+  it("routes a palette command through the current workspace actions", async () => {
+    const user = userEvent.setup();
+    renderConnectedShell();
+    await screen.findByRole("heading", { name: "Demo", level: 1 });
+
+    await user.click(screen.getByRole("button", { name: "Commands" }));
+    const palette = screen.getByRole("dialog", { name: "Command palette" });
+    await user.click(within(palette).getByRole("button", { name: "New Session" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "New session" });
+    expect(dialog).toBeVisible();
+    await waitFor(() => {
+      expect(dialog.querySelector("#new-session-dialog-form-name")).toHaveFocus();
+    });
+  });
+
   it("opens the agents catalog from the header", async () => {
     const user = userEvent.setup();
     render(<AppShell />);
@@ -102,5 +198,35 @@ describe("AppShell", () => {
     expect(screen.getByText("Claude Code")).toBeVisible();
     expect(screen.getByText("Gemini CLI")).toBeVisible();
     expect(screen.getByText("OpenCode")).toBeVisible();
+  });
+
+  it("routes the agents command to the catalog's custom-agent flow", async () => {
+    const user = userEvent.setup();
+    render(<AppShell />);
+
+    await user.click(screen.getByRole("button", { name: "Commands" }));
+    const palette = screen.getByRole("dialog", { name: "Command palette" });
+    await user.click(within(palette).getByRole("button", { name: "Open Agents" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Agents", level: 1 })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Codex" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Add custom agent" }));
+    const agentDialog = screen.getByRole("dialog", { name: "Add custom agent" });
+    expect(agentDialog).toBeVisible();
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+
+    const addArgument = within(agentDialog).getByRole("button", {
+      name: "Add argument",
+    });
+    addArgument.focus();
+    await user.keyboard("{Control>}k{/Control}");
+
+    expect(
+      screen.queryByRole("dialog", { name: "Command palette" }),
+    ).not.toBeInTheDocument();
+    expect(agentDialog).toBeVisible();
+    expect(addArgument).toHaveFocus();
   });
 });
