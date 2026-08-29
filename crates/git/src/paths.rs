@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsString,
     fs,
     path::{Component, Path, PathBuf},
 };
@@ -37,18 +38,32 @@ pub(crate) fn existing_real_path(path: &Path) -> Result<PathBuf, GitError> {
     })
 }
 
+/// Resolves the longest existing prefix, then appends missing components.
+///
+/// On macOS `/var` is a symlink to `/private/var`. Canonicalizing only the
+/// final missing leaf would leave `/var/...` compared against `/private/var/...`.
 pub(crate) fn real_or_absolute(path: &Path) -> Result<PathBuf, GitError> {
-    if path.exists() {
-        existing_real_path(path)
-    } else if let Some(parent) = path.parent()
-        && parent.exists()
-    {
-        let file_name = path.file_name().ok_or_else(|| GitError::Internal {
-            message: "path is missing a file name".to_owned(),
-        })?;
-        Ok(existing_real_path(parent)?.join(file_name))
-    } else {
-        normalize_absolute(path)
+    let absolute = normalize_absolute(path)?;
+    let mut existing = absolute.as_path();
+    let mut missing: Vec<OsString> = Vec::new();
+    loop {
+        if existing.exists() {
+            let mut resolved = existing_real_path(existing)?;
+            for part in missing.iter().rev() {
+                resolved.push(part);
+            }
+            return Ok(resolved);
+        }
+        match existing.file_name() {
+            Some(name) => {
+                missing.push(name.to_os_string());
+                match existing.parent() {
+                    Some(parent) if parent != existing => existing = parent,
+                    _ => return Ok(absolute),
+                }
+            }
+            None => return Ok(absolute),
+        }
     }
 }
 
@@ -71,29 +86,6 @@ pub(crate) fn reject_symlink(path: &Path) -> Result<(), GitError> {
     }
 }
 
-pub(crate) fn reject_symlink_ancestors(path: &Path, root: &Path) -> Result<(), GitError> {
-    let path = normalize_absolute(path)?;
-    let root = normalize_absolute(root)?;
-    let mut current = path.as_path();
-    loop {
-        if let Ok(metadata) = fs::symlink_metadata(current)
-            && metadata.file_type().is_symlink()
-        {
-            return Err(GitError::SymlinkRejected {
-                path: current.to_path_buf(),
-            });
-        }
-        if current == root {
-            break;
-        }
-        match current.parent() {
-            Some(parent) if parent != current => current = parent,
-            _ => break,
-        }
-    }
-    Ok(())
-}
-
 pub(crate) fn paths_equal(left: &Path, right: &Path) -> bool {
     match (real_or_absolute(left), real_or_absolute(right)) {
         (Ok(left), Ok(right)) => left == right,
@@ -109,7 +101,7 @@ pub(crate) fn create_missing_ancestors(
         message: "worktree path has no parent directory".to_owned(),
     })?;
     let parent = ensure_within(parent, stop_at)?;
-    let stop_at = normalize_absolute(stop_at)?;
+    let stop_at = real_or_absolute(stop_at)?;
 
     let mut missing = Vec::new();
     let mut current = parent;
@@ -135,5 +127,51 @@ pub(crate) fn create_missing_ancestors(
 pub(crate) fn remove_empty_dirs(directories: &[PathBuf]) {
     for directory in directories.iter().rev() {
         let _ = fs::remove_dir(directory);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
+    use tempfile::TempDir;
+
+    use super::{ensure_within, real_or_absolute};
+
+    #[test]
+    fn real_or_absolute_follows_a_symlink_prefix() {
+        let temp = TempDir::new().expect("temp");
+        let real = temp.path().join("real");
+        let link = temp.path().join("link");
+        fs::create_dir(&real).expect("real dir");
+        symlink(&real, &link).expect("symlink");
+
+        let nested = link.join("missing").join("leaf");
+        let resolved = real_or_absolute(&nested).expect("resolve");
+        let expected = real
+            .canonicalize()
+            .expect("canonical real")
+            .join("missing")
+            .join("leaf");
+        assert_eq!(resolved, expected);
+        assert!(ensure_within(&nested, &link).is_ok());
+        assert!(ensure_within(&nested, &real).is_ok());
+    }
+
+    #[test]
+    fn ensure_within_rejects_a_symlink_that_leaves_the_root() {
+        let temp = TempDir::new().expect("temp");
+        let root = temp.path().join("managed");
+        let outside = temp.path().join("outside");
+        fs::create_dir(&root).expect("root");
+        fs::create_dir(&outside).expect("outside");
+        symlink(&outside, root.join("escape")).expect("escape symlink");
+        let error = ensure_within(&root.join("escape").join("leaf"), &root)
+            .expect_err("escaped path must be rejected");
+        assert!(matches!(
+            error,
+            crate::error::GitError::PathOutsideManagedRoot { .. }
+        ));
     }
 }

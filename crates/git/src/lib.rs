@@ -82,6 +82,7 @@ impl GitService {
                 managed_worktree_root.display()
             ),
         })?;
+        let managed_worktree_root = paths::existing_real_path(&managed_worktree_root)?;
         Ok(Self {
             git_executable,
             managed_worktree_root,

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{command::GitCommand, error::GitError, paths::normalize_absolute};
+use crate::{command::GitCommand, error::GitError, paths::real_or_absolute};
 
 /// How a path relates to a Git repository.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -64,7 +64,7 @@ pub(crate) fn detect_repository(
     path: &Path,
 ) -> Result<RepositoryInfo, GitError> {
     crate::command::inspect_path(path)?;
-    let path = normalize_absolute(path)?;
+    let path = real_or_absolute(path)?;
 
     let inside = git(executable, &path)
         .arg("rev-parse")
@@ -93,12 +93,12 @@ pub(crate) fn detect_repository(
     let git_dir = read_git(executable, &path, &["rev-parse", "--absolute-git-dir"])?;
     let git_common_dir = read_git(executable, &path, &["rev-parse", "--git-common-dir"])?;
 
-    let root = normalize_absolute(Path::new(&root))?;
-    let git_dir = normalize_absolute(Path::new(&git_dir))?;
+    let root = real_or_absolute(Path::new(&root))?;
+    let git_dir = real_or_absolute(Path::new(&git_dir))?;
     let git_common_dir = if Path::new(&git_common_dir).is_absolute() {
-        normalize_absolute(Path::new(&git_common_dir))?
+        real_or_absolute(Path::new(&git_common_dir))?
     } else {
-        normalize_absolute(&path.join(git_common_dir))?
+        real_or_absolute(&path.join(git_common_dir))?
     };
 
     let kind = if git_dir != git_common_dir {

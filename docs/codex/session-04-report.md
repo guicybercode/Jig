@@ -91,8 +91,8 @@ Diff is capped at 2 MiB by default. Crossing the cap sets `truncated` and kills 
 
 - Executable and arguments stay separate. A path like `name; true` is a missing directory, not a shell command.
 - Refs cannot start with `-`. `--end-of-options` is passed to `rev-parse`.
-- Worktree paths are checked with lexical normalization plus `canonicalize` when the path exists, so `/tmp` vs `/private/tmp` on macOS does not confuse ownership. Comparisons do not assume a case-insensitive disk.
-- Symlinks on the worktree path or its ancestors are rejected for directory removal.
+- Worktree paths are checked with lexical normalization plus resolving the longest existing prefix. That keeps `/var` vs `/private/var` on macOS from looking like an escape, without assuming a case-insensitive disk.
+- Symlinks on the worktree path itself are rejected for directory removal. System ancestor links such as macOS `/var` → `/private/var` are not treated as an attack.
 - The primary repository worktree cannot be removed.
 - Dirty worktrees cannot be removed through this crate.
 

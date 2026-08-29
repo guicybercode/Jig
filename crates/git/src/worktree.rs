@@ -16,7 +16,7 @@ use crate::{
     naming::{self, AllocatedNames},
     paths::{
         create_missing_ancestors, ensure_within, paths_equal, real_or_absolute, reject_symlink,
-        reject_symlink_ancestors, remove_empty_dirs,
+        remove_empty_dirs,
     },
     status,
 };
@@ -317,7 +317,7 @@ pub(crate) fn create_worktree(
         .join(request.project_id.to_string())
         .join(&names.directory);
     let path = ensure_within(&path, managed_root)?;
-    reject_symlink_ancestors(&path, managed_root)?;
+    reject_symlink(&path)?;
     if path.exists() {
         return Err(GitError::WorktreeExists { path });
     }
@@ -449,7 +449,6 @@ fn inspect_for_remove(
     if request.scope == RemoveScope::Directory {
         crate::command::inspect_path(&request.path)?;
         reject_symlink(&request.path)?;
-        reject_symlink_ancestors(&request.path, managed_root)?;
     }
 
     let detected = detect::detect_repository(executable, &request.path)?;
