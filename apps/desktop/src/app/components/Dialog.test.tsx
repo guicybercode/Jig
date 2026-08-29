@@ -36,6 +36,14 @@ describe("Dialog", () => {
     expect(dialog).toBeVisible();
     expect(screen.getByLabelText("Session name")).toHaveFocus();
 
+    opener.focus();
+    expect(screen.getByLabelText("Session name")).toHaveFocus();
+
+    await user.tab({ shift: true });
+    expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByLabelText("Session name")).toHaveFocus();
+
     await user.tab();
     expect(screen.getByRole("button", { name: "Start session" })).toHaveFocus();
     await user.tab();
