@@ -18,7 +18,7 @@ export function WorkspaceEmptyState() {
         <div className="empty-state__copy">
           <h2 id="empty-state-title">Add a repository to begin</h2>
           <p>
-            CLI Master keeps projects and sessions on this device. Connect the
+            Jig keeps projects and sessions on this device. Connect the
             local daemon, then add a repository from the sidebar.
           </p>
         </div>

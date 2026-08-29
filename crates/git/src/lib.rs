@@ -11,7 +11,6 @@ mod diff;
 mod error;
 mod naming;
 mod path_safety;
-mod pathspec;
 mod repository;
 mod status;
 mod worktree;
@@ -19,10 +18,9 @@ mod worktree_creation;
 mod worktree_reconcile;
 mod worktree_removal;
 
-pub use diff::{Diff, MAX_DIFF_BYTES};
+pub use diff::Diff;
 pub use error::{GitError, GitErrorKind};
 pub use naming::slugify;
-pub use pathspec::display_path;
 pub use repository::RepositoryInspection;
 pub use status::{ChangeKind, ChangedFile, RepositoryStatus, StatusCounts};
 pub use worktree::{WorktreeInfo, WorktreeUse};
@@ -60,7 +58,7 @@ impl Git {
             GitError::new(
                 GitErrorKind::NotFound,
                 "Git was not found on PATH",
-                "Install Git and restart CLI Master so the desktop process inherits the updated PATH",
+                "Install Git and restart Jig so the desktop process inherits the updated PATH",
             )
         })?;
         Self::with_executable(executable)
@@ -104,27 +102,6 @@ impl Git {
             ));
         }
         Ok(git)
-    }
-
-    /// Returns the `git --version` line for diagnostics and packaging checks.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when Git cannot execute or the version output is empty.
-    pub fn version(&self) -> Result<String, GitError> {
-        let output = self.execute(None, [OsStr::new("--version")], 16 * 1024)?;
-        if !output.success() {
-            return Err(self.command_error("read Git version", &output));
-        }
-        let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        if version.is_empty() {
-            return Err(GitError::new(
-                GitErrorKind::InvalidOutput,
-                "Git returned an empty version string",
-                "Choose the system Git executable",
-            ));
-        }
-        Ok(version)
     }
 
     /// Overrides the command timeout for this handle.
@@ -198,8 +175,7 @@ impl Git {
     ///
     /// Output is always generated without color or external diff drivers and is
     /// capped at `max_bytes`. The returned [`Diff::truncated`] flag reports when
-    /// bytes were omitted. Binary files are reported through [`Diff::binary`]
-    /// instead of dumping their contents.
+    /// bytes were omitted.
     ///
     /// # Errors
     ///
@@ -207,25 +183,6 @@ impl Git {
     /// Git invocation.
     pub fn diff(&self, path: impl AsRef<Path>, max_bytes: usize) -> Result<Diff, GitError> {
         diff::read(self, path.as_ref(), max_bytes)
-    }
-
-    /// Returns a bounded diff for one repository-relative pathspec.
-    ///
-    /// The pathspec is rejected when it is absolute, contains traversal
-    /// components, or looks like a Git option. Git always receives the path
-    /// after `--`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unsafe pathspec, a zero limit, an invalid
-    /// repository, a timeout, or a failed Git invocation.
-    pub fn diff_path(
-        &self,
-        path: impl AsRef<Path>,
-        pathspec: impl AsRef<Path>,
-        max_bytes: usize,
-    ) -> Result<Diff, GitError> {
-        diff::read_path(self, path.as_ref(), pathspec.as_ref(), max_bytes)
     }
 
     /// Lists all worktrees registered by a repository.

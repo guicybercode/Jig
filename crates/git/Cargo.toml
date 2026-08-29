@@ -7,8 +7,5 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
-[dependencies]
-unicode-normalization = "0.1"
-
 [dev-dependencies]
 tempfile = "3"

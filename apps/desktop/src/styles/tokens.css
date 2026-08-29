@@ -27,6 +27,18 @@
   --color-unknown: #c4b5fd;
   --color-focus-ring: #bae6fd;
 
+  /* Derived semantic surfaces keep component styles free of status hex values. */
+  --color-surface-hover: #202a36;
+  --color-surface-active: #253243;
+  --color-accent-muted: #102b39;
+  --color-success-muted: #10291b;
+  --color-warning-muted: #30260e;
+  --color-danger-muted: #321820;
+  --color-unknown-muted: #25213b;
+  --color-scrim: rgb(2 6 10 / 78%);
+  --color-scrollbar: #465368;
+  --color-scrollbar-hover: #687386;
+
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     "Liberation Mono", monospace;
   --space-1: 0.25rem;
@@ -37,7 +49,17 @@
   --space-8: 2rem;
   --radius-small: 4px;
   --radius: 6px;
+  --radius-dialog: 8px;
+  --control-height: 2rem;
+  --dialog-action-height: 2.25rem;
+  --header-height: 3rem;
+  --status-height: 2rem;
   --duration-feedback: 140ms;
+  --ease-feedback: ease-out;
+  --shadow-dialog: 0 1.5rem 4rem rgb(0 0 0 / 48%);
+  --layer-navigation-backdrop: 20;
+  --layer-navigation: 30;
+  --layer-dialog: 80;
   --layer-skip-link: 100;
   --layer-dialog: 200;
 }

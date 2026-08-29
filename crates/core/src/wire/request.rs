@@ -2,10 +2,10 @@ use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 
-use crate::{AgentId, ProjectId, SessionId, WorktreeId, validate_structured_invocation};
+use crate::{AgentId, ProjectId, SessionId, WorktreeId};
 
 use super::{
-    ConfirmationToken, DisplayName, ExecutableName, GitRelativePath, OutputCursor, PtyInputBase64,
+    ConfirmationToken, DisplayName, ExecutableName, OutputCursor, PtyInputBase64,
     RelativeDirectory, SelectedProjectPath, TerminalDimension, WireValidationError,
 };
 
@@ -150,12 +150,6 @@ pub fn validate_agent_command(
     env: &BTreeMap<String, String>,
 ) -> Result<(), WireValidationError> {
     ExecutableName::try_new(executable.to_owned())?;
-    validate_structured_invocation(executable, args).map_err(|_| {
-        WireValidationError::new(
-            "command",
-            "must not invoke a shell with a command-string flag",
-        )
-    })?;
     if args.len() > MAX_AGENT_ARGUMENTS {
         return Err(WireValidationError::new(
             "args",
@@ -438,11 +432,6 @@ pub enum GitTarget {
         /// Registered session identifier.
         session_id: SessionId,
     },
-    /// Inspect a daemon-recorded managed worktree.
-    Worktree {
-        /// Registered worktree identifier.
-        worktree_id: WorktreeId,
-    },
 }
 
 /// Request to inspect structured Git status.
@@ -454,14 +443,11 @@ pub struct GitStatusRequest {
 }
 
 /// Request to read a daemon-bounded textual Git diff.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct GitDiffRequest {
     /// Typed registered entity; arbitrary filesystem paths are never accepted.
     pub target: GitTarget,
-    /// Optional repository-relative file. Absent means the combined target diff.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<GitRelativePath>,
 }
 
 /// Request to prepare safe managed-worktree removal.
@@ -593,10 +579,8 @@ mod tests {
     fn git_targets_use_snake_case_variants_and_camel_case_ids() {
         let project_id = ProjectId::new();
         let session_id = SessionId::new();
-        let worktree_id = WorktreeId::new();
         let project = json!({ "kind": "project", "projectId": project_id });
         let session = json!({ "kind": "session", "sessionId": session_id });
-        let worktree = json!({ "kind": "worktree", "worktreeId": worktree_id });
 
         assert_eq!(
             serde_json::from_value::<GitTarget>(project.clone()).unwrap(),
@@ -607,20 +591,12 @@ mod tests {
             GitTarget::Session { session_id }
         );
         assert_eq!(
-            serde_json::from_value::<GitTarget>(worktree.clone()).unwrap(),
-            GitTarget::Worktree { worktree_id }
-        );
-        assert_eq!(
             serde_json::to_value(GitTarget::Project { project_id }).unwrap(),
             project
         );
         assert_eq!(
             serde_json::to_value(GitTarget::Session { session_id }).unwrap(),
             session
-        );
-        assert_eq!(
-            serde_json::to_value(GitTarget::Worktree { worktree_id }).unwrap(),
-            worktree
         );
     }
 
@@ -645,17 +621,6 @@ mod tests {
             }))
             .is_err()
         );
-        let mut file_diff = valid_git_diff(project_id);
-        file_diff["path"] = json!("src/lib.rs");
-        assert!(serde_json::from_value::<GitDiffRequest>(file_diff).is_ok());
-        for unsafe_path in ["/tmp/not-registered", "../secret", "-u", "--"] {
-            let mut value = valid_git_diff(project_id);
-            value["path"] = json!(unsafe_path);
-            assert!(
-                serde_json::from_value::<GitDiffRequest>(value).is_err(),
-                "{unsafe_path}"
-            );
-        }
     }
 
     #[test]
@@ -744,17 +709,6 @@ mod tests {
                 serde_json::from_value::<AgentCommand>(value).is_err(),
                 "accepted {key}"
             );
-        }
-    }
-
-    #[test]
-    fn custom_agent_commands_reject_shell_command_strings_at_the_wire() {
-        for value in [
-            json!({ "executable": "/bin/bash", "args": ["-lc", "echo unsafe"], "env": {} }),
-            json!({ "executable": "env", "args": ["sh", "-c", "echo unsafe"], "env": {} }),
-            json!({ "executable": "busybox", "args": ["sh", "-c", "echo unsafe"], "env": {} }),
-        ] {
-            assert!(serde_json::from_value::<AgentCommand>(value).is_err());
         }
     }
 

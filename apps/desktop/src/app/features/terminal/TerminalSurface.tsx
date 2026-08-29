@@ -181,7 +181,7 @@ export function TerminalSurface({
       },
       getCursor: () => runtimeRef.current?.getCursor() ?? null,
     }),
-    [],
+    [ref],
   );
 
   const classes = className

@@ -3,7 +3,7 @@
 use std::str::FromStr;
 
 use cli_master_core::{AgentId, AgentSource};
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::{Row, params};
 
 use crate::Storage;
 use crate::error::{
@@ -33,28 +33,26 @@ impl Storage {
         agent.validate()?;
         let args_json = encode_json(&agent.args, "agent args")?;
         let env_json = encode_json(&agent.env, "agent env")?;
-        self.with_connection("insert agent", |connection| {
-            connection
-                .execute(
-                    "INSERT INTO agents (
+        self.connection
+            .execute(
+                "INSERT INTO agents (
                     id, source, name, executable, args_json, env_json,
                     enabled, created_at, updated_at
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                    params![
-                        agent.id.to_string(),
-                        agent_source_to_database(agent.source),
-                        agent.display_name,
-                        agent.executable,
-                        args_json,
-                        env_json,
-                        agent.enabled,
-                        agent.created_at_ms,
-                        agent.updated_at_ms,
-                    ],
-                )
-                .map_err(|error| map_write_error(error, "agent"))?;
-            Ok(())
-        })
+                params![
+                    agent.id.to_string(),
+                    agent_source_to_database(agent.source),
+                    agent.display_name,
+                    agent.executable,
+                    args_json,
+                    env_json,
+                    agent.enabled,
+                    agent.created_at_ms,
+                    agent.updated_at_ms,
+                ],
+            )
+            .map_err(|error| map_write_error(error, "agent"))?;
+        Ok(())
     }
 
     /// Lists built-in and custom agent definitions in display order.
@@ -63,19 +61,17 @@ impl Storage {
     ///
     /// Returns an error if rows cannot be loaded or decoded.
     pub fn list_agents(&self) -> Result<Vec<StoredAgent>, StorageError> {
-        self.with_connection("list agents", |connection| {
-            let sql = format!(
-                "SELECT {AGENT_COLUMNS} FROM agents
-                 ORDER BY source, name COLLATE NOCASE, id"
-            );
-            let mut statement = connection.prepare(&sql)?;
-            let mut rows = statement.query([])?;
-            let mut agents = Vec::new();
-            while let Some(row) = rows.next()? {
-                agents.push(decode_agent(row)?);
-            }
-            Ok(agents)
-        })
+        let sql = format!(
+            "SELECT {AGENT_COLUMNS} FROM agents
+             ORDER BY source, name COLLATE NOCASE, id"
+        );
+        let mut statement = self.connection.prepare(&sql)?;
+        let mut rows = statement.query([])?;
+        let mut agents = Vec::new();
+        while let Some(row) = rows.next()? {
+            agents.push(decode_agent(row)?);
+        }
+        Ok(agents)
     }
 
     /// Loads one agent definition by ID.
@@ -84,12 +80,10 @@ impl Storage {
     ///
     /// Returns an error if the row cannot be loaded or decoded.
     pub fn get_agent(&self, id: AgentId) -> Result<Option<StoredAgent>, StorageError> {
-        self.with_connection("get agent", |connection| {
-            let sql = format!("SELECT {AGENT_COLUMNS} FROM agents WHERE id = ?1");
-            let mut statement = connection.prepare(&sql)?;
-            let mut rows = statement.query([id.to_string()])?;
-            rows.next()?.map(decode_agent).transpose()
-        })
+        let sql = format!("SELECT {AGENT_COLUMNS} FROM agents WHERE id = ?1");
+        let mut statement = self.connection.prepare(&sql)?;
+        let mut rows = statement.query([id.to_string()])?;
+        rows.next()?.map(decode_agent).transpose()
     }
 
     /// Replaces mutable metadata for an existing custom agent definition.
@@ -109,24 +103,22 @@ impl Storage {
         agent.validate()?;
         let args_json = encode_json(&agent.args, "agent args")?;
         let env_json = encode_json(&agent.env, "agent env")?;
-        self.with_connection("update custom agent", |connection| {
-            let changed = connection.execute(
-                "UPDATE agents
-                 SET name = ?1, executable = ?2, args_json = ?3,
-                     env_json = ?4, enabled = ?5, updated_at = ?6
-                 WHERE id = ?7 AND source = 'custom'",
-                params![
-                    agent.display_name,
-                    agent.executable,
-                    args_json,
-                    env_json,
-                    agent.enabled,
-                    agent.updated_at_ms,
-                    agent.id.to_string(),
-                ],
-            )?;
-            require_custom_agent_changed(connection, changed, agent.id)
-        })
+        let changed = self.connection.execute(
+            "UPDATE agents
+             SET name = ?1, executable = ?2, args_json = ?3,
+                 env_json = ?4, enabled = ?5, updated_at = ?6
+             WHERE id = ?7 AND source = 'custom'",
+            params![
+                agent.display_name,
+                agent.executable,
+                args_json,
+                env_json,
+                agent.enabled,
+                agent.updated_at_ms,
+                agent.id.to_string(),
+            ],
+        )?;
+        require_custom_agent_changed(self, changed, agent.id)
     }
 
     /// Enables or disables any built-in or custom agent definition.
@@ -141,13 +133,11 @@ impl Storage {
         updated_at_ms: i64,
     ) -> Result<(), StorageError> {
         validate_timestamp("agent updated_at_ms", updated_at_ms)?;
-        self.with_connection("set agent enabled", |connection| {
-            let changed = connection.execute(
-                "UPDATE agents SET enabled = ?1, updated_at = ?2 WHERE id = ?3",
-                params![enabled, updated_at_ms, id.to_string()],
-            )?;
-            require_changed(changed, id)
-        })
+        let changed = self.connection.execute(
+            "UPDATE agents SET enabled = ?1, updated_at = ?2 WHERE id = ?3",
+            params![enabled, updated_at_ms, id.to_string()],
+        )?;
+        require_changed(changed, id)
     }
 
     /// Removes only an agent metadata row.
@@ -158,12 +148,11 @@ impl Storage {
     ///
     /// Returns an error if the agent is missing, still referenced, or deletion fails.
     pub fn remove_agent_metadata(&self, id: AgentId) -> Result<(), StorageError> {
-        self.with_connection("remove agent", |connection| {
-            let changed = connection
-                .execute("DELETE FROM agents WHERE id = ?1", [id.to_string()])
-                .map_err(|error| map_delete_error(error, "agent", "its sessions"))?;
-            require_changed(changed, id)
-        })
+        let changed = self
+            .connection
+            .execute("DELETE FROM agents WHERE id = ?1", [id.to_string()])
+            .map_err(|error| map_delete_error(error, "agent", "its sessions"))?;
+        require_changed(changed, id)
     }
 }
 
@@ -229,21 +218,14 @@ fn require_changed(changed: usize, id: AgentId) -> Result<(), StorageError> {
 }
 
 fn require_custom_agent_changed(
-    connection: &Connection,
+    storage: &Storage,
     changed: usize,
     id: AgentId,
 ) -> Result<(), StorageError> {
     if changed > 0 {
         return Ok(());
     }
-    let source = connection
-        .query_row(
-            "SELECT source FROM agents WHERE id = ?1",
-            [id.to_string()],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?;
-    match source {
+    match storage.get_agent(id)? {
         Some(_) => Err(custom_agent_required()),
         None => Err(StorageError::NotFound {
             entity: "agent",

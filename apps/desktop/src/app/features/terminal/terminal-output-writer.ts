@@ -156,7 +156,7 @@ export function createTerminalOutputWriter(
         : `${firstMissingSequence}-${lastMissingSequence}`;
     queueCheckpoint(
       `${CANCEL_INCOMPLETE_SEQUENCE}${RESET_COLOR}${CLOSE_HYPERLINK}\r\n` +
-        `${GAP_COLOR}[CLI Master: ${reason}; output ${range}]${RESET_COLOR}\r\n`,
+        `${GAP_COLOR}[Jig: ${reason}; output ${range}]${RESET_COLOR}\r\n`,
       lastMissingSequence,
     );
   }

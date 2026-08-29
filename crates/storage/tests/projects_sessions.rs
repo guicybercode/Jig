@@ -22,7 +22,7 @@ fn project_and_session_survive_database_reopen() {
     );
 
     {
-        let storage = Storage::open(&database_path).expect("database should open");
+        let mut storage = Storage::open(&database_path).expect("database should open");
         storage.migrate().expect("database should migrate");
         storage
             .insert_project(&project)
@@ -39,7 +39,7 @@ fn project_and_session_survive_database_reopen() {
         assert_eq!(sessions.as_slice(), std::slice::from_ref(&session));
     }
 
-    let reopened = Storage::open(&database_path).expect("database should reopen");
+    let mut reopened = Storage::open(&database_path).expect("database should reopen");
     reopened.migrate().expect("migrations should be idempotent");
     assert_eq!(
         reopened
@@ -57,7 +57,7 @@ fn project_and_session_survive_database_reopen() {
 
 #[test]
 fn project_and_session_mutations_are_persisted() {
-    let storage = Storage::open_in_memory().expect("database should open");
+    let mut storage = Storage::open_in_memory().expect("database should open");
     storage.migrate().expect("database should migrate");
     let project = project("CLI Master", "/tmp/cli-master-project");
     let agent = agent(AgentSource::BuiltIn, "Codex");
@@ -151,7 +151,7 @@ fn project_and_session_mutations_are_persisted() {
 
 #[test]
 fn foreign_keys_and_missing_rows_are_actionable() {
-    let storage = Storage::open_in_memory().expect("database should open");
+    let mut storage = Storage::open_in_memory().expect("database should open");
     storage.migrate().expect("database should migrate");
     let agent = agent(AgentSource::BuiltIn, "Codex");
     storage.insert_agent(&agent).expect("agent should insert");
@@ -191,7 +191,7 @@ fn foreign_keys_and_missing_rows_are_actionable() {
 
 #[test]
 fn daemon_restart_only_recovers_stale_live_sessions() {
-    let storage = Storage::open_in_memory().expect("database should open");
+    let mut storage = Storage::open_in_memory().expect("database should open");
     storage.migrate().expect("database should migrate");
     let project = project("Recovery", "/tmp/recovery-project");
     let agent = agent(AgentSource::BuiltIn, "Codex");
@@ -275,7 +275,7 @@ fn daemon_restart_only_recovers_stale_live_sessions() {
 
 #[test]
 fn persisted_paths_must_be_absolute_and_nul_free() {
-    let storage = Storage::open_in_memory().expect("database should open");
+    let mut storage = Storage::open_in_memory().expect("database should open");
     storage.migrate().expect("database should migrate");
     let relative = project("Relative", "relative/project");
     assert!(matches!(
@@ -321,7 +321,7 @@ fn non_utf8_project_paths_round_trip_on_linux_and_macos() {
     use std::os::unix::ffi::OsStringExt;
     use std::path::PathBuf;
 
-    let storage = Storage::open_in_memory().expect("database should open");
+    let mut storage = Storage::open_in_memory().expect("database should open");
     storage.migrate().expect("database should migrate");
     let native_path = PathBuf::from(OsString::from_vec(b"/tmp/project-\xFF".to_vec()));
     let project = project("Native path", native_path.clone());

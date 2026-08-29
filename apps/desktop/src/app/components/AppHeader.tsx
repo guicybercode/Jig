@@ -1,76 +1,83 @@
+import type { AppPlatform } from "../../ipc/client";
+import type { Project } from "../../ipc/types";
 import { Icon } from "./Icon";
-import {
-  useDaemonReady,
-  useSelectedProject,
-  useWorkspaceActions,
-} from "../workspace";
 
 interface AppHeaderProps {
-  readonly commandPaletteOpen: boolean;
-  readonly onOpenCommandPalette: () => void;
-  readonly onOpenAgents: () => void;
-  readonly agentsActive: boolean;
+  readonly project?: Project;
+  readonly platform: AppPlatform;
+  readonly canCreateSession: boolean;
+  readonly navigationOpen: boolean;
+  readonly onToggleNavigation: () => void;
+  readonly onNewSession: () => void;
+  readonly onOpenPalette: () => void;
 }
 
-/** Renders global product identity and session actions. */
+/** Renders product identity, current repository context, and primary actions. */
 export function AppHeader({
-  commandPaletteOpen,
-  onOpenCommandPalette,
-  onOpenAgents,
-  agentsActive,
+  project,
+  platform,
+  canCreateSession,
+  navigationOpen,
+  onToggleNavigation,
+  onNewSession,
+  onOpenPalette,
 }: AppHeaderProps) {
-  const ready = useDaemonReady();
-  const project = useSelectedProject();
-  const actions = useWorkspaceActions();
-  const canCreate = ready && project !== null;
-
+  const modifier = platform === "macos" ? "⌘" : "Ctrl";
   return (
     <header className="app-header">
-      <div className="app-header__brand" aria-label="CLI Master">
-        <span className="app-header__mark" aria-hidden="true">
-          <Icon name="terminal" />
-        </span>
-        <span className="app-header__name">CLI Master</span>
-        <span className="app-header__edition">Desktop</span>
+      <div className="app-header__leading">
+        <button
+          className="icon-button app-header__navigation-toggle"
+          type="button"
+          aria-label={navigationOpen ? "Close navigation" : "Open navigation"}
+          aria-expanded={navigationOpen}
+          onClick={onToggleNavigation}
+        >
+          <Icon name="menu" />
+        </button>
+        <div className="app-header__brand" aria-label="Jig">
+          <span className="app-header__mark" aria-hidden="true">
+            <Icon name="terminal" />
+          </span>
+          <span className="app-header__name">Jig</span>
+        </div>
+        {project ? (
+          <div className="app-header__context">
+            <span className="app-header__project">{project.name}</span>
+            <span className="app-header__branch">
+              <Icon name="branch" />
+              {project.currentBranch ?? "Branch unavailable"}
+            </span>
+          </div>
+        ) : null}
       </div>
       <div className="app-header__actions">
         <button
-          className="button button--secondary"
+          className="command-trigger"
           type="button"
-          onClick={onOpenAgents}
-          aria-current={agentsActive ? "page" : undefined}
+          aria-label={`Open command palette, ${modifier}+K`}
+          onClick={onOpenPalette}
         >
-          <Icon name="settings" />
-          <span>Agents</span>
-        </button>
-        <button
-          className="button button--secondary"
-          type="button"
-          aria-haspopup="dialog"
-          aria-expanded={commandPaletteOpen}
-          aria-keyshortcuts="Control+K Meta+K"
-          onClick={onOpenCommandPalette}
-        >
+          <Icon name="search" />
           <span>Commands</span>
-          <kbd className="app-header__shortcut" aria-hidden="true">
-            Ctrl/⌘ K
-          </kbd>
+          <kbd>{modifier} K</kbd>
         </button>
-        {canCreate ? null : (
-          <span id="new-session-requirement" className="app-header__requirement">
-            Add a project first
-          </span>
-        )}
         <button
           className="button button--primary"
           type="button"
-          disabled={!canCreate}
-          aria-describedby={canCreate ? undefined : "new-session-requirement"}
-          onClick={() => actions.openDialog("newSession")}
+          disabled={!canCreateSession}
+          aria-describedby={!canCreateSession ? "new-session-requirement" : undefined}
+          onClick={onNewSession}
         >
           <Icon name="plus" />
           <span>New Session</span>
+          <kbd>{modifier} T</kbd>
         </button>
+        {!canCreateSession ? (
+          <span id="new-session-requirement" className="visually-hidden">
+            Add or select an available project first
+          </span>
+        ) : null}
       </div>
     </header>
   );

@@ -416,16 +416,6 @@ pub(crate) fn validate_daemon_instance_id(id: &str) -> Result<(), StorageError> 
 fn validate_non_secret_environment(
     environment: &BTreeMap<String, String>,
 ) -> Result<(), StorageError> {
-    let looks_like_full_environment = environment.len() > 32
-        || ["HOME", "USER", "SHELL"]
-            .iter()
-            .all(|key| environment.contains_key(*key));
-    if looks_like_full_environment {
-        return Err(invalid_input(
-            "agent environment",
-            "full process environments are not persisted; provide only explicit non-secret overrides",
-        ));
-    }
     if environment
         .keys()
         .any(|key| is_sensitive_environment_key(key))

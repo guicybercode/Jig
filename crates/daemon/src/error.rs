@@ -1,6 +1,5 @@
 use std::io;
 use std::path::PathBuf;
-use std::time::SystemTimeError;
 
 use thiserror::Error;
 
@@ -11,7 +10,7 @@ pub enum DaemonError {
     #[error("could not resolve a per-user home directory")]
     MissingHomeDirectory,
     /// Another process currently owns the per-user daemon lock.
-    #[error("another CLI Master daemon already owns {path}")]
+    #[error("another Jig daemon already owns {path}")]
     AlreadyRunning {
         /// Lock file that is already held.
         path: PathBuf,
@@ -33,27 +32,20 @@ pub enum DaemonError {
         #[source]
         source: io::Error,
     },
-    /// A candidate private directory is a symlink, a non-directory, or owned by
-    /// another user.
-    #[error("refusing to use untrusted directory {path}: {reason}")]
-    UntrustedDirectory {
-        /// Path that failed the ownership and type checks.
-        path: PathBuf,
-        /// Safe explanation of why the path was rejected.
-        reason: &'static str,
-    },
     /// Opening or migrating the local database failed.
     #[error("could not prepare daemon storage: {0}")]
     Storage(#[from] cli_master_storage::StorageError),
-    /// The system clock cannot produce a valid Unix epoch millisecond value.
-    #[error("could not read a valid Unix epoch timestamp: {0}")]
-    Clock(#[from] SystemTimeError),
-    /// The current Unix epoch millisecond value does not fit the wire format.
-    #[error("current Unix epoch timestamp exceeds the supported i64 range")]
-    TimestampOverflow,
     /// Serializing a protocol response failed.
     #[error("could not serialize daemon response: {0}")]
     Serialize(#[from] serde_json::Error),
+    /// A required daemon-owned service could not be initialized.
+    #[error("could not initialize {service}: {reason}")]
+    Initialization {
+        /// Service that failed before the socket began serving requests.
+        service: &'static str,
+        /// Sanitized failure reason.
+        reason: String,
+    },
 }
 
 impl DaemonError {
@@ -62,6 +54,13 @@ impl DaemonError {
             operation,
             path: path.into(),
             source,
+        }
+    }
+
+    pub(crate) fn initialization(service: &'static str, reason: impl Into<String>) -> Self {
+        Self::Initialization {
+            service,
+            reason: reason.into(),
         }
     }
 }

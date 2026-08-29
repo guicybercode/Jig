@@ -30,22 +30,20 @@ impl Storage {
     pub fn insert_project(&self, project: &Project) -> Result<(), StorageError> {
         validate_project(project)?;
         let path = path_to_sql_value(&project.path, "project path")?;
-        self.with_connection("insert project", |connection| {
-            connection
-                .execute(
-                    "INSERT INTO projects (id, name, path, created_at, last_opened_at)
+        self.connection
+            .execute(
+                "INSERT INTO projects (id, name, path, created_at, last_opened_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![
-                        project.id.to_string(),
-                        project.name,
-                        path,
-                        project.created_at_ms,
-                        project.last_opened_at_ms,
-                    ],
-                )
-                .map_err(|error| map_write_error(error, "project"))?;
-            Ok(())
-        })
+                params![
+                    project.id.to_string(),
+                    project.name,
+                    path,
+                    project.created_at_ms,
+                    project.last_opened_at_ms,
+                ],
+            )
+            .map_err(|error| map_write_error(error, "project"))?;
+        Ok(())
     }
 
     /// Lists all registered projects, most recently opened first.
@@ -54,19 +52,17 @@ impl Storage {
     ///
     /// Returns an error if rows cannot be loaded or decoded.
     pub fn list_projects(&self) -> Result<Vec<Project>, StorageError> {
-        self.with_connection("list projects", |connection| {
-            let sql = format!(
-                "SELECT {PROJECT_COLUMNS} FROM projects
-                 ORDER BY CAST(last_opened_at AS INTEGER) DESC, name COLLATE NOCASE, id"
-            );
-            let mut statement = connection.prepare(&sql)?;
-            let mut rows = statement.query([])?;
-            let mut projects = Vec::new();
-            while let Some(row) = rows.next()? {
-                projects.push(decode_project(row)?);
-            }
-            Ok(projects)
-        })
+        let sql = format!(
+            "SELECT {PROJECT_COLUMNS} FROM projects
+             ORDER BY CAST(last_opened_at AS INTEGER) DESC, name COLLATE NOCASE, id"
+        );
+        let mut statement = self.connection.prepare(&sql)?;
+        let mut rows = statement.query([])?;
+        let mut projects = Vec::new();
+        while let Some(row) = rows.next()? {
+            projects.push(decode_project(row)?);
+        }
+        Ok(projects)
     }
 
     /// Loads one registered project by ID.
@@ -75,12 +71,10 @@ impl Storage {
     ///
     /// Returns an error if the row cannot be loaded or decoded.
     pub fn get_project(&self, id: ProjectId) -> Result<Option<Project>, StorageError> {
-        self.with_connection("get project", |connection| {
-            let sql = format!("SELECT {PROJECT_COLUMNS} FROM projects WHERE id = ?1");
-            let mut statement = connection.prepare(&sql)?;
-            let mut rows = statement.query([id.to_string()])?;
-            rows.next()?.map(decode_project).transpose()
-        })
+        let sql = format!("SELECT {PROJECT_COLUMNS} FROM projects WHERE id = ?1");
+        let mut statement = self.connection.prepare(&sql)?;
+        let mut rows = statement.query([id.to_string()])?;
+        rows.next()?.map(decode_project).transpose()
     }
 
     /// Renames a registered project without touching its directory.
@@ -90,13 +84,11 @@ impl Storage {
     /// Returns an error if the name is invalid, the project is missing, or the update fails.
     pub fn rename_project(&self, id: ProjectId, name: &str) -> Result<(), StorageError> {
         validate_display_name("project name", name)?;
-        self.with_connection("rename project", |connection| {
-            let changed = connection.execute(
-                "UPDATE projects SET name = ?1 WHERE id = ?2",
-                params![name, id.to_string()],
-            )?;
-            require_changed(changed, id)
-        })
+        let changed = self.connection.execute(
+            "UPDATE projects SET name = ?1 WHERE id = ?2",
+            params![name, id.to_string()],
+        )?;
+        require_changed(changed, id)
     }
 
     /// Updates a project's most-recently-opened timestamp.
@@ -106,13 +98,11 @@ impl Storage {
     /// Returns an error if the timestamp is invalid, the project is missing, or the update fails.
     pub fn touch_project(&self, id: ProjectId, opened_at_ms: i64) -> Result<(), StorageError> {
         validate_timestamp("project last_opened_at_ms", opened_at_ms)?;
-        self.with_connection("touch project", |connection| {
-            let changed = connection.execute(
-                "UPDATE projects SET last_opened_at = ?1 WHERE id = ?2",
-                params![opened_at_ms, id.to_string()],
-            )?;
-            require_changed(changed, id)
-        })
+        let changed = self.connection.execute(
+            "UPDATE projects SET last_opened_at = ?1 WHERE id = ?2",
+            params![opened_at_ms, id.to_string()],
+        )?;
+        require_changed(changed, id)
     }
 
     /// Removes only the project metadata row; no filesystem content is deleted.
@@ -123,14 +113,11 @@ impl Storage {
     ///
     /// Returns an error if the project is missing, is still referenced, or deletion fails.
     pub fn remove_project_metadata(&self, id: ProjectId) -> Result<(), StorageError> {
-        self.with_connection("remove project", |connection| {
-            let changed = connection
-                .execute("DELETE FROM projects WHERE id = ?1", [id.to_string()])
-                .map_err(|error| {
-                    map_delete_error(error, "project", "its sessions and worktrees")
-                })?;
-            require_changed(changed, id)
-        })
+        let changed = self
+            .connection
+            .execute("DELETE FROM projects WHERE id = ?1", [id.to_string()])
+            .map_err(|error| map_delete_error(error, "project", "its sessions and worktrees"))?;
+        require_changed(changed, id)
     }
 }
 

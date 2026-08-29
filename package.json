@@ -5,21 +5,10 @@
   "packageManager": "pnpm@11.9.0",
   "scripts": {
     "build": "pnpm --filter @cli-master/desktop build",
-    "build:frontend": "pnpm --filter @cli-master/desktop build",
-    "lint:frontend": "pnpm --filter @cli-master/desktop lint",
-    "typecheck:frontend": "pnpm --filter @cli-master/desktop typecheck",
-    "test:frontend": "pnpm --filter @cli-master/desktop test",
-    "fmt:rust": "cargo fmt --all -- --check",
-    "clippy": "cargo clippy --workspace --all-targets --locked -- -D warnings",
-    "doc:rust": "RUSTDOCFLAGS=\"-Dwarnings\" cargo doc --workspace --no-deps --locked",
-    "test:rust": "cargo test --workspace --locked",
-    "check": "bash scripts/check.sh",
-    "check:versions": "bash scripts/check-versions.sh",
+    "check": "pnpm --filter @cli-master/desktop check && cargo check --workspace",
     "dev": "pnpm --filter @cli-master/desktop dev",
-    "package": "bash scripts/package.sh",
-    "sidecar:stage": "bash scripts/stage-sidecar.sh",
+    "lint": "pnpm --filter @cli-master/desktop lint",
     "tauri": "pnpm --filter @cli-master/desktop tauri",
-    "tauri:build": "bash scripts/stage-sidecar.sh && pnpm tauri build",
-    "test": "pnpm test:frontend && cargo test --workspace --locked"
+    "test": "pnpm --filter @cli-master/desktop test && cargo test --workspace"
   }
 }
