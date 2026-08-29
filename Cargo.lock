@@ -489,6 +489,7 @@ dependencies = [
 name = "cli-master-daemon"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "cli-master-core",
  "cli-master-storage",
  "futures-util",
@@ -501,6 +502,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
