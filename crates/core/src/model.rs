@@ -14,6 +14,8 @@ pub enum SessionStatus {
     Running,
     /// The process is alive but has no recent activity.
     Idle,
+    /// A stop was requested and the process group is being signaled.
+    Stopping,
     /// The process exited successfully or was stopped.
     Exited,
     /// The process failed to start or exited unsuccessfully.
@@ -21,6 +23,17 @@ pub enum SessionStatus {
     /// The process state cannot currently be determined.
     #[serde(other)]
     Unknown,
+}
+
+impl SessionStatus {
+    /// Returns whether a process is expected to exist for this status.
+    #[must_use]
+    pub const fn is_live(self) -> bool {
+        matches!(
+            self,
+            Self::Starting | Self::Running | Self::Idle | Self::Stopping
+        )
+    }
 }
 
 /// Origin of an agent definition.
@@ -156,6 +169,17 @@ mod tests {
     }
 
     #[test]
+    fn live_statuses_match_process_ownership() {
+        assert!(SessionStatus::Starting.is_live());
+        assert!(SessionStatus::Running.is_live());
+        assert!(SessionStatus::Idle.is_live());
+        assert!(SessionStatus::Stopping.is_live());
+        assert!(!SessionStatus::Exited.is_live());
+        assert!(!SessionStatus::Failed.is_live());
+        assert!(!SessionStatus::Unknown.is_live());
+    }
+
+    #[test]
     fn project_round_trips_with_camel_case_wire_fields() {
         let project = Project {
             id: ProjectId::new(),
@@ -180,6 +204,7 @@ mod tests {
             (SessionStatus::Starting, "starting"),
             (SessionStatus::Running, "running"),
             (SessionStatus::Idle, "idle"),
+            (SessionStatus::Stopping, "stopping"),
             (SessionStatus::Exited, "exited"),
             (SessionStatus::Failed, "failed"),
             (SessionStatus::Unknown, "unknown"),

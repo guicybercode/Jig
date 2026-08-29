@@ -263,8 +263,9 @@ atomic.
 ### 6.3 Status state machine
 
 ```text
-create ──> starting ──> running <──> idle ──> exited
+create ──> starting ──> running <──> idle
               │            │          │
+              │            └──> stopping ──> exited
               └────────────┴──────────┴────> failed
 
 daemon recovery of a formerly live row ──> unknown
@@ -275,8 +276,10 @@ unknown ── restart ──> starting
 - `running`: the process exists and recent PTY input/output indicates activity.
 - `idle`: the process exists but no PTY activity occurred for the configured
   heuristic interval (10 seconds initially). This is not an LLM semantic state.
-- `exited`: the process ended normally; the exit code is recorded.
-- `failed`: validation, spawn, PTY, or abnormal exit failed with an actionable
+- `stopping`: a stop or kill was requested and the process group is being
+  signaled. This is not an agent "thinking" or "waiting for user" state.
+- `exited`: the process ended; the exit code is recorded when the OS reports one.
+- `failed`: validation, spawn, PTY, or launch failure produced an actionable
   error.
 - `unknown`: metadata claims a live session from another daemon instance, but
   v0.1 cannot safely prove or reattach its PTY.
@@ -362,7 +365,7 @@ CREATE TABLE sessions (
     name                TEXT NOT NULL CHECK (length(trim(name)) > 0),
     cwd                 TEXT NOT NULL,
     status              TEXT NOT NULL CHECK (
-                            status IN ('starting','running','idle','exited','failed','unknown')
+                            status IN ('starting','running','idle','stopping','exited','failed','unknown')
                         ),
     runtime_pid         INTEGER,
     daemon_instance_id  TEXT,
