@@ -3,10 +3,17 @@
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rusqlite::{Connection, TransactionBehavior, params};
+
+mod records;
+mod repos;
+mod time;
+
+pub use records::{AgentRecord, ProjectRecord, SessionRecord, WorktreeRecord};
+pub use time::{now_rfc3339, rfc3339_to_ms};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -25,7 +32,7 @@ const MIGRATIONS: &[Migration] = &[Migration {
 /// The newest schema version understood by this crate.
 pub const LATEST_SCHEMA_VERSION: u32 = 1;
 
-/// An error raised while opening or migrating CLI Master's database.
+/// An error raised while opening, migrating, or querying CLI Master's database.
 #[derive(Debug)]
 pub enum StorageError {
     /// `SQLite` rejected an operation.
@@ -34,6 +41,16 @@ pub enum StorageError {
     UnsupportedSchemaVersion(u32),
     /// A migration version stored in `SQLite` cannot be represented by this crate.
     InvalidSchemaVersion(i64),
+    /// A stored timestamp could not be parsed.
+    InvalidTimestamp(String),
+    /// A JSON column could not be parsed.
+    InvalidJson(String),
+    /// A filesystem path cannot be stored as UTF-8 text.
+    InvalidPath(PathBuf),
+    /// The requested row does not exist.
+    NotFound(&'static str),
+    /// The database violated an application invariant.
+    Invariant(String),
 }
 
 impl Display for StorageError {
@@ -50,6 +67,13 @@ impl Display for StorageError {
                     "database contains invalid schema version {version}"
                 )
             }
+            Self::InvalidTimestamp(message)
+            | Self::InvalidJson(message)
+            | Self::Invariant(message) => formatter.write_str(message),
+            Self::InvalidPath(path) => {
+                write!(formatter, "path is not valid UTF-8: {}", path.display())
+            }
+            Self::NotFound(kind) => write!(formatter, "{kind} was not found"),
         }
     }
 }
@@ -58,7 +82,7 @@ impl Error for StorageError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Database(error) => Some(error),
-            Self::UnsupportedSchemaVersion(_) | Self::InvalidSchemaVersion(_) => None,
+            _ => None,
         }
     }
 }
@@ -387,6 +411,109 @@ mod tests {
 
         assert_eq!(tables, expected_tables);
         assert!(expected_indexes.is_subset(&indexes));
+    }
+
+    #[test]
+    fn repositories_round_trip_projects_agents_and_reconciliation() {
+        use std::path::Path;
+        use std::str::FromStr;
+
+        use cli_master_core::{
+            AgentId, ProjectId, SessionId, SessionStatus, WorktreeId, WorktreeState,
+        };
+
+        use crate::now_rfc3339;
+        use crate::records::SessionRecord;
+
+        let storage = migrated_memory_storage();
+        storage
+            .seed_builtin_agents()
+            .expect("built-in agents should seed");
+        storage
+            .seed_builtin_agents()
+            .expect("built-in seed should be idempotent");
+        let agents = storage.list_agents().expect("agents should list");
+        assert_eq!(agents.len(), 4);
+        assert_eq!(agents[1].id.as_str(), "codex");
+
+        let project_id = ProjectId::new();
+        let project = storage
+            .insert_project(project_id, "Demo", Path::new("/tmp/demo-repo"))
+            .expect("project should insert");
+        assert_eq!(project.name, "Demo");
+        assert_eq!(
+            storage
+                .project_id_for_path(Path::new("/tmp/demo-repo"))
+                .expect("path lookup should succeed"),
+            Some(project_id)
+        );
+
+        let session_id = SessionId::new();
+        let now = now_rfc3339();
+        storage
+            .insert_session(&SessionRecord {
+                id: session_id,
+                project_id,
+                agent_id: AgentId::from_key("codex").expect("codex key"),
+                name: "First session".to_owned(),
+                cwd: Path::new("/tmp/demo-repo").to_path_buf(),
+                status: SessionStatus::Running,
+                runtime_pid: Some(42),
+                daemon_instance_id: Some("old-instance".to_owned()),
+                exit_code: None,
+                error_code: None,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                last_activity_at: None,
+            })
+            .expect("session should insert");
+
+        let worktree_id = WorktreeId::new();
+        storage
+            .insert_worktree(&crate::records::WorktreeRecord {
+                id: worktree_id,
+                project_id,
+                session_id: Some(session_id),
+                path: Path::new("/tmp/demo-worktree").to_path_buf(),
+                branch: "agent/demo".to_owned(),
+                state: WorktreeState::Active,
+                created_at: now.clone(),
+                updated_at: now,
+            })
+            .expect("worktree should insert");
+
+        let changed = storage
+            .reconcile_unknown_sessions("new-instance")
+            .expect("reconciliation should succeed");
+        assert_eq!(changed, 1);
+        let session = storage
+            .get_session(session_id)
+            .expect("session should load")
+            .expect("session should exist");
+        assert_eq!(session.status, SessionStatus::Unknown);
+        assert!(session.runtime_pid.is_none());
+
+        storage
+            .update_session_runtime(
+                session_id,
+                SessionStatus::Exited,
+                None,
+                Some("new-instance"),
+                Some(0),
+                None,
+            )
+            .expect("session should stop");
+        storage
+            .delete_session(session_id)
+            .expect("stopped session metadata should delete");
+        storage
+            .delete_worktree(worktree_id)
+            .expect("worktree row should delete");
+        storage
+            .delete_project(project_id)
+            .expect("unreferenced project should delete");
+
+        let _ = ProjectId::from_str(&project_id.to_string()).expect("id should parse");
     }
 
     fn migrated_memory_storage() -> Storage {
