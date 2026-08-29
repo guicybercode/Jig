@@ -29,7 +29,6 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-threa
 tokio-util = { version = "0.7", features = ["codec", "rt"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "json"] }
-uuid = { version = "1", features = ["serde", "v7"] }
 
 [dev-dependencies]
 tempfile = "3"

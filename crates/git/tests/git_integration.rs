@@ -124,6 +124,7 @@ fn timeout_kills_process_group_without_waiting_for_descendant_pipe() {
 
     let temp = TempDir::new().expect("temporary directory should be created");
     let executable = temp.path().join("fake-git");
+    let process_group_leader_pid = temp.path().join("leader.pid");
     let child_pid = temp.path().join("child.pid");
     let script = format!(
         "#!/bin/sh\n\
@@ -131,9 +132,11 @@ fn timeout_kills_process_group_without_waiting_for_descendant_pipe() {
            echo 'git version 99.0.0'\n\
            exit 0\n\
          fi\n\
+         echo $$ > '{}'\n\
          sleep 30 &\n\
          echo $! > '{}'\n\
          wait\n",
+        process_group_leader_pid.display(),
         child_pid.display()
     );
     fs::write(&executable, script).expect("fake Git should be written");
@@ -154,16 +157,20 @@ fn timeout_kills_process_group_without_waiting_for_descendant_pipe() {
     let pid = fs::read_to_string(&child_pid)
         .expect("descendant should report its pid")
         .trim()
-        .to_owned();
-    let descendant_stopped = (0..50).any(|_| {
-        if process_is_live(&pid) {
+        .to_owned()
+}
+
+#[cfg(unix)]
+fn assert_process_stopped(pid: &str, process: &str) {
+    let stopped = (0..50).any(|_| {
+        if process_is_live(pid) {
             thread::sleep(Duration::from_millis(10));
             false
         } else {
             true
         }
     });
-    assert!(descendant_stopped, "Git descendant {pid} survived timeout");
+    assert!(stopped, "{process} {pid} survived timeout");
 }
 
 #[cfg(unix)]

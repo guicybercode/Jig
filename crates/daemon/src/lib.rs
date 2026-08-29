@@ -16,6 +16,7 @@ mod projects;
 mod server;
 mod sessions;
 
+pub use cli_master_core::wire::{HelloResponse, StateSnapshotResponse};
 pub use config::DaemonConfig;
 pub use error::DaemonError;
-pub use server::{Daemon, HelloResponse, MAX_FRAME_LENGTH, StateSnapshot};
+pub use server::{Daemon, MAX_FRAME_LENGTH};

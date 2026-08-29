@@ -23,3 +23,25 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn rust_catalog_matches_desktop_mirror() {
+        let catalog: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../protocol/catalog.json"))
+                .expect("desktop protocol mirror should parse");
+
+        assert_eq!(catalog["protocolVersion"], PROTOCOL_V1);
+        assert_eq!(catalog["methods"], json!(wire::method::ALL));
+        assert_eq!(catalog["events"], json!(wire::event_name::ALL));
+
+        let exposed = protocol_info();
+        assert_eq!(exposed.methods, wire::method::ALL);
+        assert_eq!(exposed.events, wire::event_name::ALL);
+    }
+}

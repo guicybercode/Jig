@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use cli_master_core::wire::{self, EmptyRequest, HelloResponse, StateSnapshotResponse};
 use cli_master_core::{
     ApiError, DaemonInstanceId, EnvelopeKind, EventEnvelope, PROTOCOL_V1, Project, RequestEnvelope,
     RequestId, ResponseEnvelope, Session, Worktree,
@@ -22,14 +23,13 @@ use cli_master_core::{
 use cli_master_session::{SessionEvent, SessionSubscription, StatusChangeReason};
 use cli_master_storage::Storage;
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::task::JoinSet;
 use tokio_util::codec::LengthDelimitedCodec;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
-use uuid::Uuid;
 
 use crate::lock::InstanceLock;
 use crate::projects::ProjectRegistry;
@@ -169,7 +169,7 @@ impl Daemon {
 
     /// Returns the daemon lifetime identifier clients receive in `system.hello`.
     #[must_use]
-    pub fn instance_id(&self) -> Uuid {
+    pub fn instance_id(&self) -> DaemonInstanceId {
         self.state.hello.instance_id
     }
 
