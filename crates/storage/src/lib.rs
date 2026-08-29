@@ -16,14 +16,21 @@ struct Migration {
     sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "initial",
-    sql: include_str!("../migrations/0001_initial.sql"),
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "initial",
+        sql: include_str!("../migrations/0001_initial.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "session_stopping",
+        sql: include_str!("../migrations/0002_session_stopping.sql"),
+    },
+];
 
 /// The newest schema version understood by this crate.
-pub const LATEST_SCHEMA_VERSION: u32 = 1;
+pub const LATEST_SCHEMA_VERSION: u32 = 2;
 
 /// An error raised while opening or migrating CLI Master's database.
 #[derive(Debug)]
@@ -291,7 +298,7 @@ mod tests {
             })
             .expect("migration count should load");
 
-        assert_eq!(migration_count, 1);
+        assert_eq!(migration_count, 2);
         assert_eq!(
             reopened.schema_version().expect("version should load"),
             LATEST_SCHEMA_VERSION
@@ -354,6 +361,18 @@ mod tests {
              )",
             [TIMESTAMP],
         ));
+        storage
+            .connection
+            .execute(
+                "INSERT INTO sessions (
+                    id, project_id, agent_id, name, cwd, status, created_at, updated_at
+                 ) VALUES (
+                    'session-stopping', 'project-1', 'agent-1', 'Session', '/tmp/project',
+                    'stopping', ?1, ?1
+                 )",
+                [TIMESTAMP],
+            )
+            .expect("stopping is a valid session status");
         assert_constraint_violation(storage.connection.execute(
             "INSERT INTO worktrees (
                 id, project_id, path, branch, state, created_at, updated_at
