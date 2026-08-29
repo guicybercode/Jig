@@ -20,18 +20,23 @@ Those tests wait on Playwright's auto-waiting assertions. They do not use
 Chromium is the CI browser on both Ubuntu and macOS. The same spec file runs on
 both operating systems.
 
-## What does not run against this UI yet
+## What is intentionally not represented as a browser test
 
-The Beta acceptance flow needs two live terminal tiles, worktree isolation,
-resize, stop, window close/reopen, dirty worktree protection, and daemon
-restart. React still renders `WorkspaceEmptyState`. Wiring a dummy grid only
-for Playwright would test a page that users never see.
+The full Beta flow needs a real Tauri window connected to the private daemon:
+two live terminal tiles, worktree isolation, resize, stop, window close/reopen,
+dirty worktree protection, and daemon restart. A Vite browser preview cannot
+spawn PTYs or exercise the Tauri sidecar, so wiring a browser-only fake would
+test a path users never run.
 
-Those criteria are implemented in `crates/e2e` against `SessionManager`,
-`cli-master-git`, `cli-master-storage`, and `Daemon::bind`. The skipped spec
-`apps/desktop/e2e/beta-acceptance.spec.ts` points at those tests. Set
-`CLI_MASTER_TAURI_E2E=1` when a real Tauri window can host two live tiles, then
-fill that file in with window-level actions instead of skipping it.
+The runtime portions are implemented in `crates/e2e` against the production
+`SessionWorktreeSaga<SessionManager>`, Git, SQLite, and `Daemon::bind`. Dropping
+and recreating PTY subscriptions verifies replay semantics, but it is not
+described as a real window test. There are no placeholder or unconditionally
+skipped Playwright cases: every test listed by Playwright executes.
+
+Add a separate Tauri-driver suite when a real window can host the live grid.
+That future suite must perform window-level actions and must fail when its
+harness is unavailable instead of silently skipping the acceptance criteria.
 
 ## Commands
 

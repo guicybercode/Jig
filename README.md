@@ -110,9 +110,10 @@ pnpm --filter @cli-master/desktop test:e2e
 ```
 
 `pnpm check` type-checks and builds the frontend, then checks every Rust crate.
-Runtime acceptance for two live sessions, worktree isolation, UI close/reopen,
-and daemon recovery lives in `crates/e2e`. Playwright covers the empty desktop
-shell; see [docs/playwright-testing.md](docs/playwright-testing.md).
+Runtime acceptance for two live sessions, worktree isolation, subscription
+disconnect/reconnect, and daemon recovery lives in `crates/e2e`. Playwright
+covers the disconnected desktop shell; a real Tauri-window harness remains an
+explicit gap. See [docs/playwright-testing.md](docs/playwright-testing.md).
 Platform-specific PTY tests run in the Linux and macOS CI jobs.
 
 ## Build packages
@@ -136,7 +137,7 @@ design-system/cli-master/      UI tokens and interaction rules
 ARCHITECTURE.md                accepted architecture and protocol design
 AGENTS.md                      crate ownership and IPC rules for agents
 protocol/catalog.json          frozen v1 method and event names
-docs/playwright-testing.md     UI E2E scope and skipped Tauri grid tests
+docs/playwright-testing.md     UI E2E scope and the Tauri window-level gap
 docs/test-coverage-review.md   Beta criteria mapped onto real tests
 ```
 
