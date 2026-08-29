@@ -155,7 +155,10 @@ fn terminate_process_group(child: &mut std::process::Child) {
         // on both supported platforms and is invoked directly, never by a shell.
         let group = format!("-{}", child.id());
         let _ = Command::new("/bin/kill")
-            .args(["-KILL", group.as_str()])
+            // GNU kill otherwise parses a negative process-group ID as an
+            // option (or another signal). The POSIX end-of-options marker is
+            // also accepted by the BSD utility shipped on macOS.
+            .args(["-KILL", "--", group.as_str()])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
