@@ -225,6 +225,11 @@ export type TypedEvent<E extends IpcEvent> = {
   payload: EventPayloadMap[E];
 };
 
+/** Discriminated daemon event so `event` narrows `payload`. */
+export type DaemonEvent = {
+  [E in IpcEvent]: TypedEvent<E>;
+}[IpcEvent];
+
 const METHOD_SET = new Set<string>(IPC_METHODS);
 const EVENT_SET = new Set<string>(IPC_EVENTS);
 
@@ -251,5 +256,5 @@ export type IpcClient = {
     method: M,
     payload: RequestPayloadMap[M],
   ): Promise<ResponsePayloadMap[M]>;
-  subscribe(listener: (event: TypedEvent<IpcEvent>) => void): () => void;
+  subscribe(listener: (event: DaemonEvent) => void): () => void;
 };

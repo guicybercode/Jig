@@ -18,7 +18,7 @@ It does not proxy vendor traffic. Windows is out of scope for Beta v0.1.
 | SQLite connection, migrations, SQL | `crates/storage` |
 | Adapter detection and `CommandSpec` | `crates/agents` |
 | Git argv and worktree safety | `crates/git` |
-| PTY, process groups, `SessionManager` | `crates/session` (not created yet) |
+| PTY, process groups, `SessionManager` | `crates/session` |
 | Unix socket, composition, recovery | `crates/daemon` |
 | Tauri window, dialogs, event relay | `apps/desktop/src-tauri` |
 | React views and typed IPC client | `apps/desktop/src` |
@@ -97,9 +97,11 @@ Backend tests use real temp dirs, real SQLite, the real `git` binary, and
 short-lived child programs. Frontend tests mock the project-owned IPC client,
 not scattered Tauri APIs. Do not unit-test xterm.js.
 
-## What this session did not build
+## Desktop bridge
 
-There is still no PTY/session crate. The current `cli-masterd` provides the
-private socket and startup foundation, but it does not own live sessions yet.
-Do not pretend the desktop `protocol_info` command is a daemon handshake; the
-Tauri bridge is not connected to the daemon socket yet.
+The Tauri process forwards versioned wire envelopes through generic commands
+(`daemon_invoke`, `daemon_status`, `daemon_reconnect`, `app_quit`). Do not add
+domain Tauri commands for `project.*`, `agent.*`, `session.*`, or `git.*`.
+`protocol_info` remains a local catalog snapshot and is not `system.hello`.
+Closing the window disconnects the socket client and does not stop daemon-owned
+sessions. See `docs/desktop/daemon-sidecar.md` for binary discovery.

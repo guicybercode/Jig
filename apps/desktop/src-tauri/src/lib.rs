@@ -1,45 +1,14 @@
-mod sidecar;
+//! Tauri desktop process for CLI Master.
+//!
+//! The window process is a typed bridge. It forwards versioned wire envelopes
+//! to `cli-masterd` and relays daemon events. Live sessions belong to the
+//! daemon and survive closing the window.
 
-use cli_master_core::{APPLICATION_VERSION, PROTOCOL_V1, wire};
-use serde::Serialize;
-use sidecar::{DAEMON_SIDECAR_EXTERNAL_BIN, DAEMON_SIDECAR_NAME, resolve_bundled_daemon};
+mod bridge;
 
-/// Desktop-side protocol catalog. This is not `system.hello`.
-///
-/// The Tauri process is a typed bridge. Live sessions belong to `cli-masterd`.
-/// Until the Tauri bridge connects to the daemon, the UI can still read the
-/// frozen method list, the application version, and the sidecar file name.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ProtocolInfo {
-    application_version: &'static str,
-    protocol_version: u16,
-    daemon_sidecar: &'static str,
-    sidecar_external_bin: &'static str,
-    methods: Vec<&'static str>,
-    events: Vec<&'static str>,
-}
-
-#[tauri::command]
-fn protocol_info() -> ProtocolInfo {
-    ProtocolInfo {
-        application_version: APPLICATION_VERSION,
-        protocol_version: PROTOCOL_V1,
-        daemon_sidecar: DAEMON_SIDECAR_NAME,
-        sidecar_external_bin: DAEMON_SIDECAR_EXTERNAL_BIN,
-        methods: wire::method::ALL.to_vec(),
-        events: wire::event_name::ALL.to_vec(),
-    }
-}
-
-/// Resolves the packaged `cli-masterd` next to the desktop executable.
-///
-/// This is a filesystem lookup. It does not replace `system.hello`.
-#[tauri::command]
-fn bundled_daemon_path() -> Option<String> {
-    let executable = std::env::current_exe().ok()?;
-    resolve_bundled_daemon(&executable).map(|path| path.display().to_string())
-}
+use bridge::DaemonBridge;
+use bridge::commands::{app_quit, daemon_invoke, daemon_reconnect, daemon_status, protocol_info};
+use tauri::{Manager, RunEvent};
 
 /// Starts the Tauri desktop process.
 ///
@@ -48,18 +17,46 @@ fn bundled_daemon_path() -> Option<String> {
 /// Panics when Tauri cannot initialize or run the desktop application.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    tracing_subscriber::fmt()
+        .json()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_target(true)
+        .try_init()
+        .ok();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![protocol_info, bundled_daemon_path])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .invoke_handler(tauri::generate_handler![
+            protocol_info,
+            daemon_invoke,
+            daemon_status,
+            daemon_reconnect,
+            app_quit
+        ])
+        .setup(|app| {
+            let bridge = bridge::commands::start_bridge(app.handle());
+            app.manage(bridge);
+            Ok(())
+        })
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| {
+            if let RunEvent::ExitRequested { .. } = event {
+                if let Some(bridge) = app_handle.try_state::<DaemonBridge>() {
+                    bridge.shutdown();
+                }
+            }
+        });
 }
 
 #[cfg(test)]
 mod tests {
+    use cli_master_core::{APPLICATION_VERSION, PROTOCOL_V1, wire};
     use serde_json::json;
 
-    use super::sidecar;
     use super::*;
 
     #[test]
@@ -89,17 +86,17 @@ mod tests {
 
         let exposed = protocol_info();
         assert_eq!(exposed.application_version, APPLICATION_VERSION);
-        assert_eq!(exposed.daemon_sidecar, sidecar::DAEMON_SIDECAR_NAME);
+        assert_eq!(exposed.daemon_sidecar, bridge::DAEMON_SIDECAR_NAME);
         assert_eq!(
             exposed.sidecar_external_bin,
-            sidecar::DAEMON_SIDECAR_EXTERNAL_BIN
+            bridge::DAEMON_SIDECAR_EXTERNAL_BIN
         );
         assert_eq!(exposed.methods, wire::method::ALL);
         assert_eq!(exposed.events, wire::event_name::ALL);
 
         assert_eq!(
             tauri_config["bundle"]["externalBin"],
-            json!([sidecar::DAEMON_SIDECAR_EXTERNAL_BIN])
+            json!([bridge::DAEMON_SIDECAR_EXTERNAL_BIN])
         );
         assert_eq!(
             tauri_config["bundle"]["targets"],

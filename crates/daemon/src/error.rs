@@ -1,5 +1,6 @@
 use std::io;
 use std::path::PathBuf;
+use std::time::SystemTimeError;
 
 use thiserror::Error;
 
@@ -44,6 +45,12 @@ pub enum DaemonError {
     /// Opening or migrating the local database failed.
     #[error("could not prepare daemon storage: {0}")]
     Storage(#[from] cli_master_storage::StorageError),
+    /// The system clock cannot produce a valid Unix epoch millisecond value.
+    #[error("could not read a valid Unix epoch timestamp: {0}")]
+    Clock(#[from] SystemTimeError),
+    /// The current Unix epoch millisecond value does not fit the wire format.
+    #[error("current Unix epoch timestamp exceeds the supported i64 range")]
+    TimestampOverflow,
     /// Serializing a protocol response failed.
     #[error("could not serialize daemon response: {0}")]
     Serialize(#[from] serde_json::Error),

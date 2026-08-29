@@ -33,7 +33,7 @@ fn stored_agent_debug_redacts_argument_and_environment_values() {
 
 #[test]
 fn built_in_and_custom_agent_crud_preserves_structured_commands() {
-    let mut storage = Storage::open_in_memory().expect("database should open");
+    let storage = Storage::open_in_memory().expect("database should open");
     storage.migrate().expect("database should migrate");
     let built_in = agent(AgentSource::BuiltIn, "Codex");
     let mut custom = agent(AgentSource::Custom, "Internal agent");
@@ -121,7 +121,7 @@ fn built_in_and_custom_agent_crud_preserves_structured_commands() {
 
 #[test]
 fn secret_environment_keys_are_rejected_without_persisting() {
-    let mut storage = Storage::open_in_memory().expect("database should open");
+    let storage = Storage::open_in_memory().expect("database should open");
     storage.migrate().expect("database should migrate");
     for key in [
         "API_TOKEN",
@@ -153,7 +153,7 @@ fn secret_environment_keys_are_rejected_without_persisting() {
 
 #[test]
 fn blank_agent_executable_is_rejected() {
-    let mut storage = Storage::open_in_memory().expect("database should open");
+    let storage = Storage::open_in_memory().expect("database should open");
     storage.migrate().expect("database should migrate");
     let mut invalid = agent(AgentSource::Custom, "Invalid agent");
     invalid.executable = "   ".to_owned();
@@ -172,7 +172,7 @@ fn blank_agent_executable_is_rejected() {
 
 #[test]
 fn built_in_command_is_immutable_but_enabled_state_can_change() {
-    let mut storage = Storage::open_in_memory().expect("database should open");
+    let storage = Storage::open_in_memory().expect("database should open");
     storage.migrate().expect("database should migrate");
     let built_in = agent(AgentSource::BuiltIn, "Codex");
     storage
@@ -337,7 +337,7 @@ struct WorktreeScenario {
 }
 
 fn seeded_worktree_scenario() -> WorktreeScenario {
-    let mut storage = Storage::open_in_memory().expect("database should open");
+    let storage = Storage::open_in_memory().expect("database should open");
     storage.migrate().expect("database should migrate");
     let first_project = project("First", "/tmp/cli-master-first");
     let second_project = project("Second", "/tmp/cli-master-second");
