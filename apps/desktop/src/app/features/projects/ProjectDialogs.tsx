@@ -4,24 +4,36 @@ import type { AddProjectInput, ApiErrorData, Project } from "../../../ipc/types"
 import { Dialog } from "../../components/Dialog";
 import { Icon } from "../../components/Icon";
 import { errorData, isAbsoluteLocalPath } from "../../utils";
+import { browseForProjectDirectory } from "./project-directory-picker";
 
 interface AddProjectDialogProps {
   readonly open: boolean;
   readonly onClose: () => void;
   readonly onAdd: (input: AddProjectInput) => Promise<Project>;
+  readonly onBrowseDirectory?: () => Promise<string | null>;
 }
 
-/** Registers a daemon-validated local repository from a pasted absolute path. */
-export function AddProjectDialog({ open, onClose, onAdd }: AddProjectDialogProps) {
+/** Registers a daemon-validated repository selected visually or entered by path. */
+export function AddProjectDialog({
+  open,
+  onClose,
+  onAdd,
+  onBrowseDirectory = browseForProjectDirectory,
+}: AddProjectDialogProps) {
   const pathId = useId();
   const nameId = useId();
   const pathRef = useRef<HTMLInputElement>(null);
+  const browseRef = useRef<HTMLButtonElement>(null);
   const inFlight = useRef(false);
   const [path, setPath] = useState("");
   const [name, setName] = useState("");
   const [pathError, setPathError] = useState<string>();
   const [requestError, setRequestError] = useState<ApiErrorData>();
+  const [browseError, setBrowseError] = useState<string>();
+  const [browsing, setBrowsing] = useState(false);
+  const [manualEntryOpen, setManualEntryOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const selectedDirectory = describeDirectory(path);
 
   function validatePath(): boolean {
     const trimmedPath = path.trim();
@@ -57,6 +69,26 @@ export function AddProjectDialog({ open, onClose, onAdd }: AddProjectDialogProps
     }
   }
 
+  async function handleBrowse() {
+    setBrowsing(true);
+    setBrowseError(undefined);
+    try {
+      const selection = await onBrowseDirectory();
+      if (selection) {
+        setPath(selection);
+        setPathError(undefined);
+        setRequestError(undefined);
+      }
+    } catch {
+      setBrowseError(
+        "The folder browser could not be opened. Enter an absolute path instead.",
+      );
+      setManualEntryOpen(true);
+    } finally {
+      setBrowsing(false);
+    }
+  }
+
   return (
     <Dialog
       open={open}
@@ -64,7 +96,7 @@ export function AddProjectDialog({ open, onClose, onAdd }: AddProjectDialogProps
       description="Register a local Git repository with CLI Master."
       size="medium"
       closeDisabled={submitting}
-      initialFocusRef={pathRef}
+      initialFocusRef={browseRef}
       onClose={onClose}
       footer={
         <>
@@ -77,26 +109,75 @@ export function AddProjectDialog({ open, onClose, onAdd }: AddProjectDialogProps
     >
       <form id="add-project-form" className="form-stack" noValidate onSubmit={(event) => void handleSubmit(event)}>
         {requestError ? <InlineRequestError error={requestError} /> : null}
-        <div className="field">
-          <label htmlFor={pathId}>Directory <span aria-hidden="true">*</span></label>
-          <input
-            ref={pathRef}
-            id={pathId}
-            className="text-input mono"
-            value={path}
-            required
-            aria-invalid={pathError ? true : undefined}
-            aria-describedby={`${pathId}-hint${pathError ? ` ${pathId}-error` : ""}`}
-            placeholder="/Users/you/code/project"
-            onChange={(event) => {
-              setPath(event.target.value);
-              if (pathError) setPathError(undefined);
-            }}
-            onBlur={validatePath}
-          />
-          <p id={`${pathId}-hint`} className="field__hint">The daemon verifies the directory and resolves the canonical repository root before saving it.</p>
-          {pathError ? <p id={`${pathId}-error`} className="field__error" role="alert">{pathError}</p> : null}
-        </div>
+        <section className="project-directory-picker" aria-labelledby={`${pathId}-title`}>
+          <div className="project-directory-picker__heading">
+            <span id={`${pathId}-title`}>Project folder <span aria-hidden="true">*</span></span>
+            <small>Local Git repository</small>
+          </div>
+
+          {selectedDirectory ? (
+            <div className="project-directory-picker__selection">
+              <span className="project-directory-picker__icon" aria-hidden="true"><Icon name="folder" /></span>
+              <span className="project-directory-picker__path">
+                <strong>{selectedDirectory.name}</strong>
+                <small className="mono">{selectedDirectory.parent}</small>
+              </span>
+              <button className="button button--secondary" type="button" disabled={browsing || submitting} onClick={() => void handleBrowse()}>
+                {browsing ? "Opening…" : "Change"}
+              </button>
+            </div>
+          ) : (
+            <button
+              ref={browseRef}
+              className="project-directory-picker__browse"
+              type="button"
+              disabled={browsing || submitting}
+              onClick={() => void handleBrowse()}
+            >
+              <span className="project-directory-picker__icon" aria-hidden="true"><Icon name="folder" /></span>
+              <span><strong>{browsing ? "Opening folder browser…" : "Choose a project folder"}</strong><small>Browse folders on this Mac</small></span>
+              <Icon name="chevronRight" />
+            </button>
+          )}
+
+          {browseError ? <p className="field__error" role="alert">{browseError}</p> : null}
+          {pathError && !manualEntryOpen ? <p className="field__error" role="alert">{pathError}</p> : null}
+
+          <button
+            className="project-directory-picker__manual-toggle"
+            type="button"
+            aria-expanded={manualEntryOpen}
+            aria-controls={`${pathId}-manual`}
+            onClick={() => setManualEntryOpen((visible) => !visible)}
+          >
+            <Icon name="chevronDown" />
+            {manualEntryOpen ? "Hide manual path" : "Enter a path manually"}
+          </button>
+
+          {manualEntryOpen ? (
+            <div id={`${pathId}-manual`} className="field project-directory-picker__manual">
+              <label htmlFor={pathId}>Directory <span aria-hidden="true">*</span></label>
+              <input
+                ref={pathRef}
+                id={pathId}
+                className="text-input mono"
+                value={path}
+                required
+                aria-invalid={pathError ? true : undefined}
+                aria-describedby={`${pathId}-hint${pathError ? ` ${pathId}-error` : ""}`}
+                placeholder="/Users/you/code/project"
+                onChange={(event) => {
+                  setPath(event.target.value);
+                  if (pathError) setPathError(undefined);
+                  if (browseError) setBrowseError(undefined);
+                }}
+                onBlur={validatePath}
+              />
+              <p id={`${pathId}-hint`} className="field__hint">Paste an absolute local path.</p>
+              {pathError ? <p id={`${pathId}-error`} className="field__error" role="alert">{pathError}</p> : null}
+            </div>
+          ) : null}
+        </section>
         <div className="field">
           <label htmlFor={nameId}>Display name <span className="field__optional">Optional</span></label>
           <input id={nameId} className="text-input" value={name} maxLength={120} placeholder="Defaults to the repository name" onChange={(event) => setName(event.target.value)} />
@@ -104,11 +185,22 @@ export function AddProjectDialog({ open, onClose, onAdd }: AddProjectDialogProps
         </div>
         <div className="information-box">
           <Icon name="repository" />
-          <p>Adding or removing a project never changes or deletes files in the selected directory.</p>
+          <p>The folder is only registered in CLI Master. Its files are never changed or deleted.</p>
         </div>
       </form>
     </Dialog>
   );
+}
+
+function describeDirectory(path: string): { readonly name: string; readonly parent: string } | null {
+  const normalizedPath = path.trim().replace(/\/+$/, "");
+  if (!normalizedPath) return null;
+  const separatorIndex = normalizedPath.lastIndexOf("/");
+  if (separatorIndex < 0) return { name: normalizedPath, parent: "Manual path" };
+  return {
+    name: normalizedPath.slice(separatorIndex + 1) || "/",
+    parent: normalizedPath.slice(0, separatorIndex) || "/",
+  };
 }
 
 interface RenameProjectDialogProps {

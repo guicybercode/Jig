@@ -67,6 +67,9 @@ describe("AppShell project and session workflows", () => {
       }),
     );
     const dialog = await screen.findByRole("dialog", { name: "Add Project" });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Enter a path manually" }),
+    );
     await user.type(
       within(dialog).getByRole("textbox", { name: /Directory/ }),
       "  /Users/test/code/cli-master-link  ",
@@ -642,6 +645,9 @@ describe("AppShell project and session workflows", () => {
       }),
     );
     const dialog = await screen.findByRole("dialog", { name: "Add Project" });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Enter a path manually" }),
+    );
     await user.type(
       within(dialog).getByRole("textbox", { name: /Directory/ }),
       "/tmp/not-a-repository",

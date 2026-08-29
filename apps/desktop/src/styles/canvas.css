@@ -1030,10 +1030,12 @@
 .app-shell--canvas .dialog {
   --color-surface: #fff;
   --color-surface-raised: #fafaf9;
+  --color-inset: #f4f4f2;
   --color-border: var(--canvas-border);
   --color-border-strong: #c9cacc;
   --color-text: var(--canvas-text);
   --color-text-muted: var(--canvas-text-muted);
+  --color-text-disabled: #9a9ca0;
   border-radius: 1.25rem;
   color: var(--canvas-text);
   background: #fff;
@@ -1043,6 +1045,150 @@
 .app-shell--canvas .dialog::backdrop {
   background: rgb(34 36 38 / 32%);
   backdrop-filter: blur(2px);
+}
+
+.project-directory-picker {
+  min-width: 0;
+  display: grid;
+  gap: 0.625rem;
+}
+
+.project-directory-picker__heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  color: var(--color-text);
+  font-size: 0.8125rem;
+  font-weight: 650;
+}
+
+.project-directory-picker__heading small {
+  color: var(--color-text-muted);
+  font-size: 0.6875rem;
+  font-weight: 500;
+}
+
+.project-directory-picker__browse {
+  width: 100%;
+  min-height: 7.5rem;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: 1rem;
+  padding: 1.25rem;
+  color: var(--color-text);
+  background: linear-gradient(135deg, #fff 0%, #f7f7f4 100%);
+  text-align: left;
+  box-shadow: 0 0.5rem 1.5rem rgb(34 36 38 / 6%);
+  transition:
+    border-color var(--duration-feedback) var(--ease-feedback),
+    background-color var(--duration-feedback) var(--ease-feedback),
+    box-shadow var(--duration-feedback) var(--ease-feedback);
+}
+
+.project-directory-picker__browse:hover:not(:disabled) {
+  border-color: #b8b9bc;
+  box-shadow: 0 0.75rem 2rem rgb(34 36 38 / 10%);
+  cursor: pointer;
+}
+
+.project-directory-picker__browse > span:nth-child(2),
+.project-directory-picker__path {
+  min-width: 0;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.project-directory-picker__browse strong,
+.project-directory-picker__path strong {
+  overflow: hidden;
+  font-size: 0.875rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-directory-picker__browse small,
+.project-directory-picker__path small {
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  font-weight: 450;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-directory-picker__icon {
+  width: 3rem;
+  height: 3rem;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 0.875rem;
+  color: #b62f39;
+  background: var(--canvas-accent-muted, var(--color-accent-muted));
+}
+
+.project-directory-picker__icon .icon {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
+.project-directory-picker__selection {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.875rem;
+  border: 1px solid var(--color-border);
+  border-radius: 1rem;
+  padding: 0.875rem;
+  background: var(--color-surface-raised);
+}
+
+.project-directory-picker__selection .project-directory-picker__icon {
+  width: 2.75rem;
+  height: 2.75rem;
+}
+
+.project-directory-picker__manual-toggle {
+  width: max-content;
+  min-height: 2rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  border: 0;
+  padding: 0 0.25rem;
+  color: var(--color-text-muted);
+  background: transparent;
+  font-size: 0.75rem;
+}
+
+.project-directory-picker__manual-toggle:hover {
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.project-directory-picker__manual-toggle .icon {
+  width: 0.875rem;
+  height: 0.875rem;
+  transition: rotate var(--duration-feedback) var(--ease-feedback);
+}
+
+.project-directory-picker__manual-toggle[aria-expanded="true"] .icon {
+  rotate: 180deg;
+}
+
+.project-directory-picker__manual {
+  border-left: 2px solid var(--color-border);
+  padding-left: 0.75rem;
+}
+
+.app-shell--canvas .project-directory-picker .text-input {
+  color: var(--canvas-text);
+  background: #f4f4f2;
 }
 
 .canvas-terminal-form {
