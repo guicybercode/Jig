@@ -1,12 +1,29 @@
 //! `SQLite` persistence and embedded schema migrations for CLI Master.
+//!
+//! Persisted paths must be absolute and NUL-free. This layer preserves native
+//! path bytes but intentionally leaves symlink canonicalization to the Git and
+//! application service layers that can apply repository-specific policy.
 
 use std::collections::BTreeSet;
-use std::error::Error;
-use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 use std::time::Duration;
 
 use rusqlite::{Connection, TransactionBehavior, params};
+
+mod agents;
+mod error;
+mod models;
+mod paths;
+mod projects;
+mod sessions;
+mod values;
+mod worktrees;
+
+#[cfg(test)]
+mod repository_tests;
+
+pub use error::StorageError;
+pub use models::{SessionRuntimeUpdate, StoredAgent, StoredSession, StoredWorktree, WorktreeState};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -16,58 +33,21 @@ struct Migration {
     sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "initial",
-    sql: include_str!("../migrations/0001_initial.sql"),
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "initial",
+        sql: include_str!("../migrations/0001_initial.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "worktree_dirty_state",
+        sql: include_str!("../migrations/0002_worktree_dirty_state.sql"),
+    },
+];
 
 /// The newest schema version understood by this crate.
-pub const LATEST_SCHEMA_VERSION: u32 = 1;
-
-/// An error raised while opening or migrating CLI Master's database.
-#[derive(Debug)]
-pub enum StorageError {
-    /// `SQLite` rejected an operation.
-    Database(rusqlite::Error),
-    /// The database contains a migration this binary does not understand.
-    UnsupportedSchemaVersion(u32),
-    /// A migration version stored in `SQLite` cannot be represented by this crate.
-    InvalidSchemaVersion(i64),
-}
-
-impl Display for StorageError {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Database(error) => write!(formatter, "SQLite storage error: {error}"),
-            Self::UnsupportedSchemaVersion(version) => write!(
-                formatter,
-                "database schema version {version} is newer than supported version {LATEST_SCHEMA_VERSION}"
-            ),
-            Self::InvalidSchemaVersion(version) => {
-                write!(
-                    formatter,
-                    "database contains invalid schema version {version}"
-                )
-            }
-        }
-    }
-}
-
-impl Error for StorageError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Database(error) => Some(error),
-            Self::UnsupportedSchemaVersion(_) | Self::InvalidSchemaVersion(_) => None,
-        }
-    }
-}
-
-impl From<rusqlite::Error> for StorageError {
-    fn from(error: rusqlite::Error) -> Self {
-        Self::Database(error)
-    }
-}
+pub const LATEST_SCHEMA_VERSION: u32 = 2;
 
 /// An owned, configured connection to CLI Master's `SQLite` database.
 ///
@@ -227,7 +207,7 @@ mod tests {
     use rusqlite::{ErrorCode, params};
     use tempfile::TempDir;
 
-    use super::{LATEST_SCHEMA_VERSION, Storage};
+    use super::{LATEST_SCHEMA_VERSION, MIGRATIONS, Storage};
 
     const TIMESTAMP: &str = "2026-08-28T18:00:00Z";
 
@@ -291,7 +271,10 @@ mod tests {
             })
             .expect("migration count should load");
 
-        assert_eq!(migration_count, 1);
+        assert_eq!(
+            migration_count,
+            u32::try_from(MIGRATIONS.len()).expect("migration count should fit in u32")
+        );
         assert_eq!(
             reopened.schema_version().expect("version should load"),
             LATEST_SCHEMA_VERSION

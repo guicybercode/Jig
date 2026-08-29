@@ -143,9 +143,9 @@ unbounded database growth or write amplification.
 │   ├── core/                       # IDs, domain types, DTOs, protocol, errors
 │   ├── storage/                    # SQLite repositories and migrations
 │   ├── agents/                     # registry, built-ins, custom definitions
-│   ├── git/                        # repository and worktree operations (planned)
+│   ├── git/                        # repository and worktree operations
 │   ├── session/                    # PTY backend and SessionManager (planned)
-│   └── daemon/                     # cli-masterd binary, socket, orchestration (planned)
+│   └── daemon/                     # cli-masterd binary, socket, orchestration foundation
 ├── protocol/                       # frozen IPC catalog JSON
 ├── docs/adr/                       # accepted architecture decisions
 ├── tests/

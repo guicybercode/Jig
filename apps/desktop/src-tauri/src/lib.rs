@@ -4,7 +4,8 @@ use serde::Serialize;
 /// Desktop-side protocol catalog. This is not `system.hello`.
 ///
 /// The Tauri process is a typed bridge. Live sessions belong to `cli-masterd`.
-/// Until the daemon crate lands, the UI can still read the frozen method list.
+/// Until the Tauri bridge connects to the daemon, the UI can still read the
+/// frozen method list.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProtocolInfo {

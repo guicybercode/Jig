@@ -17,9 +17,9 @@ It does not proxy vendor traffic. Windows is out of scope for Beta v0.1.
 | Domain types, errors, IPC catalog | `crates/core` |
 | SQLite connection, migrations, SQL | `crates/storage` |
 | Adapter detection and `CommandSpec` | `crates/agents` |
-| Git argv and worktree safety | `crates/git` (not created yet) |
+| Git argv and worktree safety | `crates/git` |
 | PTY, process groups, `SessionManager` | `crates/session` (not created yet) |
-| Unix socket, composition, recovery | `crates/daemon` (not created yet) |
+| Unix socket, composition, recovery | `crates/daemon` |
 | Tauri window, dialogs, event relay | `apps/desktop/src-tauri` |
 | React views and typed IPC client | `apps/desktop/src` |
 | Shared method/event names | `protocol/catalog.json` |
@@ -99,6 +99,7 @@ not scattered Tauri APIs. Do not unit-test xterm.js.
 
 ## What this session did not build
 
-There is still no `cli-masterd`, no PTY crate, and no Git crate. Do not
-pretend the desktop `protocol_info` command is a daemon handshake. The next
-sessions should create those crates against the types in `crates/core`.
+There is still no PTY/session crate. The current `cli-masterd` provides the
+private socket and startup foundation, but it does not own live sessions yet.
+Do not pretend the desktop `protocol_info` command is a daemon handshake; the
+Tauri bridge is not connected to the daemon socket yet.

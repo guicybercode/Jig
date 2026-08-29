@@ -13,9 +13,9 @@ status` text, or treating a session delete as a filesystem delete.
 
 ## Decision
 
-Git operations go through a future `crates/git` service that runs the
-system `git` binary with an argument array. No shell. No `libgit2` for
-v0.1. We want the user's Git, including hooks and config they already have.
+Git operations go through the `crates/git` service, which runs the system
+`git` binary with an argument array. No shell. No `libgit2` for v0.1. We want
+the user's Git, including hooks and config they already have.
 
 A `Worktree` row is not a `Session`. Sessions may point at a worktree.
 Deleting session metadata sets `worktrees.session_id` null. It does not
@@ -41,9 +41,9 @@ name. They do not reuse an existing branch.
 
 ## Consequences
 
-The Git crate can land later without renegotiating these rules. Status
-parsing must use porcelain v2 with NUL delimiters. Diffs are size-capped
-and report `truncated`.
+The Git crate implements these rules without renegotiating them. Status parsing
+uses porcelain v2 with NUL delimiters. Diffs are size-capped and report
+`truncated`.
 
 Linux filesystems are case-sensitive. Path checks after normalization have
 to stay inside the managed worktree root. A case-insensitive compare would
