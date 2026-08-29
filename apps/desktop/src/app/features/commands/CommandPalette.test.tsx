@@ -49,19 +49,21 @@ describe("CommandPalette", () => {
     const opener = screen.getByRole("button", { name: "Open commands" });
     await user.click(opener);
 
-    const search = screen.getByRole("searchbox", { name: "Search commands" });
+    const search = screen.getByRole("combobox", { name: "Search commands" });
     expect(search).toHaveFocus();
     expect(screen.getByRole("status")).toHaveTextContent(
       "3 matching commands; 2 available.",
     );
     expect(
-      screen.getByRole("button", { name: "Add Custom Agent" }),
+      screen.getByRole("option", { name: /Add Custom Agent/ }),
     ).toHaveAccessibleDescription("Connect the local daemon first.");
 
+    const newSession = screen.getByRole("option", { name: "New Session" });
+    const reconnectOption = screen.getByRole("option", { name: "Reconnect" });
+    expect(search).toHaveAttribute("aria-activedescendant", newSession.id);
     await user.keyboard("{ArrowDown}");
-    expect(screen.getByRole("button", { name: "New Session" })).toHaveFocus();
-    await user.keyboard("{ArrowDown}");
-    expect(screen.getByRole("button", { name: "Reconnect" })).toHaveFocus();
+    expect(search).toHaveFocus();
+    expect(search).toHaveAttribute("aria-activedescendant", reconnectOption.id);
     await user.keyboard("{Enter}");
 
     expect(reconnect).toHaveBeenCalledOnce();
@@ -82,13 +84,13 @@ describe("CommandPalette", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "Open commands" }));
-    const search = screen.getByRole("searchbox", { name: "Search commands" });
+    const search = screen.getByRole("combobox", { name: "Search commands" });
     await user.type(search, "missing");
 
     expect(screen.getByRole("status")).toHaveTextContent(
       "0 matching commands; 0 available.",
     );
-    expect(screen.getByText("No matching commands.")).toBeVisible();
+    expect(screen.getByText("No matching commands")).toBeVisible();
     await user.keyboard("{ArrowDown}");
     expect(search).toHaveFocus();
   });

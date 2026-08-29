@@ -65,11 +65,19 @@ export function CommandPalette({
   const filteredCommands = commands.filter((command) =>
     commandMatchesQuery(command, normalizedQuery),
   );
+  const availableCommandCount = filteredCommands.filter(
+    (command) => !command.disabled,
+  ).length;
+  const resultSummary = `${filteredCommands.length} matching ${
+    filteredCommands.length === 1 ? "command" : "commands"
+  }; ${availableCommandCount} available.`;
   const matchedActiveIndex = filteredCommands.findIndex(
     (command) => command.id === activeCommandId,
   );
   const activeIndex =
-    matchedActiveIndex >= 0 ? matchedActiveIndex : filteredCommands.length ? 0 : -1;
+    matchedActiveIndex >= 0 && !filteredCommands[matchedActiveIndex]?.disabled
+      ? matchedActiveIndex
+      : filteredCommands.findIndex((command) => !command.disabled);
   const activeCommand =
     activeIndex >= 0 ? filteredCommands[activeIndex] : undefined;
   const activeOptionId =
@@ -91,14 +99,19 @@ export function CommandPalette({
   }
 
   function moveActiveCommand(offset: -1 | 1) {
-    if (!filteredCommands.length) {
+    const availableCommands = filteredCommands.filter(
+      (command) => !command.disabled,
+    );
+    if (!availableCommands.length) {
       return;
     }
-
+    const activeAvailableIndex = availableCommands.findIndex(
+      (command) => command.id === activeCommand?.id,
+    );
     const nextIndex =
-      (Math.max(activeIndex, 0) + offset + filteredCommands.length) %
-      filteredCommands.length;
-    const nextCommand = filteredCommands[nextIndex];
+      (Math.max(activeAvailableIndex, 0) + offset + availableCommands.length) %
+      availableCommands.length;
+    const nextCommand = availableCommands[nextIndex];
     if (nextCommand) {
       setActiveCommandId(nextCommand.id);
     }
@@ -173,6 +186,9 @@ export function CommandPalette({
           onChange={(event) => setQuery(event.currentTarget.value)}
           onKeyDown={handleInputKeyDown}
         />
+        <output className="visually-hidden" aria-live="polite">
+          {resultSummary}
+        </output>
         <ul
           id={listboxId}
           className="command-palette__list"
@@ -205,7 +221,11 @@ export function CommandPalette({
                   aria-disabled={command.disabled ? true : undefined}
                   aria-describedby={describedBy}
                   onMouseDown={(event) => event.preventDefault()}
-                  onMouseEnter={() => setActiveCommandId(command.id)}
+                  onMouseEnter={() => {
+                    if (!command.disabled) {
+                      setActiveCommandId(command.id);
+                    }
+                  }}
                   onClick={() => executeCommand(command)}
                 >
                   <span className="command-palette__option-heading">
