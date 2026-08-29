@@ -23,6 +23,20 @@ pub enum SessionStatus {
     Unknown,
 }
 
+/// Persistence and recovery state for a managed Git worktree.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeState {
+    /// Git isolation is being prepared.
+    Creating,
+    /// The worktree exists and can be used as a session working directory.
+    Active,
+    /// Removal was requested but has not completed.
+    RemovePending,
+    /// The database record no longer matches Git's worktree list.
+    Orphaned,
+}
+
 /// Origin of an agent definition.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -106,6 +120,9 @@ pub struct Session {
     /// Process exit code, once available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+    /// Stable error code when the session failed to start or run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
     /// Creation time as Unix epoch milliseconds.
     pub created_at_ms: i64,
     /// Most recent metadata update as Unix epoch milliseconds.
@@ -127,10 +144,14 @@ pub struct Worktree {
     pub path: PathBuf,
     /// Checked-out branch name.
     pub branch: String,
+    /// Persistence and recovery state.
+    pub state: WorktreeState,
     /// Whether the latest Git inspection found uncommitted changes.
     pub is_dirty: bool,
     /// Creation time as Unix epoch milliseconds.
     pub created_at_ms: i64,
+    /// Most recent metadata update as Unix epoch milliseconds.
+    pub updated_at_ms: i64,
 }
 
 #[cfg(test)]
@@ -194,7 +215,7 @@ mod tests {
     #[test]
     fn agent_session_and_worktree_dtos_round_trip() {
         let project_id = ProjectId::new();
-        let agent_id = AgentId::new();
+        let agent_id = AgentId::from_key("codex").expect("built-in key should parse");
         let session_id = SessionId::new();
         let worktree_id = WorktreeId::new();
         let command = CommandSpec::try_from_parts(
@@ -205,7 +226,7 @@ mod tests {
         )
         .expect("command fixture should be valid");
         let agent = AgentDefinition {
-            id: agent_id,
+            id: agent_id.clone(),
             display_name: "Codex".to_owned(),
             description: Some("Local coding agent".to_owned()),
             source: AgentSource::BuiltIn,
@@ -224,6 +245,7 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/worktrees/auth")),
             status: SessionStatus::Running,
             exit_code: None,
+            error_code: None,
             created_at_ms: 1,
             updated_at_ms: 2,
         };
@@ -233,8 +255,10 @@ mod tests {
             session_id: Some(session_id),
             path: PathBuf::from("/tmp/worktrees/auth"),
             branch: "agent/auth".to_owned(),
+            state: WorktreeState::Active,
             is_dirty: true,
             created_at_ms: 1,
+            updated_at_ms: 1,
         };
 
         assert_json_round_trip(&agent);
