@@ -75,14 +75,14 @@ fn branch_generation_is_ascii_and_adds_collision_suffix() {
         .generate_branch_name(&fixture.repository, "Olá / Auth API", "abc123")
         .expect("branch should be generated");
     assert!(first.is_ascii());
-    assert!(first.starts_with("agent/"));
+    assert_eq!(first, "agent/ola-auth-api-abc123");
     command(&fixture.repository, ["branch", &first]);
 
     let second = git
         .generate_branch_name(&fixture.repository, "Olá / Auth API", "abc123")
         .expect("colliding branch should be generated");
     assert_eq!(second, format!("{first}-2"));
-    assert_eq!(slugify("Olá / Auth API"), "ol-auth-api");
+    assert_eq!(slugify("Olá / Auth API"), "ola-auth-api");
 }
 
 #[test]
