@@ -2,10 +2,12 @@ import { useEffect, useReducer } from "react";
 
 import {
   CANVAS_STORAGE_KEY,
+  CANVAS_DOCUMENT_UPDATED_EVENT,
   canvasReducer,
   createInitialCanvasState,
   parseCanvasDocument,
   serializeCanvasDocument,
+  toCanvasDocument,
 } from "./canvas-state";
 import type { CanvasAction, CanvasState } from "./canvas-state";
 
@@ -31,6 +33,11 @@ export function useCanvasState(): CanvasStateController {
 
   useEffect(() => {
     safelyWrite(storage, CANVAS_STORAGE_KEY, serializeCanvasDocument(state));
+    globalThis.dispatchEvent?.(
+      new CustomEvent(CANVAS_DOCUMENT_UPDATED_EVENT, {
+        detail: toCanvasDocument(state),
+      }),
+    );
   }, [state, storage]);
 
   return {

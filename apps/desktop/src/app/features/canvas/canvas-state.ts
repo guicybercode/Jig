@@ -1,5 +1,6 @@
 export const CANVAS_STORAGE_KEY = "cli-master.canvas.v1";
 export const CANVAS_DOCUMENT_VERSION = 1;
+export const CANVAS_DOCUMENT_UPDATED_EVENT = "cli-master:canvas-document-updated";
 
 export type CanvasNodeKind = "terminal" | "note";
 export type TerminalPreset = "shell" | "codex" | "claude" | "opencode" | "custom";

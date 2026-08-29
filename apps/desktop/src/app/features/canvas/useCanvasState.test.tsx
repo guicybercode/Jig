@@ -1,7 +1,10 @@
 import { act, renderHook } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { CANVAS_STORAGE_KEY } from "./canvas-state";
+import {
+  CANVAS_DOCUMENT_UPDATED_EVENT,
+  CANVAS_STORAGE_KEY,
+} from "./canvas-state";
 import { useCanvasState } from "./useCanvasState";
 
 describe("useCanvasState", () => {
@@ -10,6 +13,8 @@ describe("useCanvasState", () => {
   });
 
   it("hydrates the first-launch graph and persists durable mutations", () => {
+    const onDocumentUpdated = vi.fn();
+    window.addEventListener(CANVAS_DOCUMENT_UPDATED_EVENT, onDocumentUpdated);
     const { result } = renderHook(() => useCanvasState());
 
     expect(result.current.state.nodes).toHaveLength(3);
@@ -41,6 +46,12 @@ describe("useCanvasState", () => {
         }),
       ]),
     );
+    expect(onDocumentUpdated).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        detail: expect.objectContaining({ nodes: result.current.state.nodes }),
+      }),
+    );
+    window.removeEventListener(CANVAS_DOCUMENT_UPDATED_EVENT, onDocumentUpdated);
   });
 
   it("falls back to the safe first-launch graph for corrupt storage", () => {

@@ -1,7 +1,13 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { Project, Session } from "../../../ipc/types";
 import { Icon } from "../../components/Icon";
+import {
+  CANVAS_DOCUMENT_UPDATED_EVENT,
+  CANVAS_STORAGE_KEY,
+  parseCanvasDocument,
+  type CanvasDocument,
+} from "../canvas/canvas-state";
 
 interface CanvasSidebarProps {
   readonly projects: readonly Project[];
@@ -26,6 +32,9 @@ export function CanvasSidebar({
   onOpenDiagnostics,
 }: CanvasSidebarProps) {
   const [query, setQuery] = useState("");
+  const [canvasTerminalCount, setCanvasTerminalCount] = useState(
+    readCanvasTerminalCount,
+  );
   const visibleProjects = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
     return [...projects]
@@ -36,6 +45,22 @@ export function CanvasSidebar({
           project.name.toLocaleLowerCase().includes(normalizedQuery),
       );
   }, [projects, query]);
+
+  useEffect(() => {
+    function handleCanvasDocument(event: Event) {
+      const document = (event as CustomEvent<CanvasDocument>).detail;
+      setCanvasTerminalCount(
+        document.nodes.filter((node) => node.kind === "terminal").length,
+      );
+    }
+
+    window.addEventListener(CANVAS_DOCUMENT_UPDATED_EVENT, handleCanvasDocument);
+    return () =>
+      window.removeEventListener(
+        CANVAS_DOCUMENT_UPDATED_EVENT,
+        handleCanvasDocument,
+      );
+  }, []);
 
   return (
     <aside className="canvas-sidebar" aria-label="Canvas workspaces">
@@ -67,16 +92,18 @@ export function CanvasSidebar({
           <div className="canvas-sidebar__workspace is-selected">
             <Icon name="monitor" />
             <span>My Workspace</span>
-            <small aria-label={`${sessions.length} sessions`}>
-              <Icon name="terminal" /> {sessions.length}
+            <small aria-label={`${canvasTerminalCount} canvas terminals`}>
+              <Icon name="terminal" /> {canvasTerminalCount}
             </small>
           </div>
         ) : visibleProjects.length > 0 ? (
           <ul>
             {visibleProjects.map((project) => {
-              const sessionCount = sessions.filter(
-                (session) => session.projectId === project.id,
-              ).length;
+              const sessionCount =
+                project.id === selectedProjectId
+                  ? canvasTerminalCount
+                  : sessions.filter((session) => session.projectId === project.id)
+                      .length;
               return (
                 <li key={project.id}>
                   <button
@@ -117,4 +144,14 @@ export function CanvasSidebar({
       </footer>
     </aside>
   );
+}
+
+function readCanvasTerminalCount(): number {
+  try {
+    return parseCanvasDocument(localStorage.getItem(CANVAS_STORAGE_KEY)).nodes.filter(
+      (node) => node.kind === "terminal",
+    ).length;
+  } catch {
+    return 0;
+  }
 }

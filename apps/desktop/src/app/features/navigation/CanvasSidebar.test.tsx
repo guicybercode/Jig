@@ -1,8 +1,12 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Project } from "../../../ipc/types";
+import {
+  CANVAS_DOCUMENT_UPDATED_EVENT,
+  createInitialCanvasDocument,
+} from "../canvas/canvas-state";
 import { CanvasSidebar } from "./CanvasSidebar";
 
 const PROJECT: Project = {
@@ -19,7 +23,22 @@ describe("CanvasSidebar", () => {
 
     expect(screen.getByRole("searchbox", { name: "Filter workspaces" })).toBeVisible();
     expect(screen.getByText("My Workspace")).toBeVisible();
+    expect(screen.getByLabelText("2 canvas terminals")).toHaveTextContent("2");
     expect(screen.queryByText("Sessions")).not.toBeInTheDocument();
+  });
+
+  it("keeps the canvas terminal count synchronized", () => {
+    renderSidebar([]);
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(CANVAS_DOCUMENT_UPDATED_EVENT, {
+          detail: { ...createInitialCanvasDocument(), nodes: [] },
+        }),
+      );
+    });
+
+    expect(screen.getByLabelText("0 canvas terminals")).toHaveTextContent("0");
   });
 
   it("filters and selects project workspaces", async () => {
