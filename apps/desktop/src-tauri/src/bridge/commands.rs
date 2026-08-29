@@ -1,4 +1,4 @@
-use cli_master_core::{ApiError, PROTOCOL_V1, ResponseEnvelope, wire};
+use cli_master_core::{APPLICATION_VERSION, ApiError, PROTOCOL_V1, ResponseEnvelope, wire};
 use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, State};
@@ -6,12 +6,16 @@ use tauri::{AppHandle, State};
 use super::client::{BridgeOptions, DaemonBridge};
 use super::relay::TauriRelay;
 use super::status::DaemonStatus;
+use super::{DAEMON_SIDECAR_EXTERNAL_BIN, DAEMON_SIDECAR_NAME};
 
 /// Desktop-side protocol catalog. This is not `system.hello`.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProtocolInfo {
+    pub(crate) application_version: &'static str,
     pub(crate) protocol_version: u16,
+    pub(crate) daemon_sidecar: &'static str,
+    pub(crate) sidecar_external_bin: &'static str,
     pub(crate) methods: Vec<&'static str>,
     pub(crate) events: Vec<&'static str>,
 }
@@ -21,7 +25,10 @@ pub struct ProtocolInfo {
 #[tauri::command]
 pub fn protocol_info() -> ProtocolInfo {
     ProtocolInfo {
+        application_version: APPLICATION_VERSION,
         protocol_version: PROTOCOL_V1,
+        daemon_sidecar: DAEMON_SIDECAR_NAME,
+        sidecar_external_bin: DAEMON_SIDECAR_EXTERNAL_BIN,
         methods: wire::method::ALL.to_vec(),
         events: wire::event_name::ALL.to_vec(),
     }

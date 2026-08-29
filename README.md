@@ -16,9 +16,16 @@ CLI Master does not require an account, cloud backend, telemetry service, or
 API server. Authentication remains with each CLI installed on the machine.
 
 > [!IMPORTANT]
-> Beta v0.1 is under active development. The repository currently contains the
-> architecture and the first buildable Tauri/React foundation. Do not treat the
-> current `main` branch as a finished release.
+> Beta v0.1 packaging produces **unsigned** Linux AppImage and macOS `.app` /
+> `.dmg` artifacts. macOS notarization is not configured. Do not add
+> certificates or publishing secrets to this repository. Testers should verify
+> `SHA256SUMS` before running a download.
+>
+> Install and day-two docs: [docs/install.md](docs/install.md),
+> [docs/first-use.md](docs/first-use.md),
+> [docs/backup-and-recovery.md](docs/backup-and-recovery.md),
+> [docs/troubleshooting.md](docs/troubleshooting.md),
+> [docs/uninstall.md](docs/uninstall.md).
 
 ## Supported platforms
 
@@ -103,6 +110,7 @@ Run the repository gate before committing:
 
 ```bash
 pnpm check
+pnpm check:versions
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
@@ -110,6 +118,10 @@ pnpm --filter @cli-master/desktop test:e2e
 ```
 
 `pnpm check` type-checks and builds the frontend, then checks every Rust crate.
+`pnpm check:versions` fails if Cargo, npm, Tauri, and the protocol catalog
+disagree. Packaging CI smoke-tests the AppImage / `.app` bundle, not only
+`cargo build`.
+
 Runtime acceptance for two live sessions, worktree isolation, UI close/reopen,
 and daemon recovery lives in `crates/e2e`. Playwright covers the empty desktop
 shell; see [docs/playwright-testing.md](docs/playwright-testing.md).
@@ -118,12 +130,22 @@ Platform-specific PTY tests run in the Linux and macOS CI jobs.
 ## Build packages
 
 ```bash
-pnpm tauri build
+pnpm package
 ```
 
-Tauri creates the formats supported by the current operating system. Code
-signing and macOS notarization are release concerns and are not required for a
-local development build.
+This stages `cli-masterd`, builds the current OS bundle (AppImage on Linux,
+`.app` and `.dmg` on macOS), smoke-tests the bundled daemon, and writes
+`dist/artifacts/SHA256SUMS`.
+
+For a bundle without the smoke/checksum steps:
+
+```bash
+pnpm tauri:build
+```
+
+Code signing and macOS notarization are **not** configured. `signingIdentity`
+is `null`. See [docs/PACKAGING.md](docs/PACKAGING.md) and
+[docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
 
 ## Repository layout
 
@@ -135,7 +157,9 @@ crates/e2e                     Acceptance tests against production crates
 design-system/cli-master/      UI tokens and interaction rules
 ARCHITECTURE.md                accepted architecture and protocol design
 AGENTS.md                      crate ownership and IPC rules for agents
-protocol/catalog.json          frozen v1 method and event names
+protocol/catalog.json          frozen v1 method names plus applicationVersion
+docs/                          install, packaging, and recovery guides
+CHANGELOG.md                   Beta packaging notes
 docs/playwright-testing.md     UI E2E scope and skipped Tauri grid tests
 docs/test-coverage-review.md   Beta criteria mapped onto real tests
 ```

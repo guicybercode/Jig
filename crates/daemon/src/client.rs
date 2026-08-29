@@ -325,7 +325,7 @@ fn diagnostics_payload(state: &ServerState) -> DiagnosticsResponse {
         daemon_instance_id: state.hello.instance_id,
         data_path: state.config.data_directory().to_path_buf(),
         runtime_path: state.config.runtime_directory().to_path_buf(),
-        log_path: state.config.data_directory().join("logs"),
+        log_path: state.config.log_directory().to_path_buf(),
         effective_path: Vec::new(),
         recent_issues: state.events.diagnostics().recent(),
     }

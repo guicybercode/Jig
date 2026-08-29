@@ -106,6 +106,27 @@ impl Git {
         Ok(git)
     }
 
+    /// Returns the `git --version` line for diagnostics and packaging checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Git cannot execute or the version output is empty.
+    pub fn version(&self) -> Result<String, GitError> {
+        let output = self.execute(None, [OsStr::new("--version")], 16 * 1024)?;
+        if !output.success() {
+            return Err(self.command_error("read Git version", &output));
+        }
+        let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if version.is_empty() {
+            return Err(GitError::new(
+                GitErrorKind::InvalidOutput,
+                "Git returned an empty version string",
+                "Choose the system Git executable",
+            ));
+        }
+        Ok(version)
+    }
+
     /// Overrides the command timeout for this handle.
     ///
     /// A zero timeout is rejected because it would make every invocation race

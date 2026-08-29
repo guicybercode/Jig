@@ -292,6 +292,16 @@ fn assert_process_stopped(pid: &str, process: &str) {
     assert!(stopped, "{process} {pid} survived timeout");
 }
 
+#[test]
+fn version_identifies_system_git() {
+    let git = Git::discover().expect("Git should be installed for integration tests");
+    let version = git.version().expect("git --version should succeed");
+    assert!(
+        version.starts_with("git version "),
+        "unexpected version: {version}"
+    );
+}
+
 #[cfg(unix)]
 fn process_is_live(pid: &str) -> bool {
     let output = Command::new("/bin/ps")

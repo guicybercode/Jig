@@ -1,5 +1,6 @@
 {
   "protocolVersion": 1,
+  "applicationVersion": "0.1.0",
   "methods": [
     "system.hello",
     "state.snapshot",

@@ -26,5 +26,6 @@ pub use model::{
     AgentDefinition, AgentSource, Project, Session, SessionStatus, Worktree, WorktreeState,
 };
 pub use protocol::{
-    EnvelopeKind, EventEnvelope, PROTOCOL_V1, RequestEnvelope, ResponseEnvelope, ResponsePayload,
+    APPLICATION_VERSION, EnvelopeKind, EventEnvelope, PROTOCOL_V1, RequestEnvelope,
+    ResponseEnvelope, ResponsePayload,
 };

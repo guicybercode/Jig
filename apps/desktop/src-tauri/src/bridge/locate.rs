@@ -5,7 +5,8 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-const DAEMON_BINARY_NAME: &str = "cli-masterd";
+use super::DAEMON_SIDECAR_NAME;
+
 const ENV_BINARY: &str = "CLI_MASTERD";
 
 /// How the desktop process found a `cli-masterd` executable.
@@ -90,7 +91,7 @@ pub fn locate_daemon_binary(env: &LocateEnv) -> Result<LocatedDaemon, LocateErro
     if let Some(path) = env
         .current_exe
         .parent()
-        .map(|dir| dir.join(DAEMON_BINARY_NAME))
+        .map(|dir| dir.join(DAEMON_SIDECAR_NAME))
     {
         if is_executable_file(&path) {
             return Ok(LocatedDaemon {
@@ -104,7 +105,7 @@ pub fn locate_daemon_binary(env: &LocateEnv) -> Result<LocatedDaemon, LocateErro
         if dir.as_os_str().is_empty() {
             continue;
         }
-        let path = dir.join(DAEMON_BINARY_NAME);
+        let path = dir.join(DAEMON_SIDECAR_NAME);
         if is_executable_file(&path) {
             return Ok(LocatedDaemon {
                 path,
@@ -128,8 +129,8 @@ pub fn locate_daemon_binary(env: &LocateEnv) -> Result<LocatedDaemon, LocateErro
 fn workspace_candidates() -> Vec<PathBuf> {
     let target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../target");
     vec![
-        target.join("debug").join(DAEMON_BINARY_NAME),
-        target.join("release").join(DAEMON_BINARY_NAME),
+        target.join("debug").join(DAEMON_SIDECAR_NAME),
+        target.join("release").join(DAEMON_SIDECAR_NAME),
     ]
 }
 

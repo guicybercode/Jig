@@ -20,6 +20,6 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "../../protocol/catalog.json"],
+  "include": ["src", "package.json", "../../protocol/catalog.json"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

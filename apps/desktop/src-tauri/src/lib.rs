@@ -54,10 +54,10 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    use cli_master_core::{APPLICATION_VERSION, PROTOCOL_V1, wire};
     use serde_json::json;
 
     use super::*;
-    use cli_master_core::{PROTOCOL_V1, wire};
 
     #[test]
     fn rust_catalog_matches_desktop_mirror() {
@@ -66,11 +66,45 @@ mod tests {
                 .expect("desktop protocol mirror should parse");
 
         assert_eq!(catalog["protocolVersion"], PROTOCOL_V1);
+        assert_eq!(catalog["applicationVersion"], APPLICATION_VERSION);
         assert_eq!(catalog["methods"], json!(wire::method::ALL));
         assert_eq!(catalog["events"], json!(wire::event_name::ALL));
 
+        let root_package: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../package.json"))
+                .expect("root package.json should parse");
+        let desktop_package: serde_json::Value =
+            serde_json::from_str(include_str!("../../package.json"))
+                .expect("desktop package.json should parse");
+        let tauri_config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json"))
+                .expect("tauri.conf.json should parse");
+
+        assert_eq!(root_package["version"], APPLICATION_VERSION);
+        assert_eq!(desktop_package["version"], APPLICATION_VERSION);
+        assert_eq!(tauri_config["version"], APPLICATION_VERSION);
+
         let exposed = protocol_info();
+        assert_eq!(exposed.application_version, APPLICATION_VERSION);
+        assert_eq!(exposed.daemon_sidecar, bridge::DAEMON_SIDECAR_NAME);
+        assert_eq!(
+            exposed.sidecar_external_bin,
+            bridge::DAEMON_SIDECAR_EXTERNAL_BIN
+        );
         assert_eq!(exposed.methods, wire::method::ALL);
         assert_eq!(exposed.events, wire::event_name::ALL);
+
+        assert_eq!(
+            tauri_config["bundle"]["externalBin"],
+            json!([bridge::DAEMON_SIDECAR_EXTERNAL_BIN])
+        );
+        assert_eq!(
+            tauri_config["bundle"]["targets"],
+            json!(["app", "dmg", "appimage"])
+        );
+        assert_eq!(
+            tauri_config["bundle"]["macOS"]["signingIdentity"],
+            json!(null)
+        );
     }
 }
