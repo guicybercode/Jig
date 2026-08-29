@@ -6,8 +6,8 @@ use std::process::Command;
 use std::time::Duration;
 
 use cli_master_core::{
-    EnvelopeKind, PROTOCOL_V1, Project, RequestEnvelope, RequestId, ResponseEnvelope,
-    ResponsePayload, wire::DiagnosticsResponse,
+    AgentSource, EnvelopeKind, EventEnvelope, PROTOCOL_V1, Project, RequestEnvelope, RequestId,
+    ResponseEnvelope, ResponsePayload, Session, wire::DiagnosticsResponse,
 };
 use cli_master_daemon::{
     Daemon, DaemonConfig, DaemonError, HelloResponse, MAX_FRAME_LENGTH, StateSnapshot,
@@ -143,7 +143,7 @@ async fn handshake_is_exact_and_connection_accepts_multiple_requests() {
 }
 
 #[tokio::test]
-async fn snapshot_reports_applied_migration_and_typed_empty_collections() {
+async fn snapshot_reports_applied_migration_and_builtin_terminal_agents() {
     let temporary = TempDir::new().expect("temporary directory should exist");
     let daemon = RunningDaemon::start(temporary.path());
     let mut client = connect(daemon.config.socket_path()).await;
@@ -159,10 +159,164 @@ async fn snapshot_reports_applied_migration_and_typed_empty_collections() {
     let snapshot: StateSnapshot = serde_json::from_value(data).expect("snapshot should decode");
     assert_eq!(snapshot.schema_version, LATEST_SCHEMA_VERSION);
     assert!(snapshot.projects.is_empty());
-    assert!(snapshot.agents.is_empty());
+    assert_eq!(snapshot.agents.len(), 4);
+    assert!(snapshot.agents.iter().all(|agent| agent.enabled));
+    assert!(
+        snapshot
+            .agents
+            .iter()
+            .all(|agent| agent.source == AgentSource::BuiltIn)
+    );
+    assert!(
+        snapshot
+            .agents
+            .iter()
+            .any(|agent| agent.display_name.as_str() == "Shell")
+    );
     assert!(snapshot.sessions.is_empty());
     assert!(snapshot.worktrees.is_empty());
 
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn live_terminal_accepts_input_and_streams_pty_output() {
+    let temporary = TempDir::new().expect("temporary directory should exist");
+    let project_directory = temporary.path().join("terminal-project");
+    fs::create_dir(&project_directory).expect("project directory should exist");
+    let daemon = RunningDaemon::start(temporary.path());
+    let mut control = connect(daemon.config.socket_path()).await;
+
+    let project_response = exchange(
+        &mut control,
+        &RequestEnvelope::v1(
+            "project.add",
+            json!({ "path": project_directory.to_string_lossy() }),
+        ),
+    )
+    .await;
+    let ResponsePayload::Success { data } = project_response.payload else {
+        panic!("project registration should succeed");
+    };
+    let project: Project = serde_json::from_value(data).expect("project should decode");
+
+    let snapshot_response = exchange(
+        &mut control,
+        &RequestEnvelope::v1("state.snapshot", json!({})),
+    )
+    .await;
+    let ResponsePayload::Success { data } = snapshot_response.payload else {
+        panic!("snapshot should succeed");
+    };
+    let snapshot: StateSnapshot = serde_json::from_value(data).expect("snapshot should decode");
+    let shell = snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.display_name.as_str() == "Shell")
+        .expect("shell agent should be available");
+
+    let create_response = exchange(
+        &mut control,
+        &RequestEnvelope::v1(
+            "session.create",
+            json!({
+                "projectId": project.id,
+                "name": "Terminal test",
+                "agentId": shell.id,
+                "isolation": "current"
+            }),
+        ),
+    )
+    .await;
+    let ResponsePayload::Success { data } = create_response.payload else {
+        panic!("session creation should succeed");
+    };
+    let created: Session = serde_json::from_value(data).expect("session should decode");
+
+    let start_response = exchange(
+        &mut control,
+        &RequestEnvelope::v1("session.start", json!({ "sessionId": created.id })),
+    )
+    .await;
+    let ResponsePayload::Success { data } = start_response.payload else {
+        panic!("session start should succeed");
+    };
+    let started: Session = serde_json::from_value(data).expect("started session should decode");
+    assert!(matches!(
+        started.status,
+        cli_master_core::SessionStatus::Starting | cli_master_core::SessionStatus::Running
+    ));
+    assert!(started.pid.is_some());
+
+    let mut events = connect(daemon.config.socket_path()).await;
+    let subscribe_response = exchange(
+        &mut events,
+        &RequestEnvelope::v1("session.subscribe", json!({ "sessionId": created.id })),
+    )
+    .await;
+    assert!(matches!(
+        subscribe_response.payload,
+        ResponsePayload::Success { .. }
+    ));
+
+    let write_response = exchange(
+        &mut control,
+        &RequestEnvelope::v1(
+            "session.write",
+            json!({
+                "sessionId": created.id,
+                "base64": "ZWNobyBKSUdfUFRZX09LCg=="
+            }),
+        ),
+    )
+    .await;
+    assert!(matches!(
+        write_response.payload,
+        ResponsePayload::Success { .. }
+    ));
+
+    let output = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut output = Vec::new();
+        loop {
+            let bytes = events
+                .next()
+                .await
+                .expect("event frame should arrive")
+                .expect("event frame should be valid");
+            let event: EventEnvelope<Value> =
+                serde_json::from_slice(&bytes).expect("event should decode");
+            if event.event == "session.output" {
+                let encoded = event.payload["base64"]
+                    .as_str()
+                    .expect("output should contain base64");
+                output.extend(decode_test_base64(encoded));
+                if output
+                    .windows(b"JIG_PTY_OK".len())
+                    .any(|part| part == b"JIG_PTY_OK")
+                {
+                    break output;
+                }
+            }
+        }
+    })
+    .await
+    .expect("terminal marker should arrive before timeout");
+    assert!(
+        output
+            .windows(b"JIG_PTY_OK".len())
+            .any(|part| part == b"JIG_PTY_OK")
+    );
+
+    let stop_response = exchange(
+        &mut control,
+        &RequestEnvelope::v1("session.stop", json!({ "sessionId": created.id })),
+    )
+    .await;
+    assert!(matches!(
+        stop_response.payload,
+        ResponsePayload::Success { .. }
+    ));
+    drop(events);
     daemon.stop().await;
 }
 
@@ -437,6 +591,43 @@ fn mode(path: &Path) -> u32 {
         .permissions()
         .mode()
         & 0o777
+}
+
+fn decode_test_base64(encoded: &str) -> Vec<u8> {
+    fn value(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+
+    let mut decoded = Vec::new();
+    for chunk in encoded.as_bytes().chunks_exact(4) {
+        let a = value(chunk[0]).expect("base64 a");
+        let b = value(chunk[1]).expect("base64 b");
+        let c = if chunk[2] == b'=' {
+            0
+        } else {
+            value(chunk[2]).expect("base64 c")
+        };
+        let d = if chunk[3] == b'=' {
+            0
+        } else {
+            value(chunk[3]).expect("base64 d")
+        };
+        decoded.push((a << 2) | (b >> 4));
+        if chunk[2] != b'=' {
+            decoded.push((b << 4) | (c >> 2));
+        }
+        if chunk[3] != b'=' {
+            decoded.push((c << 6) | d);
+        }
+    }
+    decoded
 }
 
 #[allow(dead_code)]

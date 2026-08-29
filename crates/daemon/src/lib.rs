@@ -14,6 +14,7 @@ mod error;
 mod lock;
 mod projects;
 mod server;
+mod sessions;
 
 pub use config::DaemonConfig;
 pub use error::DaemonError;

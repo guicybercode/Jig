@@ -38,6 +38,14 @@ pub enum DaemonError {
     /// Serializing a protocol response failed.
     #[error("could not serialize daemon response: {0}")]
     Serialize(#[from] serde_json::Error),
+    /// A required daemon-owned service could not be initialized.
+    #[error("could not initialize {service}: {reason}")]
+    Initialization {
+        /// Service that failed before the socket began serving requests.
+        service: &'static str,
+        /// Sanitized failure reason.
+        reason: String,
+    },
 }
 
 impl DaemonError {
@@ -46,6 +54,13 @@ impl DaemonError {
             operation,
             path: path.into(),
             source,
+        }
+    }
+
+    pub(crate) fn initialization(service: &'static str, reason: impl Into<String>) -> Self {
+        Self::Initialization {
+            service,
+            reason: reason.into(),
         }
     }
 }

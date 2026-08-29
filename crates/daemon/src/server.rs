@@ -4,14 +4,22 @@ use std::io;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use cli_master_core::{
-    AgentDefinition, ApiError, DaemonInstanceId, EnvelopeKind, PROTOCOL_V1, Project,
-    RequestEnvelope, RequestId, ResponseEnvelope, Session, Worktree,
+    ApiError, DaemonInstanceId, EnvelopeKind, EventEnvelope, PROTOCOL_V1, Project, RequestEnvelope,
+    RequestId, ResponseEnvelope, Session, Worktree,
     wire::{
-        DiagnosticsResponse, ProjectAddRequest, ProjectRemoveRequest, ProjectRenameRequest, method,
+        AgentCustomCreateRequest, AgentDetectRequest, AgentRecord, DiagnosticsResponse,
+        EmptyResponse, OutputCursor, OutputSequence, ProjectAddRequest, ProjectRemoveRequest,
+        ProjectRenameRequest, PtyOutputBase64, SessionCreateRequest, SessionDeleteRequest,
+        SessionExitedEvent, SessionListRequest, SessionOutputEvent, SessionOutputGapEvent,
+        SessionRenameRequest, SessionReplayCompleteEvent, SessionResizeRequest,
+        SessionRestartRequest, SessionStartRequest, SessionStatusChangedEvent, SessionStopRequest,
+        SessionSubscribeRequest, SessionWriteRequest, event_name, method,
     },
 };
+use cli_master_session::{SessionEvent, SessionSubscription, StatusChangeReason};
 use cli_master_storage::Storage;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -25,6 +33,7 @@ use uuid::Uuid;
 
 use crate::lock::InstanceLock;
 use crate::projects::ProjectRegistry;
+use crate::sessions::{SessionRegistry, encode_base64};
 use crate::{DaemonConfig, DaemonError};
 
 /// Largest accepted JSON frame, excluding the four-byte length prefix.
@@ -51,19 +60,20 @@ pub struct StateSnapshot {
     /// Registered projects. Empty until project persistence is wired in.
     pub projects: Vec<Project>,
     /// Available agent definitions. Empty until registry persistence is wired in.
-    pub agents: Vec<AgentDefinition>,
+    pub agents: Vec<AgentRecord>,
     /// Known sessions. Empty until the session manager is wired in.
     pub sessions: Vec<Session>,
     /// Managed worktrees. Empty until Git orchestration is wired in.
     pub worktrees: Vec<Worktree>,
 }
 
-#[derive(Debug)]
 struct ServerState {
     hello: HelloResponse,
     schema_version: u32,
     diagnostics: DiagnosticsResponse,
     projects: ProjectRegistry,
+    sessions: SessionRegistry,
+    event_sequence: AtomicU64,
 }
 
 /// Bound, single-instance local daemon.
@@ -117,6 +127,7 @@ impl Daemon {
             effective_path: effective_executable_paths(),
             recent_issues: Vec::new(),
         };
+        let session_storage = Storage::open(config.database_path())?;
         let state = Arc::new(ServerState {
             hello: HelloResponse {
                 protocol_version: PROTOCOL_V1,
@@ -126,6 +137,17 @@ impl Daemon {
             schema_version,
             diagnostics,
             projects: ProjectRegistry::new(storage),
+            sessions: SessionRegistry::new(
+                session_storage,
+                DaemonInstanceId::from_uuid(instance_id),
+            )
+            .map_err(|error| {
+                DaemonError::initialization(
+                    "terminal sessions",
+                    format!("{}: {}", error.code, error.message),
+                )
+            })?,
+            event_sequence: AtomicU64::new(0),
         });
 
         info!(
@@ -196,6 +218,7 @@ impl Daemon {
                 warn!(%error, "daemon client task failed during shutdown");
             }
         }
+        self.state.sessions.shutdown();
         self.socket_owner.remove_if_owned();
         info!(instance_id = %self.state.hello.instance_id, "daemon stopped");
         Ok(())
@@ -232,28 +255,233 @@ async fn serve_client(
             }
         };
 
-        let response = match decode_request(&bytes) {
-            Ok(request) => dispatch(request, &state),
+        let request = match decode_request(&bytes) {
+            Ok(request) => request,
             Err(failure) => {
                 let Some(request_id) = failure.request_id else {
                     warn!(error_code = %failure.error.code, "closing uncorrelatable invalid request");
                     break;
                 };
-                ResponseEnvelope::failure(request_id, failure.error)
+                let response: ResponseEnvelope<Value> =
+                    ResponseEnvelope::failure(request_id, failure.error);
+                if !send_envelope(&mut framed, &response).await {
+                    break;
+                }
+                continue;
             }
         };
 
-        let encoded = match serde_json::to_vec(&response) {
-            Ok(encoded) => encoded,
-            Err(error) => {
-                warn!(%error, "could not encode daemon response");
+        if request.kind == EnvelopeKind::Request
+            && request.version == PROTOCOL_V1
+            && request.method == method::SESSION_SUBSCRIBE
+        {
+            let request_id = request.request_id;
+            let subscription = decode_payload::<SessionSubscribeRequest>(request.payload)
+                .and_then(|payload| state.sessions.subscribe(payload));
+            let response = match &subscription {
+                Ok(_) => ResponseEnvelope::success(
+                    request_id,
+                    serde_json::to_value(EmptyResponse::default()).unwrap_or(Value::Null),
+                ),
+                Err(error) => ResponseEnvelope::failure(request_id, error.clone()),
+            };
+            if !send_envelope(&mut framed, &response).await {
                 break;
             }
-        };
-        if let Err(error) = framed.send(encoded.into()).await {
-            debug!(%error, "client disconnected before response completed");
+            if let Ok(subscription) = subscription {
+                stream_session_events(&mut framed, &state, subscription, &cancellation).await;
+                break;
+            }
+            continue;
+        }
+
+        let response = dispatch(request, &state);
+
+        if !send_envelope(&mut framed, &response).await {
             break;
         }
+    }
+}
+
+async fn send_envelope(
+    framed: &mut tokio_util::codec::Framed<UnixStream, LengthDelimitedCodec>,
+    envelope: &impl Serialize,
+) -> bool {
+    let encoded = match serde_json::to_vec(envelope) {
+        Ok(encoded) => encoded,
+        Err(error) => {
+            warn!(%error, "could not encode daemon envelope");
+            return false;
+        }
+    };
+    if let Err(error) = framed.send(encoded.into()).await {
+        debug!(%error, "client disconnected before daemon envelope completed");
+        return false;
+    }
+    true
+}
+
+async fn stream_session_events(
+    framed: &mut tokio_util::codec::Framed<UnixStream, LengthDelimitedCodec>,
+    state: &ServerState,
+    mut subscription: SessionSubscription,
+    cancellation: &CancellationToken,
+) {
+    let snapshot = &subscription.snapshot;
+    let latest_sequence = snapshot.next_sequence.saturating_sub(1);
+    if snapshot.gap {
+        let event = SessionOutputGapEvent {
+            session_id: snapshot.session.id,
+            requested_cursor: OutputCursor::new(0),
+            first_available_sequence: OutputSequence::new(
+                snapshot
+                    .first_available_sequence
+                    .unwrap_or(snapshot.next_sequence),
+            ),
+            latest_sequence: OutputSequence::new(latest_sequence),
+        };
+        if !send_event(framed, state, event_name::SESSION_OUTPUT_GAP, event).await {
+            return;
+        }
+    }
+    for output in &snapshot.output {
+        let event = SessionOutputEvent {
+            session_id: output.session_id,
+            base64: PtyOutputBase64::try_new(encode_base64(&output.bytes))
+                .expect("session output chunks satisfy the wire limit"),
+            output_sequence: OutputSequence::new(output.sequence),
+            replay: true,
+        };
+        if !send_event(framed, state, event_name::SESSION_OUTPUT, event).await {
+            return;
+        }
+    }
+    if !send_event(
+        framed,
+        state,
+        event_name::SESSION_REPLAY_COMPLETE,
+        SessionReplayCompleteEvent {
+            session_id: snapshot.session.id,
+            output_sequence: OutputSequence::new(latest_sequence),
+        },
+    )
+    .await
+    {
+        return;
+    }
+
+    loop {
+        let received = tokio::select! {
+            () = cancellation.cancelled() => return,
+            received = subscription.receiver.recv() => received,
+        };
+        let event = match received {
+            Ok(event) => event,
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                let latest = state.sessions.get(snapshot.session.id).ok();
+                let latest_sequence = latest_sequence;
+                let gap = SessionOutputGapEvent {
+                    session_id: snapshot.session.id,
+                    requested_cursor: OutputCursor::new(latest_sequence),
+                    first_available_sequence: OutputSequence::new(
+                        latest_sequence.saturating_add(1),
+                    ),
+                    latest_sequence: OutputSequence::new(latest_sequence),
+                };
+                if !send_event(framed, state, event_name::SESSION_OUTPUT_GAP, gap).await {
+                    return;
+                }
+                drop(latest);
+                continue;
+            }
+        };
+        let sent = match event {
+            SessionEvent::Output(output) => {
+                send_event(
+                    framed,
+                    state,
+                    event_name::SESSION_OUTPUT,
+                    SessionOutputEvent {
+                        session_id: output.session_id,
+                        base64: PtyOutputBase64::try_new(encode_base64(&output.bytes))
+                            .expect("session output chunks satisfy the wire limit"),
+                        output_sequence: OutputSequence::new(output.sequence),
+                        replay: false,
+                    },
+                )
+                .await
+            }
+            SessionEvent::StatusChanged {
+                session_id,
+                previous,
+                current,
+                occurred_at_ms,
+                reason,
+            } => {
+                let _ = state.sessions.persist_current(session_id);
+                send_event(
+                    framed,
+                    state,
+                    event_name::SESSION_STATUS_CHANGED,
+                    SessionStatusChangedEvent {
+                        session_id,
+                        previous_status: previous,
+                        status: current,
+                        changed_at_ms: occurred_at_ms,
+                        reason_code: Some(status_reason(reason).to_owned()),
+                    },
+                )
+                .await
+            }
+            SessionEvent::Exited {
+                session_id,
+                status,
+                exit_code,
+                occurred_at_ms,
+            } => {
+                let _ = state.sessions.persist_current(session_id);
+                send_event(
+                    framed,
+                    state,
+                    event_name::SESSION_EXITED,
+                    SessionExitedEvent {
+                        session_id,
+                        exit_code: Some(exit_code),
+                        status,
+                        exited_at_ms: occurred_at_ms,
+                    },
+                )
+                .await
+            }
+            SessionEvent::IoFailure { session_id, .. } => {
+                let _ = state.sessions.persist_current(session_id);
+                true
+            }
+        };
+        if !sent {
+            return;
+        }
+    }
+}
+
+async fn send_event(
+    framed: &mut tokio_util::codec::Framed<UnixStream, LengthDelimitedCodec>,
+    state: &ServerState,
+    event_name: &'static str,
+    payload: impl Serialize,
+) -> bool {
+    let sequence = state.event_sequence.fetch_add(1, Ordering::Relaxed) + 1;
+    send_envelope(framed, &EventEnvelope::v1(event_name, sequence, payload)).await
+}
+
+const fn status_reason(reason: StatusChangeReason) -> &'static str {
+    match reason {
+        StatusChangeReason::Activity => "activity",
+        StatusChangeReason::IdleTimeout => "idle_timeout",
+        StatusChangeReason::ProcessExited => "process_exited",
+        StatusChangeReason::StopRequested => "stop_requested",
+        StatusChangeReason::SupervisionLost => "supervision_lost",
     }
 }
 
@@ -310,11 +538,13 @@ fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> ResponseEnv
     let result = match request.method.as_str() {
         method::SYSTEM_HELLO => encode_response(&state.hello),
         method::STATE_SNAPSHOT => state.projects.snapshot().and_then(|projects| {
+            let agents = state.sessions.agents()?;
+            let sessions = state.sessions.sessions()?;
             encode_response(StateSnapshot {
                 schema_version: state.schema_version,
                 projects,
-                agents: Vec::new(),
-                sessions: Vec::new(),
+                agents,
+                sessions,
                 worktrees: Vec::new(),
             })
         }),
@@ -328,6 +558,43 @@ fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> ResponseEnv
         method::PROJECT_REMOVE => decode_payload(request.payload)
             .and_then(|payload: ProjectRemoveRequest| state.projects.remove(payload))
             .and_then(encode_response),
+        method::AGENT_LIST => state.sessions.list_agents().and_then(encode_response),
+        method::AGENT_DETECT => decode_payload(request.payload)
+            .and_then(|payload: AgentDetectRequest| state.sessions.detect_agents(&payload))
+            .and_then(encode_response),
+        method::AGENT_CUSTOM_CREATE => decode_payload(request.payload)
+            .and_then(|payload: AgentCustomCreateRequest| {
+                state.sessions.create_custom_agent(payload)
+            })
+            .and_then(encode_response),
+        method::SESSION_CREATE => decode_payload(request.payload)
+            .and_then(|payload: SessionCreateRequest| state.sessions.create(payload))
+            .and_then(encode_response),
+        method::SESSION_LIST => decode_payload(request.payload)
+            .and_then(|payload: SessionListRequest| state.sessions.list_sessions(payload))
+            .and_then(encode_response),
+        method::SESSION_RENAME => decode_payload(request.payload)
+            .and_then(|payload: SessionRenameRequest| state.sessions.rename(payload))
+            .and_then(encode_response),
+        method::SESSION_START => decode_payload(request.payload)
+            .and_then(|payload: SessionStartRequest| state.sessions.start(payload))
+            .and_then(encode_response),
+        method::SESSION_RESTART => decode_payload(request.payload)
+            .and_then(|payload: SessionRestartRequest| state.sessions.restart(payload))
+            .and_then(encode_response),
+        method::SESSION_STOP => decode_payload(request.payload)
+            .and_then(|payload: SessionStopRequest| state.sessions.stop(payload))
+            .and_then(encode_response),
+        method::SESSION_DELETE => decode_payload(request.payload)
+            .and_then(|payload: SessionDeleteRequest| state.sessions.delete(payload))
+            .and_then(encode_response),
+        method::SESSION_WRITE => decode_payload(request.payload)
+            .and_then(|payload: SessionWriteRequest| state.sessions.write(payload))
+            .and_then(encode_response),
+        method::SESSION_RESIZE => decode_payload(request.payload)
+            .and_then(|payload: SessionResizeRequest| state.sessions.resize(payload))
+            .and_then(encode_response),
+        method::SESSION_UNSUBSCRIBE => encode_response(EmptyResponse::default()),
         method::DIAGNOSTICS_GET => encode_response(&state.diagnostics),
         _ => {
             return ResponseEnvelope::failure(
