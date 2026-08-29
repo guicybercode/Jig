@@ -10,16 +10,22 @@ mod command;
 mod diff;
 mod error;
 mod naming;
+mod path_safety;
 mod repository;
 mod status;
 mod worktree;
+mod worktree_creation;
+mod worktree_reconcile;
+mod worktree_removal;
 
 pub use diff::Diff;
 pub use error::{GitError, GitErrorKind};
 pub use naming::slugify;
 pub use repository::RepositoryInspection;
 pub use status::{ChangeKind, ChangedFile, RepositoryStatus, StatusCounts};
-pub use worktree::{RemovalBlocker, RemovalPreparation, WorktreeInfo, WorktreeUse};
+pub use worktree::{WorktreeInfo, WorktreeUse};
+pub use worktree_creation::WorktreePlan;
+pub use worktree_removal::{RemovalBlocker, RemovalPreparation};
 
 use std::{
     env,
@@ -191,6 +197,48 @@ impl Git {
         worktree::list(self, repository.as_ref())
     }
 
+    /// Plans a branch and linked worktree without changing Git or the filesystem.
+    ///
+    /// The returned paths are absolute and resolved through every existing
+    /// ancestor. A missing managed root is represented safely but is not created
+    /// until [`Self::create_worktree_from_plan`] executes the plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid repository/root, an unsafe path, or when
+    /// Git cannot allocate collision-free branch and directory names.
+    pub fn plan_worktree(
+        &self,
+        repository: impl AsRef<Path>,
+        managed_root: impl AsRef<Path>,
+        task_name: &str,
+        short_id: &str,
+    ) -> Result<WorktreePlan, GitError> {
+        worktree_creation::plan(
+            self,
+            repository.as_ref(),
+            managed_root.as_ref(),
+            task_name,
+            short_id,
+        )
+    }
+
+    /// Executes a previously generated worktree plan after revalidating it.
+    ///
+    /// Repository identity, branch availability, path containment, symlink
+    /// resolution, filesystem collisions, and Git's worktree registry are
+    /// checked immediately before creation. If post-create confirmation fails,
+    /// a clean exact-identity worktree is removed without `--force`; otherwise
+    /// the path and branch are preserved and a partial-creation error is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the plan is stale, Git creation fails, confirmation
+    /// fails, or conservative compensation cannot prove cleanup.
+    pub fn create_worktree_from_plan(&self, plan: &WorktreePlan) -> Result<WorktreeInfo, GitError> {
+        worktree_creation::create_from_plan(self, plan)
+    }
+
     /// Creates a branch and linked worktree below a managed root.
     ///
     /// Both branch and directory names use collision-safe ASCII names. The
@@ -198,8 +246,8 @@ impl Git {
     ///
     /// # Errors
     ///
-    /// Returns an error for an invalid repository/root, unsafe destination, or
-    /// failed Git worktree creation.
+    /// Returns an error for an invalid repository/root, unsafe destination,
+    /// stale generated plan, failed Git worktree creation, or unproven cleanup.
     pub fn create_worktree(
         &self,
         repository: impl AsRef<Path>,
@@ -207,7 +255,7 @@ impl Git {
         task_name: &str,
         short_id: &str,
     ) -> Result<WorktreeInfo, GitError> {
-        worktree::create(
+        worktree_creation::create(
             self,
             repository.as_ref(),
             managed_root.as_ref(),
@@ -232,7 +280,7 @@ impl Git {
         worktree_path: impl AsRef<Path>,
         usage: WorktreeUse,
     ) -> Result<RemovalPreparation, GitError> {
-        worktree::prepare_remove(
+        worktree_removal::prepare_remove(
             self,
             repository.as_ref(),
             managed_root.as_ref(),
@@ -244,26 +292,30 @@ impl Git {
     /// Removes a clean, unused managed worktree without using `--force`.
     ///
     /// This method never deletes a branch. Dirty, running, or otherwise in-use
-    /// worktrees are rejected. Safety state is rechecked immediately before
-    /// Git is invoked, and `--force` is omitted so Git still rejects a change
-    /// that races with that final check.
+    /// worktrees are rejected. `read_usage` is retained for the entire operation
+    /// and called for each safety snapshot; callers should capture their session
+    /// exclusion guard in that closure. Git state is also rechecked immediately
+    /// before removal, and `--force` is never passed.
     ///
     /// # Errors
     ///
     /// Returns an error if safety checks fail or `git worktree remove` fails.
-    pub fn remove_worktree(
+    pub fn remove_worktree<F>(
         &self,
         repository: impl AsRef<Path>,
         managed_root: impl AsRef<Path>,
         worktree_path: impl AsRef<Path>,
-        usage: WorktreeUse,
-    ) -> Result<(), GitError> {
-        worktree::remove(
+        read_usage: F,
+    ) -> Result<(), GitError>
+    where
+        F: FnMut() -> WorktreeUse,
+    {
+        worktree_removal::remove(
             self,
             repository.as_ref(),
             managed_root.as_ref(),
             worktree_path.as_ref(),
-            usage,
+            read_usage,
         )
     }
 
