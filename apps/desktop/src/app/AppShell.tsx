@@ -204,6 +204,16 @@ export function AppShell() {
     };
   }, [navigationOpen]);
 
+  useEffect(() => {
+    const suppressWebviewContextMenu = (event: MouseEvent) => {
+      event.preventDefault();
+    };
+    document.addEventListener("contextmenu", suppressWebviewContextMenu);
+    return () => {
+      document.removeEventListener("contextmenu", suppressWebviewContextMenu);
+    };
+  }, []);
+
   const commands = useMemo<readonly CommandPaletteCommand[]>(() => {
     const session = workspace.selectedSession;
     const baseCommands: CommandPaletteCommand[] = [

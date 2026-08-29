@@ -19,6 +19,12 @@ import {
   type MockIpcClient,
 } from "../test/mockIpc";
 
+vi.mock("./features/terminal/LiveTerminal", () => ({
+  LiveTerminal: ({ session }: { session: Session }) => (
+    <div data-testid={`live-terminal-${session.id}`} />
+  ),
+}));
+
 const TEST_TIME = 1_725_000_000_000;
 
 describe("AppShell project and session workflows", () => {
@@ -40,6 +46,19 @@ describe("AppShell project and session workflows", () => {
 
     await user.click(screen.getByRole("button", { name: "Back to canvas" }));
     expect(screen.getByRole("main")).toHaveClass("canvas-workspace");
+  });
+
+  it("suppresses the webview reload and inspector context menu", async () => {
+    const client = createMockIpcClient({ bootstrap: EMPTY_BOOTSTRAP });
+    await renderApp(client);
+    const contextMenu = new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+    });
+
+    document.body.dispatchEvent(contextMenu);
+
+    expect(contextMenu.defaultPrevented).toBe(true);
   });
 
   it("keeps diagnostics inside the minimal canvas shell", async () => {
