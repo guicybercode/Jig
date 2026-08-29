@@ -4,12 +4,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::Duration;
 
+use cli_master_core::wire::{HelloResponse, StateSnapshotResponse, method};
 use cli_master_core::{
-    EnvelopeKind, PROTOCOL_V1, RequestEnvelope, RequestId, ResponseEnvelope, ResponsePayload,
+    DaemonInstanceId, EnvelopeKind, PROTOCOL_V1, RequestEnvelope, RequestId, ResponseEnvelope,
+    ResponsePayload,
 };
-use cli_master_daemon::{
-    Daemon, DaemonConfig, DaemonError, HelloResponse, MAX_FRAME_LENGTH, StateSnapshot,
-};
+use cli_master_daemon::{Daemon, DaemonConfig, DaemonError, MAX_FRAME_LENGTH};
 use cli_master_storage::LATEST_SCHEMA_VERSION;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 struct RunningDaemon {
     config: DaemonConfig,
-    instance_id: uuid::Uuid,
+    instance_id: DaemonInstanceId,
     cancellation: CancellationToken,
     task: JoinHandle<Result<(), DaemonError>>,
 }
@@ -98,7 +98,7 @@ async fn handshake_is_exact_and_connection_accepts_multiple_requests() {
     let daemon = RunningDaemon::start(temporary.path());
     let mut client = connect(daemon.config.socket_path()).await;
 
-    let request = RequestEnvelope::v1("system.hello", json!({}));
+    let request = RequestEnvelope::v1(method::SYSTEM_HELLO, json!({}));
     let response = exchange(&mut client, &request).await;
     assert_eq!(response.kind, EnvelopeKind::Response);
     assert_eq!(response.version, PROTOCOL_V1);
@@ -117,11 +117,16 @@ async fn handshake_is_exact_and_connection_accepts_multiple_requests() {
     let hello: HelloResponse = serde_json::from_value(data).expect("typed hello should decode");
     assert_eq!(hello.instance_id, daemon.instance_id);
 
-    let second = RequestEnvelope::v1("system.hello", json!(null));
+    let second = RequestEnvelope::v1(method::SYSTEM_HELLO, json!({}));
     assert!(matches!(
         exchange(&mut client, &second).await.payload,
         ResponsePayload::Success { .. }
     ));
+    let invalid = RequestEnvelope::v1(method::SYSTEM_HELLO, json!({ "unexpected": true }));
+    assert_eq!(
+        failure_code(exchange(&mut client, &invalid).await),
+        "invalid_payload"
+    );
     daemon.stop().await;
 }
 
@@ -133,13 +138,14 @@ async fn snapshot_reports_applied_migration_and_typed_empty_collections() {
 
     let response = exchange(
         &mut client,
-        &RequestEnvelope::v1("state.snapshot", json!({})),
+        &RequestEnvelope::v1(method::STATE_SNAPSHOT, json!({})),
     )
     .await;
     let ResponsePayload::Success { data } = response.payload else {
         panic!("snapshot should succeed");
     };
-    let snapshot: StateSnapshot = serde_json::from_value(data).expect("snapshot should decode");
+    let snapshot: StateSnapshotResponse =
+        serde_json::from_value(data).expect("snapshot should decode");
     assert_eq!(snapshot.schema_version, LATEST_SCHEMA_VERSION);
     assert!(snapshot.projects.is_empty());
     assert!(snapshot.agents.is_empty());
@@ -159,7 +165,7 @@ async fn invalid_kind_version_and_method_return_correlated_errors() {
         kind: EnvelopeKind::Event,
         version: PROTOCOL_V1,
         request_id: RequestId::new(),
-        method: "system.hello".to_owned(),
+        method: method::SYSTEM_HELLO.to_owned(),
         payload: json!({}),
     };
     assert_eq!(
@@ -171,12 +177,18 @@ async fn invalid_kind_version_and_method_return_correlated_errors() {
         kind: EnvelopeKind::Request,
         version: PROTOCOL_V1 + 1,
         request_id: RequestId::new(),
-        method: "system.hello".to_owned(),
+        method: method::SYSTEM_HELLO.to_owned(),
         payload: json!({}),
     };
     assert_eq!(
         failure_code(exchange(&mut client, &wrong_version).await),
         "unsupported_protocol_version"
+    );
+
+    let known = RequestEnvelope::v1(method::PROJECT_LIST, json!({}));
+    assert_eq!(
+        failure_code(exchange(&mut client, &known).await),
+        "method_not_implemented"
     );
 
     let unknown = RequestEnvelope::v1("unknown.method", json!({}));
@@ -215,7 +227,7 @@ async fn oversized_frame_only_disconnects_the_offending_client() {
     let mut reconnected = connect(daemon.config.socket_path()).await;
     let response = exchange(
         &mut reconnected,
-        &RequestEnvelope::v1("system.hello", json!({})),
+        &RequestEnvelope::v1(method::SYSTEM_HELLO, json!({})),
     )
     .await;
     assert!(matches!(response.payload, ResponsePayload::Success { .. }));
@@ -241,9 +253,12 @@ async fn lock_rejects_a_second_daemon_then_allows_sequential_reconnect() {
     let task = tokio::spawn(async move { second.run(child).await });
     let mut client = connect(config.socket_path()).await;
     assert!(matches!(
-        exchange(&mut client, &RequestEnvelope::v1("system.hello", json!({})))
-            .await
-            .payload,
+        exchange(
+            &mut client,
+            &RequestEnvelope::v1(method::SYSTEM_HELLO, json!({})),
+        )
+        .await
+        .payload,
         ResponsePayload::Success { .. }
     ));
     drop(client);

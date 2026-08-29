@@ -501,13 +501,13 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
 name = "cli-master-desktop"
 version = "0.1.0"
 dependencies = [
+ "cli-master-core",
  "serde",
  "serde_json",
  "tauri",

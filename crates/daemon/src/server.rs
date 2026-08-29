@@ -4,54 +4,26 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use cli_master_core::wire::{self, EmptyRequest, HelloResponse, StateSnapshotResponse};
 use cli_master_core::{
-    AgentDefinition, ApiError, EnvelopeKind, PROTOCOL_V1, Project, RequestEnvelope, RequestId,
-    ResponseEnvelope, Session, Worktree,
+    ApiError, DaemonInstanceId, EnvelopeKind, PROTOCOL_V1, RequestEnvelope, RequestId,
+    ResponseEnvelope,
 };
 use cli_master_storage::Storage;
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::task::JoinSet;
 use tokio_util::codec::LengthDelimitedCodec;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
-use uuid::Uuid;
 
 use crate::lock::InstanceLock;
 use crate::{DaemonConfig, DaemonError};
 
 /// Largest accepted JSON frame, excluding the four-byte length prefix.
 pub const MAX_FRAME_LENGTH: usize = 1024 * 1024;
-
-/// Successful `system.hello` response.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HelloResponse {
-    /// IPC protocol version spoken by this daemon.
-    pub protocol_version: u16,
-    /// Semantic version of the daemon executable.
-    pub daemon_version: String,
-    /// Unique identifier regenerated for each daemon process lifetime.
-    pub instance_id: Uuid,
-}
-
-/// Durable state returned by `state.snapshot` during initial client sync.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StateSnapshot {
-    /// Applied `SQLite` schema migration version.
-    pub schema_version: u32,
-    /// Registered projects. Empty until project persistence is wired in.
-    pub projects: Vec<Project>,
-    /// Available agent definitions. Empty until registry persistence is wired in.
-    pub agents: Vec<AgentDefinition>,
-    /// Known sessions. Empty until the session manager is wired in.
-    pub sessions: Vec<Session>,
-    /// Managed worktrees. Empty until Git orchestration is wired in.
-    pub worktrees: Vec<Worktree>,
-}
 
 #[derive(Debug)]
 struct ServerState {
@@ -97,7 +69,7 @@ impl Daemon {
             |error| DaemonError::io("secure daemon socket", config.socket_path(), error),
         )?;
         let socket_owner = SocketOwner::new(config.socket_path())?;
-        let instance_id = Uuid::now_v7();
+        let instance_id = DaemonInstanceId::new();
         let state = Arc::new(ServerState {
             hello: HelloResponse {
                 protocol_version: PROTOCOL_V1,
@@ -127,7 +99,7 @@ impl Daemon {
 
     /// Returns the daemon lifetime identifier clients receive in `system.hello`.
     #[must_use]
-    pub fn instance_id(&self) -> Uuid {
+    pub fn instance_id(&self) -> DaemonInstanceId {
         self.state.hello.instance_id
     }
 
@@ -288,14 +260,34 @@ fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> ResponseEnv
     }
 
     let result = match request.method.as_str() {
-        "system.hello" => serde_json::to_value(&state.hello),
-        "state.snapshot" => serde_json::to_value(StateSnapshot {
-            schema_version: state.schema_version,
-            projects: Vec::new(),
-            agents: Vec::new(),
-            sessions: Vec::new(),
-            worktrees: Vec::new(),
-        }),
+        wire::method::SYSTEM_HELLO => {
+            if let Err(error) = decode_payload::<EmptyRequest>(request.payload) {
+                return invalid_payload(request.request_id, &error);
+            }
+            serde_json::to_value(&state.hello)
+        }
+        wire::method::STATE_SNAPSHOT => {
+            if let Err(error) = decode_payload::<EmptyRequest>(request.payload) {
+                return invalid_payload(request.request_id, &error);
+            }
+            serde_json::to_value(StateSnapshotResponse {
+                schema_version: state.schema_version,
+                projects: Vec::new(),
+                agents: Vec::new(),
+                sessions: Vec::new(),
+                worktrees: Vec::new(),
+            })
+        }
+        method if wire::method::is_supported(method) => {
+            return ResponseEnvelope::failure(
+                request.request_id,
+                ApiError::new(
+                    "method_not_implemented",
+                    "The requested daemon method is part of the Beta contract but is not implemented",
+                )
+                .with_detail("method", method),
+            );
+        }
         _ => {
             return ResponseEnvelope::failure(
                 request.request_id,
@@ -313,6 +305,21 @@ fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> ResponseEnv
                 .with_detail("reason", error.to_string()),
         ),
     }
+}
+
+fn decode_payload<T: DeserializeOwned>(payload: Value) -> Result<T, serde_json::Error> {
+    serde_json::from_value(payload)
+}
+
+fn invalid_payload(request_id: RequestId, error: &serde_json::Error) -> ResponseEnvelope<Value> {
+    ResponseEnvelope::failure(
+        request_id,
+        ApiError::new(
+            "invalid_payload",
+            "Request payload does not match the method contract",
+        )
+        .with_detail("reason", error.to_string()),
+    )
 }
 
 struct RequestFailure {
@@ -438,7 +445,7 @@ mod tests {
                 hello: HelloResponse {
                     protocol_version: PROTOCOL_V1,
                     daemon_version: "test".to_owned(),
-                    instance_id: Uuid::now_v7(),
+                    instance_id: DaemonInstanceId::new(),
                 },
                 schema_version: 1,
             },
