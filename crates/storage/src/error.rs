@@ -1,477 +1,316 @@
-use std::error::Error as StdError;
+use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::io;
-use std::path::Path;
 
 use cli_master_core::ApiError;
-use rusqlite::{Error as SqliteError, ErrorCode};
+use rusqlite::{ErrorCode, ffi};
 
-/// Domain entity involved in a failed storage operation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EntityKind {
-    /// The database file or connection itself.
-    Database,
-    /// Schema history or expected columns.
-    Schema,
-    /// A registered project.
-    Project,
-    /// A built-in or custom agent definition.
-    Agent,
-    /// A persisted session.
-    Session,
-    /// A managed worktree record.
-    Worktree,
-    /// An application setting row.
-    Setting,
-    /// An embedded migration.
-    Migration,
-}
+use crate::LATEST_SCHEMA_VERSION;
 
-impl EntityKind {
-    /// Stable machine-readable entity name.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Database => "database",
-            Self::Schema => "schema",
-            Self::Project => "project",
-            Self::Agent => "agent",
-            Self::Session => "session",
-            Self::Worktree => "worktree",
-            Self::Setting => "setting",
-            Self::Migration => "migration",
-        }
-    }
-}
-
-/// Classified failure while reading or writing persisted metadata.
+/// A failure raised by CLI Master's metadata store.
 #[derive(Debug)]
-pub enum StorageErrorKind {
-    /// `SQLite` rejected the operation. The summary never includes SQL text.
-    Sqlite {
-        /// `SQLite` primary error code, when available.
-        code: Option<ErrorCode>,
-        /// Safe, user-facing summary.
-        summary: String,
-    },
-    /// The database was migrated by a newer binary.
-    UnsupportedSchema {
-        /// Version recorded in the database.
-        found: u32,
-        /// Newest version this binary understands.
-        supported: u32,
-    },
-    /// A stored migration version cannot be represented.
+pub enum StorageError {
+    /// `SQLite` rejected an operation that was not a recognized constraint failure.
+    Database(rusqlite::Error),
+    /// The database contains a migration this binary does not understand.
+    UnsupportedSchemaVersion(u32),
+    /// A migration version stored in `SQLite` cannot be represented by this crate.
     InvalidSchemaVersion(i64),
-    /// The schema version matches but required objects are missing or wrong.
-    IncompatibleSchema(&'static str),
-    /// The file is not a readable `SQLite` database.
-    Corrupted,
-    /// The requested row does not exist.
+    /// A recorded migration version has a name that does not match this binary.
+    IncompatibleMigration {
+        /// Recorded migration version.
+        version: u32,
+        /// Immutable name expected by this binary.
+        expected: &'static str,
+        /// Name stored in the database.
+        found: String,
+    },
+    /// The schema version is known but a required object is missing.
+    IncompatibleSchema {
+        /// Table, column, index, or trigger that failed verification.
+        object: &'static str,
+    },
+    /// A caller supplied a value that cannot be persisted safely.
+    InvalidInput {
+        /// Input field that failed validation.
+        field: &'static str,
+        /// Expected shape or invariant.
+        reason: String,
+    },
+    /// A requested metadata row does not exist.
     NotFound {
-        /// Identifier that was looked up. Never a secret.
+        /// Kind of metadata being accessed.
+        entity: &'static str,
+        /// Stable identifier supplied by the caller.
         id: String,
     },
-    /// A uniqueness or state conflict prevented the write.
-    Conflict(&'static str),
-    /// Caller-supplied data failed validation.
-    InvalidInput(&'static str),
-    /// A stored filesystem path does not currently exist.
-    PathMissing(String),
-    /// An environment key looks like a secret and was refused.
-    SecretRejected,
-    /// Persisting a full process environment was refused.
-    FullEnvironmentRejected,
-    /// JSON or timestamp conversion failed.
-    Serialization(&'static str),
-    /// Filesystem failure outside `SQLite`.
-    Io(io::Error),
-    /// A poisoned connection lock. The daemon must restart.
+    /// A row conflicts with an existing primary key or unique value.
+    AlreadyExists {
+        /// Kind of metadata being inserted.
+        entity: &'static str,
+    },
+    /// A referenced row does not exist or is still in use.
+    RelationshipViolation {
+        /// Kind of metadata being changed.
+        entity: &'static str,
+        /// Relationship the caller must resolve.
+        relationship: &'static str,
+    },
+    /// Persisted metadata cannot be decoded into the current strongly typed model.
+    CorruptData {
+        /// Kind of metadata being decoded.
+        entity: &'static str,
+        /// Column that contains the invalid value.
+        field: &'static str,
+        /// Decode failure without secret-bearing payloads.
+        reason: String,
+    },
+    /// A filesystem operation required by storage failed.
+    Io {
+        /// Short operation name without user-controlled content.
+        operation: &'static str,
+        /// Underlying filesystem error.
+        source: io::Error,
+    },
+    /// Another thread panicked while holding the database connection lock.
     LockPoisoned,
 }
 
-/// An error raised while opening, migrating, or querying CLI Master's database.
-///
-/// Display and [`Self::to_api_error`] omit SQL, bind parameters, and secret
-/// values. Callers should log [`Self::operation`], [`Self::entity`], and
-/// [`Self::cause`] instead of interpolating `rusqlite` errors.
-#[derive(Debug)]
-pub struct StorageError {
-    operation: &'static str,
-    entity: EntityKind,
-    kind: StorageErrorKind,
-    recovery: &'static str,
-}
-
 impl StorageError {
-    pub(crate) fn new(
-        operation: &'static str,
-        entity: EntityKind,
-        kind: StorageErrorKind,
-        recovery: &'static str,
-    ) -> Self {
-        Self {
-            operation,
-            entity,
-            kind,
-            recovery,
-        }
-    }
-
-    pub(crate) fn from_sqlite(
-        operation: &'static str,
-        entity: EntityKind,
-        error: &SqliteError,
-    ) -> Self {
-        let kind = classify_sqlite(error);
-        let recovery = recovery_for_kind(&kind);
-        Self::new(operation, entity, kind, recovery)
-    }
-
-    pub(crate) fn io(operation: &'static str, entity: EntityKind, error: io::Error) -> Self {
-        Self::new(
-            operation,
-            entity,
-            StorageErrorKind::Io(error),
-            "Check filesystem permissions and available disk space, then retry.",
-        )
-    }
-
-    pub(crate) fn not_found(operation: &'static str, entity: EntityKind, id: impl Display) -> Self {
-        Self::new(
-            operation,
-            entity,
-            StorageErrorKind::NotFound { id: id.to_string() },
-            "Reload the application snapshot and select an existing item.",
-        )
-    }
-
-    pub(crate) fn conflict(
-        operation: &'static str,
-        entity: EntityKind,
-        reason: &'static str,
-        recovery: &'static str,
-    ) -> Self {
-        Self::new(
-            operation,
-            entity,
-            StorageErrorKind::Conflict(reason),
-            recovery,
-        )
-    }
-
-    pub(crate) fn invalid_input(
-        operation: &'static str,
-        entity: EntityKind,
-        reason: &'static str,
-    ) -> Self {
-        Self::new(
-            operation,
-            entity,
-            StorageErrorKind::InvalidInput(reason),
-            "Correct the highlighted field and retry.",
-        )
-    }
-
-    pub(crate) fn serialization(operation: &'static str, reason: &'static str) -> Self {
-        Self::new(
-            operation,
-            EntityKind::Database,
-            StorageErrorKind::Serialization(reason),
-            "Restart the daemon. If the error persists, restore the latest database backup.",
-        )
-    }
-
-    pub(crate) fn path_missing(operation: &'static str, entity: EntityKind, path: &Path) -> Self {
-        Self::new(
-            operation,
-            entity,
-            StorageErrorKind::PathMissing(path.display().to_string()),
-            "Restore the directory or re-register the project with its new path. Metadata was not deleted.",
-        )
-    }
-
-    pub(crate) fn lock_poisoned(operation: &'static str) -> Self {
-        Self::new(
-            operation,
-            EntityKind::Database,
-            StorageErrorKind::LockPoisoned,
-            "Restart the daemon. In-memory state may need reconciliation on startup.",
-        )
-    }
-
-    /// Operation that failed, such as `insert` or `migrate`.
-    #[must_use]
-    pub const fn operation(&self) -> &'static str {
-        self.operation
-    }
-
-    /// Entity kind involved in the failure.
-    #[must_use]
-    pub const fn entity(&self) -> EntityKind {
-        self.entity
-    }
-
-    /// Classified cause of the failure.
-    #[must_use]
-    pub const fn kind(&self) -> &StorageErrorKind {
-        &self.kind
-    }
-
-    /// Suggested recovery action.
-    #[must_use]
-    pub const fn recovery(&self) -> &'static str {
-        self.recovery
-    }
-
-    /// Safe, SQL-free explanation of the cause.
-    #[must_use]
-    pub fn cause(&self) -> String {
-        match &self.kind {
-            StorageErrorKind::Sqlite { summary, code } => match code {
-                Some(code) => format!("{summary} ({code:?})"),
-                None => summary.clone(),
-            },
-            StorageErrorKind::UnsupportedSchema { found, supported } => {
-                format!("schema version {found} is newer than supported version {supported}")
-            }
-            StorageErrorKind::InvalidSchemaVersion(version) => {
-                format!("database contains invalid schema version {version}")
-            }
-            StorageErrorKind::IncompatibleSchema(reason)
-            | StorageErrorKind::Conflict(reason)
-            | StorageErrorKind::InvalidInput(reason)
-            | StorageErrorKind::Serialization(reason) => (*reason).to_owned(),
-            StorageErrorKind::Corrupted => {
-                "the database file is corrupted or is not SQLite".to_owned()
-            }
-            StorageErrorKind::NotFound { id } => {
-                format!("{} {id} was not found", self.entity.as_str())
-            }
-            StorageErrorKind::PathMissing(path) => format!("path is missing: {path}"),
-            StorageErrorKind::SecretRejected => {
-                "refusing to persist a token-like environment variable".to_owned()
-            }
-            StorageErrorKind::FullEnvironmentRejected => {
-                "refusing to persist a full process environment".to_owned()
-            }
-            StorageErrorKind::Io(error) => error.to_string(),
-            StorageErrorKind::LockPoisoned => "database lock was poisoned".to_owned(),
-        }
-    }
-
-    /// Whether the caller can retry or repair without replacing the database.
-    #[must_use]
-    pub fn is_recoverable(&self) -> bool {
-        match &self.kind {
-            StorageErrorKind::Corrupted
-            | StorageErrorKind::UnsupportedSchema { .. }
-            | StorageErrorKind::InvalidSchemaVersion(_)
-            | StorageErrorKind::IncompatibleSchema(_)
-            | StorageErrorKind::LockPoisoned => false,
-            StorageErrorKind::Sqlite { code, .. } => !matches!(
-                code,
-                Some(ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase)
-            ),
-            StorageErrorKind::Io(error) => error.kind() != io::ErrorKind::PermissionDenied,
-            _ => true,
-        }
-    }
-
-    /// Converts this error into a stable IPC error without SQL or secrets.
+    /// Converts this failure to a stable IPC error without SQL or bind values.
     #[must_use]
     pub fn to_api_error(&self) -> ApiError {
-        ApiError::new(self.api_code(), self.to_string())
-            .with_action(self.recovery)
-            .with_detail("operation", self.operation)
-            .with_detail("entity", self.entity.as_str())
-            .with_detail("recoverable", self.is_recoverable())
+        let (code, action) = match self {
+            Self::UnsupportedSchemaVersion(_)
+            | Self::InvalidSchemaVersion(_)
+            | Self::IncompatibleMigration { .. }
+            | Self::IncompatibleSchema { .. } => (
+                "STORAGE_SCHEMA_INCOMPATIBLE",
+                "Upgrade CLI Master or restore a database backup created by this version",
+            ),
+            Self::InvalidInput { .. } => ("STORAGE_INVALID_INPUT", "Correct the input and retry"),
+            Self::NotFound { .. } => (
+                "STORAGE_NOT_FOUND",
+                "Reload the current snapshot and select an existing item",
+            ),
+            Self::AlreadyExists { .. } => (
+                "STORAGE_CONFLICT",
+                "Reload the current snapshot and retry with a unique value",
+            ),
+            Self::RelationshipViolation { .. } => (
+                "STORAGE_RELATIONSHIP",
+                "Resolve dependent metadata before retrying",
+            ),
+            Self::CorruptData { .. } => (
+                "STORAGE_CORRUPT_DATA",
+                "Restore the latest known-good database backup",
+            ),
+            Self::Io { .. } => (
+                "STORAGE_IO",
+                "Check filesystem permissions and available disk space, then retry",
+            ),
+            Self::LockPoisoned => ("STORAGE_LOCK_POISONED", "Restart the daemon"),
+            Self::Database(error)
+                if matches!(
+                    error.sqlite_error_code(),
+                    Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+                ) =>
+            {
+                (
+                    "STORAGE_BUSY",
+                    "Retry after the current database write completes",
+                )
+            }
+            Self::Database(_) => (
+                "STORAGE_DATABASE",
+                "Restart the daemon; restore a backup if the error persists",
+            ),
+        };
+
+        ApiError::new(code, self.to_string()).with_action(action)
     }
 
-    fn api_code(&self) -> &'static str {
-        match &self.kind {
-            StorageErrorKind::Sqlite {
-                code: Some(ErrorCode::ConstraintViolation),
-                ..
-            }
-            | StorageErrorKind::Conflict(_) => "STORAGE_CONFLICT",
-            StorageErrorKind::Sqlite {
-                code: Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked),
-                ..
-            } => "STORAGE_BUSY",
-            StorageErrorKind::Sqlite { .. } => "STORAGE_DATABASE",
-            StorageErrorKind::UnsupportedSchema { .. } => "STORAGE_SCHEMA_UNSUPPORTED",
-            StorageErrorKind::InvalidSchemaVersion(_) | StorageErrorKind::IncompatibleSchema(_) => {
-                "STORAGE_SCHEMA_INCOMPATIBLE"
-            }
-            StorageErrorKind::Corrupted => "STORAGE_CORRUPTED",
-            StorageErrorKind::NotFound { .. } => "STORAGE_NOT_FOUND",
-            StorageErrorKind::InvalidInput(_) => "STORAGE_INVALID_INPUT",
-            StorageErrorKind::PathMissing(_) => "STORAGE_PATH_MISSING",
-            StorageErrorKind::SecretRejected | StorageErrorKind::FullEnvironmentRejected => {
-                "STORAGE_SECRET_REJECTED"
-            }
-            StorageErrorKind::Serialization(_) => "STORAGE_SERIALIZATION",
-            StorageErrorKind::Io(_) => "STORAGE_IO",
-            StorageErrorKind::LockPoisoned => "STORAGE_LOCK_POISONED",
-        }
+    /// Returns whether retrying or correcting caller input can recover safely.
+    #[must_use]
+    pub fn is_recoverable(&self) -> bool {
+        !matches!(
+            self,
+            Self::UnsupportedSchemaVersion(_)
+                | Self::InvalidSchemaVersion(_)
+                | Self::IncompatibleMigration { .. }
+                | Self::IncompatibleSchema { .. }
+                | Self::CorruptData { .. }
+                | Self::LockPoisoned
+        )
+    }
+
+    pub(crate) fn io(operation: &'static str, source: io::Error) -> Self {
+        Self::Io { operation, source }
     }
 }
 
 impl Display for StorageError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "failed to {} {}: {}",
-            self.operation,
-            self.entity.as_str(),
-            self.cause()
-        )
-    }
-}
-
-impl StdError for StorageError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match &self.kind {
-            StorageErrorKind::Io(error) => Some(error),
-            _ => None,
+        match self {
+            Self::Database(error) => match error.sqlite_error_code() {
+                Some(code) => write!(formatter, "SQLite storage operation failed ({code:?})"),
+                None => formatter.write_str("SQLite storage operation failed"),
+            },
+            Self::UnsupportedSchemaVersion(version) => write!(
+                formatter,
+                "database schema version {version} is newer than supported version {LATEST_SCHEMA_VERSION}"
+            ),
+            Self::InvalidSchemaVersion(version) => {
+                write!(
+                    formatter,
+                    "database contains invalid schema version {version}"
+                )
+            }
+            Self::IncompatibleMigration {
+                version,
+                expected,
+                found,
+            } => write!(
+                formatter,
+                "database migration {version} is named {found:?}; expected {expected:?}"
+            ),
+            Self::IncompatibleSchema { object } => {
+                write!(formatter, "database schema is missing required {object}")
+            }
+            Self::InvalidInput { field, reason } => {
+                write!(formatter, "invalid {field}: {reason}")
+            }
+            Self::NotFound { entity, id } => {
+                write!(formatter, "{entity} metadata was not found for id {id}")
+            }
+            Self::AlreadyExists { entity } => {
+                write!(
+                    formatter,
+                    "{entity} metadata already exists with that id or unique value"
+                )
+            }
+            Self::RelationshipViolation {
+                entity,
+                relationship,
+            } => write!(
+                formatter,
+                "cannot change {entity} metadata until {relationship} is resolved"
+            ),
+            Self::CorruptData {
+                entity,
+                field,
+                reason,
+            } => write!(
+                formatter,
+                "stored {entity} metadata has invalid {field}: {reason}"
+            ),
+            Self::Io { operation, source } => {
+                write!(formatter, "could not {operation} storage: {source}")
+            }
+            Self::LockPoisoned => formatter.write_str("database connection lock was poisoned"),
         }
     }
 }
 
-impl From<SqliteError> for StorageError {
-    fn from(error: SqliteError) -> Self {
-        Self::from_sqlite("database", EntityKind::Database, &error)
+impl Error for StorageError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Database(error) => Some(error),
+            Self::Io { source, .. } => Some(source),
+            Self::UnsupportedSchemaVersion(_)
+            | Self::InvalidSchemaVersion(_)
+            | Self::IncompatibleMigration { .. }
+            | Self::IncompatibleSchema { .. }
+            | Self::InvalidInput { .. }
+            | Self::NotFound { .. }
+            | Self::AlreadyExists { .. }
+            | Self::RelationshipViolation { .. }
+            | Self::CorruptData { .. }
+            | Self::LockPoisoned => None,
+        }
     }
 }
 
-fn classify_sqlite(error: &SqliteError) -> StorageErrorKind {
-    match error {
-        SqliteError::QueryReturnedNoRows => StorageErrorKind::NotFound {
-            id: "row".to_owned(),
-        },
-        SqliteError::SqliteFailure(native, _)
-            if matches!(
-                native.code,
-                ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase
-            ) =>
+impl From<rusqlite::Error> for StorageError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Database(error)
+    }
+}
+
+pub(crate) fn invalid_input(field: &'static str, reason: impl Into<String>) -> StorageError {
+    StorageError::InvalidInput {
+        field,
+        reason: reason.into(),
+    }
+}
+
+pub(crate) fn corrupt_data(
+    entity: &'static str,
+    field: &'static str,
+    reason: impl Into<String>,
+) -> StorageError {
+    StorageError::CorruptData {
+        entity,
+        field,
+        reason: reason.into(),
+    }
+}
+
+pub(crate) fn persisted_validation(
+    entity: &'static str,
+    validation: Result<(), StorageError>,
+) -> Result<(), StorageError> {
+    match validation {
+        Ok(()) => Ok(()),
+        Err(StorageError::InvalidInput { field, reason }) => Err(StorageError::CorruptData {
+            entity,
+            field,
+            reason,
+        }),
+        Err(error) => Err(error),
+    }
+}
+
+pub(crate) fn map_write_error(error: rusqlite::Error, entity: &'static str) -> StorageError {
+    match sqlite_extended_code(&error) {
+        Some(code)
+            if code == ffi::SQLITE_CONSTRAINT_PRIMARYKEY
+                || code == ffi::SQLITE_CONSTRAINT_UNIQUE =>
         {
-            StorageErrorKind::Corrupted
+            StorageError::AlreadyExists { entity }
         }
-        SqliteError::SqliteFailure(native, message) => StorageErrorKind::Sqlite {
-            code: Some(native.code),
-            summary: sanitize_sqlite_message(native.code, message.as_deref()),
+        Some(ffi::SQLITE_CONSTRAINT_FOREIGNKEY) => StorageError::RelationshipViolation {
+            entity,
+            relationship: "the referenced parent metadata",
         },
-        SqliteError::SqlInputError { msg, .. } => StorageErrorKind::Sqlite {
-            code: None,
-            summary: sanitize_free_text(msg),
+        Some(ffi::SQLITE_CONSTRAINT_TRIGGER) => StorageError::RelationshipViolation {
+            entity,
+            relationship: "the session and worktree must belong to the same project",
         },
-        _ => StorageErrorKind::Sqlite {
-            code: error.sqlite_error_code(),
-            summary: "database operation failed".to_owned(),
-        },
+        _ => StorageError::Database(error),
     }
 }
 
-fn sanitize_sqlite_message(code: ErrorCode, message: Option<&str>) -> String {
-    match code {
-        ErrorCode::ConstraintViolation => "a database constraint was violated".to_owned(),
-        ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked => {
-            "the database is busy; retry shortly".to_owned()
+pub(crate) fn map_delete_error(
+    error: rusqlite::Error,
+    entity: &'static str,
+    relationship: &'static str,
+) -> StorageError {
+    if sqlite_extended_code(&error).is_some() {
+        StorageError::RelationshipViolation {
+            entity,
+            relationship,
         }
-        ErrorCode::CannotOpen => "the database file could not be opened".to_owned(),
-        ErrorCode::ReadOnly => "the database is read-only".to_owned(),
-        ErrorCode::DiskFull => "the filesystem is full".to_owned(),
-        _ => message
-            .map(sanitize_free_text)
-            .filter(|text| !text.is_empty())
-            .unwrap_or_else(|| "database operation failed".to_owned()),
-    }
-}
-
-fn sanitize_free_text(message: &str) -> String {
-    let first_line = message.lines().next().unwrap_or(message).trim();
-    if first_line.is_empty()
-        || first_line.contains("INSERT")
-        || first_line.contains("UPDATE")
-        || first_line.contains("DELETE")
-        || first_line.contains("SELECT")
-        || first_line.contains("CREATE")
-    {
-        "database operation failed".to_owned()
     } else {
-        first_line.to_owned()
+        StorageError::Database(error)
     }
 }
 
-const fn recovery_for_kind(kind: &StorageErrorKind) -> &'static str {
-    match kind {
-        StorageErrorKind::UnsupportedSchema { .. } => {
-            "Upgrade CLI Master to a version that understands this database."
+fn sqlite_extended_code(error: &rusqlite::Error) -> Option<i32> {
+    match error {
+        rusqlite::Error::SqliteFailure(code, _) if code.code == ErrorCode::ConstraintViolation => {
+            Some(code.extended_code)
         }
-        StorageErrorKind::InvalidSchemaVersion(_) | StorageErrorKind::IncompatibleSchema(_) => {
-            "Restore a backup created by this version, or create a new empty database."
-        }
-        StorageErrorKind::Corrupted => {
-            "Restore the latest timestamped database backup. Metadata was not deleted automatically."
-        }
-        StorageErrorKind::NotFound { .. } => {
-            "Reload the application snapshot and select an existing item."
-        }
-        StorageErrorKind::Conflict(_) => "Resolve the conflict and retry.",
-        StorageErrorKind::InvalidInput(_) => "Correct the highlighted field and retry.",
-        StorageErrorKind::PathMissing(_) => {
-            "Restore the directory or re-register the project. Metadata was not deleted."
-        }
-        StorageErrorKind::SecretRejected | StorageErrorKind::FullEnvironmentRejected => {
-            "Remove secret or inherited environment values. Agents keep their local authentication."
-        }
-        StorageErrorKind::Serialization(_) => {
-            "Restart the daemon. If the error persists, restore the latest database backup."
-        }
-        StorageErrorKind::Io(_) => {
-            "Check filesystem permissions and available disk space, then retry."
-        }
-        StorageErrorKind::LockPoisoned => "Restart the daemon so storage can reopen cleanly.",
-        StorageErrorKind::Sqlite {
-            code: Some(ErrorCode::ConstraintViolation),
-            ..
-        } => "Correct the conflicting value or remove the blocking record, then retry.",
-        StorageErrorKind::Sqlite {
-            code: Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked),
-            ..
-        } => "Retry the operation. The daemon serializes database access.",
-        StorageErrorKind::Sqlite { .. } => {
-            "Retry the operation. If it persists, inspect diagnostics."
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use rusqlite::Connection;
-
-    use super::*;
-
-    #[test]
-    fn sqlite_errors_do_not_include_sql_text() {
-        let connection = Connection::open_in_memory().expect("memory db");
-        let error = connection
-            .execute(
-                "INSERT INTO missing_table (token) VALUES ('super-secret')",
-                [],
-            )
-            .expect_err("missing table should fail");
-        let storage_error = StorageError::from_sqlite("insert", EntityKind::Session, &error);
-        let rendered = storage_error.to_string();
-        let api = storage_error.to_api_error();
-
-        assert!(!rendered.contains("INSERT"));
-        assert!(!rendered.contains("super-secret"));
-        assert_eq!(storage_error.operation(), "insert");
-        assert_eq!(storage_error.entity(), EntityKind::Session);
-        assert!(storage_error.recovery().contains("Retry"));
-        assert_eq!(api.code, "STORAGE_DATABASE");
-        assert!(!api.message.contains("INSERT"));
+        _ => None,
     }
 }

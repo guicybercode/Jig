@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 
-use crate::error::{EntityKind, StorageError};
+use crate::error::StorageError;
 use crate::migrate;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -42,7 +42,7 @@ impl Storage {
 
     pub(crate) fn with_connection<T, F>(
         &self,
-        operation: &'static str,
+        _operation: &'static str,
         function: F,
     ) -> Result<T, StorageError>
     where
@@ -51,13 +51,13 @@ impl Storage {
         let connection = self
             .connection
             .lock()
-            .map_err(|_| StorageError::lock_poisoned(operation))?;
+            .map_err(|_| StorageError::LockPoisoned)?;
         function(&connection)
     }
 
     pub(crate) fn with_connection_mut<T, F>(
         &self,
-        operation: &'static str,
+        _operation: &'static str,
         function: F,
     ) -> Result<T, StorageError>
     where
@@ -66,7 +66,7 @@ impl Storage {
         let mut connection = self
             .connection
             .lock()
-            .map_err(|_| StorageError::lock_poisoned(operation))?;
+            .map_err(|_| StorageError::LockPoisoned)?;
         function(&mut connection)
     }
 
@@ -84,16 +84,11 @@ impl Storage {
         F: FnOnce(&Transaction<'_>) -> Result<T, StorageError>,
     {
         self.with_connection_mut("transaction", |connection| {
-            let transaction = connection
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(|error| {
-                    StorageError::from_sqlite("transaction", EntityKind::Database, &error)
-                })?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             match function(&transaction) {
                 Ok(value) => {
-                    transaction.commit().map_err(|error| {
-                        StorageError::from_sqlite("commit", EntityKind::Database, &error)
-                    })?;
+                    transaction.commit()?;
                     Ok(value)
                 }
                 Err(error) => Err(error),
@@ -110,17 +105,10 @@ impl Storage {
 
     pub(crate) fn checkpoint(&self) -> Result<(), StorageError> {
         self.with_connection("checkpoint", |connection| {
-            let journal_mode: String = connection
-                .pragma_query_value(None, "journal_mode", |row| row.get(0))
-                .map_err(|error| {
-                    StorageError::from_sqlite("checkpoint", EntityKind::Database, &error)
-                })?;
+            let journal_mode: String =
+                connection.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
             if journal_mode.eq_ignore_ascii_case("wal") {
-                connection
-                    .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-                    .map_err(|error| {
-                        StorageError::from_sqlite("checkpoint", EntityKind::Database, &error)
-                    })?;
+                connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
             }
             Ok(())
         })
@@ -130,31 +118,24 @@ impl Storage {
 impl Drop for Storage {
     fn drop(&mut self) {
         if let Ok(connection) = self.connection.lock() {
-            let journal_mode = connection
-                .pragma_query_value(None, "journal_mode", |row| row.get::<_, String>(0))
-                .unwrap_or_default();
-            if journal_mode.eq_ignore_ascii_case("wal") {
-                let _ = connection.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+            if let Ok(journal_mode) =
+                connection.pragma_query_value(None, "journal_mode", |row| row.get::<_, String>(0))
+            {
+                if journal_mode.eq_ignore_ascii_case("wal") {
+                    let _ = connection.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+                }
             }
         }
     }
 }
 
 pub(crate) fn configure_connection(connection: &Connection) -> Result<(), StorageError> {
-    connection
-        .busy_timeout(BUSY_TIMEOUT)
-        .map_err(|error| StorageError::from_sqlite("configure", EntityKind::Database, &error))?;
-    connection
-        .pragma_update(None, "foreign_keys", true)
-        .map_err(|error| StorageError::from_sqlite("configure", EntityKind::Database, &error))?;
-    connection
-        .pragma_update(None, "journal_mode", "WAL")
-        .map_err(|error| StorageError::from_sqlite("configure", EntityKind::Database, &error))?;
+    connection.busy_timeout(BUSY_TIMEOUT)?;
+    connection.pragma_update(None, "foreign_keys", true)?;
+    connection.pragma_update(None, "journal_mode", "WAL")?;
     // FULL is used because this database stores metadata, not PTY output.
     // Writes are infrequent session/project transitions. See session-03-report.
-    connection
-        .pragma_update(None, "synchronous", "FULL")
-        .map_err(|error| StorageError::from_sqlite("configure", EntityKind::Database, &error))?;
+    connection.pragma_update(None, "synchronous", "FULL")?;
     Ok(())
 }
 

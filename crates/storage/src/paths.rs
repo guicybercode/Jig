@@ -1,88 +1,76 @@
-use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use crate::error::{EntityKind, StorageError, StorageErrorKind};
+use rusqlite::types::{Value, ValueRef};
 
-/// Returns the platform data directory that owns `cli-master.db`.
-///
-/// Linux uses `$XDG_DATA_HOME/cli-master` when set, otherwise
-/// `~/.local/share/cli-master`. macOS uses
-/// `~/Library/Application Support/cli-master`.
-///
-/// # Errors
-///
-/// Returns an error when `HOME` is missing or the current OS is outside the
-/// v0.1 support set.
-pub fn default_data_dir() -> Result<PathBuf, StorageError> {
-    #[cfg(target_os = "macos")]
-    {
-        Ok(home_dir()?.join("Library/Application Support/cli-master"))
+use crate::StorageError;
+use crate::error::{corrupt_data, invalid_input, persisted_validation};
+
+pub(crate) fn validate_absolute_path(path: &Path, field: &'static str) -> Result<(), StorageError> {
+    if path.as_os_str().is_empty() {
+        return Err(invalid_input(field, "path must not be empty"));
     }
-    #[cfg(target_os = "linux")]
+    if path.as_os_str().as_encoded_bytes().contains(&0) {
+        return Err(invalid_input(field, "path must not contain a NUL byte"));
+    }
+    if !path.is_absolute() {
+        return Err(invalid_input(field, "path must be absolute"));
+    }
+    Ok(())
+}
+
+pub(crate) fn path_to_sql_value(path: &Path, field: &'static str) -> Result<Value, StorageError> {
+    validate_absolute_path(path, field)?;
+
+    if let Some(text) = path.to_str() {
+        return Ok(Value::Text(text.to_owned()));
+    }
+
+    #[cfg(unix)]
     {
-        if let Some(xdg) = env::var_os("XDG_DATA_HOME") {
-            let xdg = PathBuf::from(xdg);
-            if !xdg.as_os_str().is_empty() {
-                return Ok(xdg.join("cli-master"));
+        use std::os::unix::ffi::OsStrExt;
+
+        Ok(Value::Blob(path.as_os_str().as_bytes().to_vec()))
+    }
+
+    #[cfg(not(unix))]
+    {
+        Err(invalid_input(
+            field,
+            "path must be valid UTF-8 on this platform",
+        ))
+    }
+}
+
+pub(crate) fn path_from_sql_value(
+    value: ValueRef<'_>,
+    entity: &'static str,
+    field: &'static str,
+) -> Result<PathBuf, StorageError> {
+    let path = match value {
+        ValueRef::Text(bytes) | ValueRef::Blob(bytes) => {
+            #[cfg(unix)]
+            {
+                use std::ffi::OsString;
+                use std::os::unix::ffi::OsStringExt;
+
+                PathBuf::from(OsString::from_vec(bytes.to_vec()))
+            }
+
+            #[cfg(not(unix))]
+            {
+                let text = std::str::from_utf8(bytes)
+                    .map_err(|error| corrupt_data(entity, field, error.to_string()))?;
+                PathBuf::from(text)
             }
         }
-        Ok(home_dir()?.join(".local/share/cli-master"))
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        Err(unsupported_platform())
-    }
-}
-
-/// Returns the default file-backed database path for this user.
-///
-/// # Errors
-///
-/// Returns an error when the platform data directory cannot be resolved.
-pub fn default_database_path() -> Result<PathBuf, StorageError> {
-    Ok(default_data_dir()?.join("cli-master.db"))
-}
-
-fn home_dir() -> Result<PathBuf, StorageError> {
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|path| !path.as_os_str().is_empty())
-        .ok_or_else(|| {
-            StorageError::new(
-                "resolve data dir",
-                EntityKind::Database,
-                StorageErrorKind::InvalidInput("HOME is not set"),
-                "Set HOME and restart the daemon.",
-            )
-        })
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn unsupported_platform() -> StorageError {
-    StorageError::new(
-        "resolve data dir",
-        EntityKind::Database,
-        StorageErrorKind::InvalidInput("unsupported platform"),
-        "CLI Master Beta v0.1 supports Linux and macOS only.",
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::default_database_path;
-
-    #[test]
-    fn default_path_is_absolute_and_named() {
-        let path = default_database_path().expect("default path should resolve");
-        assert!(path.is_absolute());
-        assert_eq!(
-            path.file_name().and_then(|name| name.to_str()),
-            Some("cli-master.db")
-        );
-        let rendered = path.to_string_lossy();
-        assert!(
-            rendered.contains("cli-master"),
-            "path should live under the application data directory: {rendered}"
-        );
-    }
+        _ => {
+            return Err(corrupt_data(
+                entity,
+                field,
+                "expected a UTF-8 text path or native path byte sequence",
+            ));
+        }
+    };
+    persisted_validation(entity, validate_absolute_path(&path, field))?;
+    Ok(path)
 }
