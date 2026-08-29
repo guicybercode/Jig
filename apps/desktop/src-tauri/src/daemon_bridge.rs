@@ -3,14 +3,15 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::{collections::HashMap, sync::Arc};
 
 use cli_master_daemon::{DaemonConfig, MAX_FRAME_LENGTH};
 use serde::Serialize;
 use serde_json::{Value, json};
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::UnixStream;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, oneshot};
 use tokio::time::{Duration, sleep};
 
 const STARTUP_ATTEMPTS: usize = 30;
@@ -19,9 +20,18 @@ const DAEMON_PATH_ENV: &str = "CLI_MASTER_DAEMON_PATH";
 
 /// Serializes daemon startup so simultaneous frontend requests do not launch
 /// competing sidecars.
-#[derive(Default)]
 pub(crate) struct DaemonBridge {
     startup_lock: Mutex<()>,
+    terminal_relays: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
+}
+
+impl Default for DaemonBridge {
+    fn default() -> Self {
+        Self {
+            startup_lock: Mutex::new(()),
+            terminal_relays: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
 }
 
 /// Forwards one versioned frontend envelope to the per-user daemon.
@@ -31,6 +41,26 @@ pub(crate) async fn daemon_request(
     bridge: State<'_, DaemonBridge>,
 ) -> Result<Value, BridgeError> {
     bridge.request(&request).await
+}
+
+/// Opens a persistent daemon event stream for one terminal session.
+#[tauri::command]
+pub(crate) async fn daemon_terminal_subscribe(
+    request: Value,
+    app: AppHandle,
+    bridge: State<'_, DaemonBridge>,
+) -> Result<Value, BridgeError> {
+    bridge.subscribe_terminal(&request, app).await
+}
+
+/// Stops the desktop relay and closes its daemon socket for one terminal.
+#[tauri::command]
+pub(crate) async fn daemon_terminal_unsubscribe(
+    session_id: String,
+    bridge: State<'_, DaemonBridge>,
+) -> Result<(), BridgeError> {
+    bridge.unsubscribe_terminal(&session_id).await;
+    Ok(())
 }
 
 impl DaemonBridge {
@@ -70,6 +100,88 @@ impl DaemonBridge {
             last_error.unwrap_or(BridgeFailure::MissingResponse),
         ))
     }
+
+    async fn subscribe_terminal(
+        &self,
+        request: &Value,
+        app: AppHandle,
+    ) -> Result<Value, BridgeError> {
+        let session_id = request
+            .get("payload")
+            .and_then(|payload| payload.get("sessionId"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                BridgeError::invalid_request("terminal subscription is missing a sessionId")
+            })?
+            .to_owned();
+        let config = DaemonConfig::discover()
+            .map_err(|error| BridgeError::unavailable("resolve daemon paths", error.to_string()))?;
+
+        let opened = match open_subscription(config.socket_path(), request).await {
+            Ok(opened) => opened,
+            Err(error) if !error.is_connection_failure() => {
+                return Err(BridgeError::unavailable(
+                    "open terminal event stream",
+                    error,
+                ));
+            }
+            Err(_) => {
+                let _startup_guard = self.startup_lock.lock().await;
+                if let Ok(opened) = open_subscription(config.socket_path(), request).await {
+                    opened
+                } else {
+                    start_daemon().map_err(BridgeError::startup)?;
+                    let mut last_error = BridgeFailure::MissingResponse;
+                    let mut opened = None;
+                    for _ in 0..STARTUP_ATTEMPTS {
+                        sleep(STARTUP_RETRY_DELAY).await;
+                        match open_subscription(config.socket_path(), request).await {
+                            Ok(stream) => {
+                                opened = Some(stream);
+                                break;
+                            }
+                            Err(error) => last_error = error,
+                        }
+                    }
+                    opened.ok_or_else(|| {
+                        BridgeError::unavailable("connect terminal event stream", last_error)
+                    })?
+                }
+            }
+        };
+
+        let (mut stream, response) = opened;
+        if response.get("status").and_then(Value::as_str) != Some("success") {
+            return Ok(response);
+        }
+
+        let (cancel, mut cancelled) = oneshot::channel();
+        if let Some(previous) = self.terminal_relays.lock().await.insert(session_id, cancel) {
+            let _ = previous.send(());
+        }
+        tauri::async_runtime::spawn(async move {
+            loop {
+                let next = tokio::select! {
+                    _ = &mut cancelled => break,
+                    next = read_frame(&mut stream) => next,
+                };
+                let Ok(event) = next else {
+                    break;
+                };
+                if app.emit("daemon:event", event).is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(response)
+    }
+
+    async fn unsubscribe_terminal(&self, session_id: &str) {
+        if let Some(cancel) = self.terminal_relays.lock().await.remove(session_id) {
+            let _ = cancel.send(());
+        }
+    }
 }
 
 async fn send_request(socket_path: &Path, request: &Value) -> Result<Value, BridgeFailure> {
@@ -78,6 +190,19 @@ async fn send_request(socket_path: &Path, request: &Value) -> Result<Value, Brid
         .await
         .map_err(BridgeFailure::Connect)?;
     exchange_frame(&mut stream, &encoded).await
+}
+
+async fn open_subscription(
+    socket_path: &Path,
+    request: &Value,
+) -> Result<(UnixStream, Value), BridgeFailure> {
+    let encoded = encode_request(request)?;
+    let mut stream = UnixStream::connect(socket_path)
+        .await
+        .map_err(BridgeFailure::Connect)?;
+    write_frame(&mut stream, &encoded).await?;
+    let response = read_frame(&mut stream).await?;
+    Ok((stream, response))
 }
 
 fn encode_request(request: &Value) -> Result<Vec<u8>, BridgeFailure> {
@@ -95,6 +220,17 @@ async fn exchange_frame<Stream>(
 where
     Stream: AsyncRead + AsyncWrite + Unpin,
 {
+    write_frame(stream, encoded_request).await?;
+    read_frame(stream).await
+}
+
+async fn write_frame<Stream>(
+    stream: &mut Stream,
+    encoded_request: &[u8],
+) -> Result<(), BridgeFailure>
+where
+    Stream: AsyncWrite + Unpin,
+{
     let frame_length = u32::try_from(encoded_request.len())
         .map_err(|_| BridgeFailure::FrameTooLarge(encoded_request.len()))?;
     stream
@@ -105,7 +241,13 @@ where
         .write_all(encoded_request)
         .await
         .map_err(|error| BridgeFailure::Io("write request frame", error))?;
+    Ok(())
+}
 
+async fn read_frame<Stream>(stream: &mut Stream) -> Result<Value, BridgeFailure>
+where
+    Stream: AsyncRead + Unpin,
+{
     let mut frame_header = [0_u8; 4];
     stream
         .read_exact(&mut frame_header)
@@ -222,6 +364,15 @@ impl BridgeError {
                 "operation": operation,
                 "reason": reason.to_string(),
             }),
+        }
+    }
+
+    fn invalid_request(reason: impl fmt::Display) -> Self {
+        Self {
+            code: "invalid_terminal_subscription",
+            message: "The terminal subscription request is invalid.",
+            action: "Close the terminal card and open it again.",
+            details: json!({ "reason": reason.to_string() }),
         }
     }
 }

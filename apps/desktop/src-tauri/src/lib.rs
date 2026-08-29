@@ -1,6 +1,8 @@
 mod daemon_bridge;
 
-use daemon_bridge::{DaemonBridge, daemon_request};
+use daemon_bridge::{
+    DaemonBridge, daemon_request, daemon_terminal_subscribe, daemon_terminal_unsubscribe,
+};
 
 /// Starts the Tauri desktop process.
 ///
@@ -13,7 +15,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(DaemonBridge::default())
-        .invoke_handler(tauri::generate_handler![daemon_request])
+        .invoke_handler(tauri::generate_handler![
+            daemon_request,
+            daemon_terminal_subscribe,
+            daemon_terminal_unsubscribe
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
