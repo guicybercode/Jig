@@ -12,13 +12,17 @@ export type IconName =
   | "diagnostics"
   | "folder"
   | "grid"
+  | "link"
   | "menu"
   | "more"
+  | "note"
   | "pencil"
   | "play"
+  | "pointer"
   | "plus"
   | "refresh"
   | "repository"
+  | "sidebar"
   | "search"
   | "session"
   | "settings"
@@ -26,7 +30,9 @@ export type IconName =
   | "terminal"
   | "trash"
   | "warning"
-  | "worktree";
+  | "worktree"
+  | "zoom-in"
+  | "zoom-out";
 
 /** Props for the shared outline icon set. */
 export interface IconProps {
@@ -109,6 +115,13 @@ function getIconPaths(name: IconName): ReactNode {
           <rect x="14" y="14" width="7" height="7" rx="1" />
         </>
       );
+    case "link":
+      return (
+        <>
+          <path d="M10.2 13.8a4 4 0 0 0 5.7 0l2.1-2.1A4 4 0 1 0 12.3 6l-1.2 1.2" />
+          <path d="M13.8 10.2a4 4 0 0 0-5.7 0L6 12.3A4 4 0 1 0 11.7 18l1.2-1.2" />
+        </>
+      );
     case "menu":
       return <path d="M4 6h16M4 12h16M4 18h16" />;
     case "more":
@@ -117,6 +130,13 @@ function getIconPaths(name: IconName): ReactNode {
           <circle cx="5" cy="12" r="1" fill="currentColor" stroke="none" />
           <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />
           <circle cx="19" cy="12" r="1" fill="currentColor" stroke="none" />
+        </>
+      );
+    case "note":
+      return (
+        <>
+          <path d="M5 3h11l3 3v15H5V3Z" />
+          <path d="M16 3v4h4M8 11h8M8 15h8M8 7h4" />
         </>
       );
     case "pencil":
@@ -128,6 +148,10 @@ function getIconPaths(name: IconName): ReactNode {
       );
     case "play":
       return <path d="m8 5 11 7-11 7V5Z" />;
+    case "pointer":
+      return (
+        <path d="M5 3.5 18.5 13l-6 .8 3.8 6.2-2.8 1.5-3.7-6.1L6 20 5 3.5Z" />
+      );
     case "plus":
       return <path d="M12 5v14M5 12h14" />;
     case "refresh":
@@ -143,6 +167,13 @@ function getIconPaths(name: IconName): ReactNode {
         <>
           <path d="M5 4.5A2.5 2.5 0 0 1 7.5 2H19v18H7.5A2.5 2.5 0 0 0 5 22V4.5Z" />
           <path d="M5 18.5A2.5 2.5 0 0 1 7.5 16H19M9 6h6" />
+        </>
+      );
+    case "sidebar":
+      return (
+        <>
+          <rect x="3" y="4" width="18" height="16" rx="2" />
+          <path d="M9 4v16M5.5 8h1M5.5 12h1" />
         </>
       );
     case "search":
@@ -189,6 +220,20 @@ function getIconPaths(name: IconName): ReactNode {
           <circle cx="6" cy="19" r="2" />
           <circle cx="18" cy="12" r="2" />
           <path d="M6 7v10M8 12h8M12 12V7h4" />
+        </>
+      );
+    case "zoom-in":
+      return (
+        <>
+          <circle cx="10.5" cy="10.5" r="6.5" />
+          <path d="m15.5 15.5 4.5 4.5M10.5 7.5v6M7.5 10.5h6" />
+        </>
+      );
+    case "zoom-out":
+      return (
+        <>
+          <circle cx="10.5" cy="10.5" r="6.5" />
+          <path d="m15.5 15.5 4.5 4.5M7.5 10.5h6" />
         </>
       );
   }
