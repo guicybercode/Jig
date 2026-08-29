@@ -7,10 +7,15 @@ import type { DiagnosticsLoader, DiagnosticsReport } from "./types";
 interface DiagnosticsDialogProps {
   readonly onClose: () => void;
   readonly load: DiagnosticsLoader;
+  readonly exportReport?: () => Promise<string>;
 }
 
 /** Shows a sanitized diagnostics snapshot that is safe to share. */
-export function DiagnosticsDialog({ onClose, load }: DiagnosticsDialogProps) {
+export function DiagnosticsDialog({
+  onClose,
+  load,
+  exportReport = exportNativeDiagnostics,
+}: DiagnosticsDialogProps) {
   const titleId = useId();
   const [report, setReport] = useState<DiagnosticsReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -26,13 +31,9 @@ export function DiagnosticsDialog({ onClose, load }: DiagnosticsDialogProps) {
           setReport(next);
         }
       })
-      .catch((cause: unknown) => {
+      .catch(() => {
         if (!cancelled) {
-          setError(
-            cause instanceof Error
-              ? cause.message
-              : "Diagnostics are only available in the desktop app.",
-          );
+          setError("Diagnostics could not be loaded safely.");
         }
       });
     return () => {
@@ -44,8 +45,8 @@ export function DiagnosticsDialog({ onClose, load }: DiagnosticsDialogProps) {
     if (!report) {
       return;
     }
-    const text = await resolveExportText(report);
     try {
+      const text = await exportReport();
       await navigator.clipboard.writeText(text);
       setCopyState("copied");
     } catch {
@@ -75,9 +76,8 @@ export function DiagnosticsDialog({ onClose, load }: DiagnosticsDialogProps) {
           </button>
         </header>
         <p className="dialog__lede">
-          This snapshot excludes tokens, cookies, environment variables,
-          prompts, and terminal output. It is safe to copy into a support
-          report.
+          The Copy action exports a sanitized snapshot without tokens, cookies,
+          environment variables, prompts, terminal output, or your home path.
         </p>
         {error ? (
           <p className="dialog__error" role="alert">
@@ -105,7 +105,7 @@ export function DiagnosticsDialog({ onClose, load }: DiagnosticsDialogProps) {
             {copyState === "copied"
               ? "Copied. Environment variables were not included."
               : copyState === "failed"
-                ? "Clipboard is unavailable. Select the summary and copy manually."
+                ? "Diagnostics export failed. Retry; do not copy the on-screen paths."
                 : null}
           </span>
         </footer>
@@ -181,12 +181,4 @@ function DiagnosticItem({
       <dd>{value}</dd>
     </div>
   );
-}
-
-async function resolveExportText(report: DiagnosticsReport): Promise<string> {
-  try {
-    return await exportNativeDiagnostics();
-  } catch {
-    return JSON.stringify(report, null, 2);
-  }
 }

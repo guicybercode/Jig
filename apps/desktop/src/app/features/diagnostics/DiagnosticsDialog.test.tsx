@@ -64,6 +64,7 @@ describe("DiagnosticsDialog", () => {
 
     render(
       <DiagnosticsDialog
+        exportReport={async () => JSON.stringify(report)}
         load={async () => report}
         onClose={() => undefined}
       />,
@@ -89,5 +90,55 @@ describe("DiagnosticsDialog", () => {
     expect(
       screen.getByRole("status").textContent,
     ).toMatch(/Copied/);
+  });
+
+  it("never falls back to copying the raw diagnostics response", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    render(
+      <DiagnosticsDialog
+        exportReport={async () => {
+          throw new Error("native export failed");
+        }}
+        load={async () => ({
+          ...report,
+          dataDir: "/Users/private-user/.local/share/cli-master",
+        })}
+        onClose={() => undefined}
+      />,
+    );
+    await screen.findByText("0.1.0");
+
+    await user.click(
+      screen.getByRole("button", { name: "Copy sanitized diagnostics" }),
+    );
+
+    expect(writeText).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Diagnostics export failed",
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "do not copy the on-screen paths",
+    );
+  });
+
+  it("does not render native error details that may contain secrets", async () => {
+    render(
+      <DiagnosticsDialog
+        load={async () => {
+          throw new Error("TOKEN=loader-secret");
+        }}
+        onClose={() => undefined}
+      />,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Diagnostics could not be loaded safely",
+    );
+    expect(screen.queryByText(/loader-secret/)).not.toBeInTheDocument();
   });
 });

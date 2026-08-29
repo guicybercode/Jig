@@ -25,7 +25,7 @@ pub enum ErrorCode {
     WorktreeInUse,
     /// A Git subprocess failed, timed out, or returned a non-zero status.
     GitCommandFailed,
-    /// SQLite could not be opened, migrated, or queried.
+    /// `SQLite` could not be opened, migrated, or queried.
     DatabaseUnavailable,
     /// The desktop bridge is not connected to a live daemon.
     DaemonDisconnected,
@@ -161,7 +161,7 @@ impl ApiError {
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             code: code.into(),
-            message: message.into(),
+            message: redact_text(&message.into()),
             action: None,
             details: BTreeMap::new(),
             title: None,
@@ -172,21 +172,23 @@ impl ApiError {
     /// Adds a user-facing remediation action.
     #[must_use]
     pub fn with_action(mut self, action: impl Into<String>) -> Self {
-        self.action = Some(action.into());
+        self.action = Some(redact_text(&action.into()));
         self
     }
 
     /// Adds one structured diagnostic detail.
     #[must_use]
     pub fn with_detail(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
-        self.details.insert(key.into(), value.into());
+        let key = key.into();
+        self.details
+            .insert(key.clone(), redact_json_value(&key, value.into()));
         self
     }
 
     /// Adds a short title without changing the user-facing message.
     #[must_use]
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
-        self.title = Some(title.into());
+        self.title = Some(redact_text(&title.into()));
         self
     }
 
@@ -223,7 +225,7 @@ impl ApplicationError {
     /// Creates a recoverable error with a user-facing message.
     #[must_use]
     pub fn new(code: ErrorCode, user_message: impl Into<String>) -> Self {
-        let user_message = user_message.into();
+        let user_message = redact_text(&user_message.into());
         Self {
             inner: Box::new(ApplicationErrorInner {
                 title: code.title().to_owned(),
@@ -248,14 +250,14 @@ impl ApplicationError {
     /// Replaces the short title shown in dialogs.
     #[must_use]
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
-        self.inner.title = title.into();
+        self.inner.title = redact_text(&title.into());
         self
     }
 
     /// Adds a user-facing remediation action.
     #[must_use]
     pub fn with_action(mut self, action: impl Into<String>) -> Self {
-        self.inner.suggested_action = Some(action.into());
+        self.inner.suggested_action = Some(redact_text(&action.into()));
         self
     }
 
@@ -420,6 +422,20 @@ mod tests {
         assert!(!value.to_string().contains("abc123"));
         assert!(error.source_chain().is_some());
         assert!(error.technical_message().contains("[redacted]"));
+    }
+
+    #[test]
+    fn api_error_redacts_secrets_from_all_user_visible_strings() {
+        let error = ApplicationError::new(
+            ErrorCode::InvalidPath,
+            "Could not open TOKEN=message-secret",
+        )
+        .with_title("PASSWORD=title-secret")
+        .with_action("Remove AUTHORIZATION=action-secret and retry");
+        let json = serde_json::to_string(&error.to_api_error()).expect("api error");
+        for secret in ["message-secret", "title-secret", "action-secret"] {
+            assert!(!json.contains(secret));
+        }
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use cli_master_core::{ApplicationError, ErrorCode, LOGIN_SHELL_PATH_TIMEOUT};
@@ -31,7 +32,14 @@ pub fn import_login_path(shell: impl AsRef<Path>) -> Result<OsString, Applicatio
         .with_context("shell", shell.display().to_string()));
     }
 
-    let file_name = shell
+    let resolved_shell = fs::canonicalize(shell).map_err(|error| {
+        ApplicationError::new(ErrorCode::InvalidPath, "Login shell could not be resolved.")
+            .with_action("Configure an existing absolute shell path.")
+            .with_context("shell", shell.display().to_string())
+            .with_source(&error)
+    })?;
+
+    let file_name = resolved_shell
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
@@ -48,7 +56,7 @@ pub fn import_login_path(shell: impl AsRef<Path>) -> Result<OsString, Applicatio
     };
 
     // This is a deliberate, documented exception to assert_structured_command.
-    let output = run_login_shell(shell, args)?;
+    let output = run_login_shell(&resolved_shell, args)?;
     if !output.success() {
         return Err(ApplicationError::new(
             ErrorCode::PtySpawnFailed,
@@ -68,4 +76,23 @@ fn run_login_shell(
         request = request.arg(*argument);
     }
     crate::process::run_command_unchecked(&request.allow_login_shell())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::symlink;
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn refuses_a_shell_named_symlink_to_a_non_shell_binary() {
+        let temp = TempDir::new().expect("temp");
+        let alias = temp.path().join("bash");
+        symlink("/bin/echo", &alias).expect("alias");
+
+        let error = import_login_path(alias).expect_err("non-shell target");
+        assert_eq!(error.code(), ErrorCode::ShellInvocationRefused);
+    }
 }

@@ -13,8 +13,8 @@ use cli_master_core::{
     ApplicationError, DIFF_MAX_BYTES, ErrorCode, GIT_COMMAND_TIMEOUT, VERSION_DETECT_TIMEOUT,
 };
 use cli_master_safety::{
-    Logger, ManagedRoots, SpawnRequest, StructuredLog, assert_managed_worktree,
-    canonicalize_existing, run_command_unchecked,
+    Logger, ManagedRoots, SpawnRequest, StructuredLog, WorktreeRemovalState,
+    assert_managed_worktree, canonicalize_existing, run_command_unchecked,
 };
 
 /// Outcome of inspecting a Git worktree.
@@ -199,7 +199,7 @@ impl GitService {
         })
     }
 
-    /// Removes a managed worktree. `--force` is used only when `allow_force`.
+    /// Removes a managed worktree after consuming a confirmed removal state.
     ///
     /// # Errors
     ///
@@ -208,13 +208,30 @@ impl GitService {
     pub fn remove_worktree(
         &self,
         repo: &Path,
-        worktree: &Path,
         roots: &ManagedRoots,
-        allow_force: bool,
+        confirmation: WorktreeRemovalState,
     ) -> Result<(), ApplicationError> {
         let repo = self.repository_root(repo)?;
-        let worktree = assert_managed_worktree(worktree, roots)?;
+        let worktree = assert_managed_worktree(confirmation.path(), roots)?;
+        confirmation.revalidate_path(&worktree)?;
+        if confirmation.in_use() {
+            return Err(ApplicationError::new(
+                ErrorCode::WorktreeInUse,
+                "The confirmed worktree is still used by a running session.",
+            )
+            .with_action("Stop the session and prepare removal again."));
+        }
         let status = self.worktree_status(&worktree)?;
+        if status.branch.as_deref().unwrap_or_default() != confirmation.branch()
+            || status.dirty != confirmation.dirty()
+        {
+            return Err(ApplicationError::new(
+                ErrorCode::ConfirmationMismatch,
+                "The worktree branch or dirty state changed after confirmation.",
+            )
+            .with_action("Review the current worktree state and confirm removal again."));
+        }
+        let allow_force = confirmation.allows_force();
         if status.dirty && !allow_force {
             return Err(ApplicationError::new(
                 ErrorCode::WorktreeDirty,
@@ -229,19 +246,21 @@ impl GitService {
             .with_context("branch", status.branch.clone().unwrap_or_default()));
         }
 
-        Logger::global().write(
-            &StructuredLog::new(
-                cli_master_safety::LogLevel::Info,
-                "git",
-                "worktree.remove",
-                format!(
-                    "removing worktree {} force={}",
-                    worktree.display(),
-                    allow_force
-                ),
-            )
-            .with_project(repo.display().to_string()),
-        );
+        Logger::global().write(&StructuredLog::new(
+            cli_master_safety::LogLevel::Info,
+            "git",
+            "worktree.remove",
+            format!(
+                "removing worktree {} force={}",
+                worktree.display(),
+                allow_force
+            ),
+        ));
+
+        confirmation.revalidate_path(&worktree)?;
+        // The confirmation is a single-use capability. Consume it before the
+        // mutating Git command so callers cannot replay the same approval.
+        drop(confirmation);
 
         let mut args = vec![
             "-C".to_owned(),
@@ -355,7 +374,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use cli_master_safety::ManagedRoots;
+    use cli_master_core::{ProjectId, WorktreeId};
+    use cli_master_safety::{
+        ConfirmationStore, DestructiveKind, DestructiveRequest, ManagedRoots, WorktreeRemovalState,
+    };
 
     fn git(args: &[&str], cwd: &Path) {
         let status = Command::new("git")
@@ -382,6 +404,32 @@ mod tests {
         (temp, root, service)
     }
 
+    fn confirm_removal(
+        status: &WorktreeStatus,
+        roots: &ManagedRoots,
+        allow_dirty: bool,
+    ) -> Result<WorktreeRemovalState, ApplicationError> {
+        let mut request = DestructiveRequest {
+            kind: DestructiveKind::RemoveWorktree,
+            path: Some(status.root.clone()),
+            branch: status.branch.clone(),
+            session_id: None,
+            project_id: Some(ProjectId::new()),
+            worktree_id: Some(WorktreeId::new()),
+            agent_id: None,
+            dirty: status.dirty,
+            in_use: false,
+            allow_dirty: false,
+            force: false,
+        };
+        let mut store = ConfirmationStore::new();
+        let plan = store.prepare(&request, roots)?;
+        request.allow_dirty = allow_dirty;
+        store
+            .confirm(&plan.token, &request, roots)?
+            .into_worktree_removal()
+    }
+
     #[test]
     fn detects_repository_root_and_rejects_plain_directories() {
         let (_temp, root, service) = repo();
@@ -404,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn dirty_worktree_is_not_removed_without_force() {
+    fn dirty_worktree_is_not_confirmed_without_explicit_force() {
         let (temp, root, service) = repo();
         let data = temp.path().join("data");
         let worktree = data.join("worktrees/project/topic");
@@ -425,11 +473,63 @@ mod tests {
         assert!(status.dirty);
         assert_eq!(status.branch.as_deref(), Some("agent/topic"));
 
-        let error = service
-            .remove_worktree(&root, &worktree, &roots, false)
-            .expect_err("dirty");
+        let error = confirm_removal(&status, &roots, false).expect_err("dirty");
         assert_eq!(error.code(), ErrorCode::WorktreeDirty);
         assert!(worktree.exists());
+    }
+
+    #[test]
+    fn stale_clean_confirmation_cannot_remove_a_newly_dirty_worktree() {
+        let (temp, root, service) = repo();
+        let data = temp.path().join("data");
+        let worktree = data.join("worktrees/project/topic");
+        fs::create_dir_all(worktree.parent().expect("parent")).expect("parent");
+        git(
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "agent/topic",
+                worktree.to_str().expect("utf8"),
+            ],
+            &root,
+        );
+        let roots = ManagedRoots::new(&data);
+        let clean = service.worktree_status(&worktree).expect("clean status");
+        let confirmation = confirm_removal(&clean, &roots, false).expect("confirmation");
+        fs::write(worktree.join("late-change.txt"), "must survive").expect("late change");
+
+        let error = service
+            .remove_worktree(&root, &roots, confirmation)
+            .expect_err("state changed");
+        assert_eq!(error.code(), ErrorCode::ConfirmationMismatch);
+        assert!(worktree.join("late-change.txt").exists());
+    }
+
+    #[test]
+    fn confirmed_clean_worktree_is_removed() {
+        let (temp, root, service) = repo();
+        let data = temp.path().join("data");
+        let worktree = data.join("worktrees/project/topic");
+        fs::create_dir_all(worktree.parent().expect("parent")).expect("parent");
+        git(
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "agent/topic",
+                worktree.to_str().expect("utf8"),
+            ],
+            &root,
+        );
+        let roots = ManagedRoots::new(&data);
+        let clean = service.worktree_status(&worktree).expect("clean status");
+        let confirmation = confirm_removal(&clean, &roots, false).expect("confirmation");
+
+        service
+            .remove_worktree(&root, &roots, confirmation)
+            .expect("confirmed removal");
+        assert!(!worktree.exists());
     }
 
     #[test]

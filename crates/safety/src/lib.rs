@@ -16,7 +16,8 @@ mod process;
 mod shell;
 
 pub use destructive::{
-    ConfirmationStore, DestructiveKind, DestructiveRequest, RemovalPlan, WorktreeRemovalState,
+    ConfirmationStore, ConfirmedDestructiveOperation, DestructiveKind, DestructiveRequest,
+    RemovalPlan, WorktreeRemovalState,
 };
 pub use diagnostics::collect_diagnostics;
 pub use identity::{ProcessIdentity, ProcessStopPlan, record_identity, stop_process};

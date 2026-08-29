@@ -39,6 +39,12 @@ pub fn record_identity(
     pid: u32,
     daemon_instance_id: impl Into<String>,
 ) -> Result<ProcessIdentity, ApplicationError> {
+    if pid <= 1 {
+        return Err(identity_error(
+            pid,
+            "System and process-group identifiers cannot be recorded as session children.",
+        ));
+    }
     Ok(ProcessIdentity {
         pid,
         start_token: read_start_token(pid)?,
@@ -81,7 +87,7 @@ pub fn stop_process(
     }
 
     send_signal(plan.identity.pid, "TERM")?;
-    if wait_until_gone(plan.identity.pid, PROCESS_STOP_GRACE) {
+    if wait_until_identity_gone(&plan.identity, PROCESS_STOP_GRACE) {
         return Ok(());
     }
 
@@ -106,7 +112,7 @@ pub fn stop_process(
     }
 
     send_signal(plan.identity.pid, "KILL")?;
-    if wait_until_gone(plan.identity.pid, PROCESS_FORCE_KILL_TIMEOUT) {
+    if wait_until_identity_gone(&plan.identity, PROCESS_FORCE_KILL_TIMEOUT) {
         Ok(())
     } else {
         Err(ApplicationError::new(
@@ -172,15 +178,19 @@ fn send_signal(pid: u32, signal: &str) -> Result<(), ApplicationError> {
     }
 }
 
-fn wait_until_gone(pid: u32, timeout: Duration) -> bool {
+fn wait_until_identity_gone(identity: &ProcessIdentity, timeout: Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
-        if !Path::new("/proc").join(pid.to_string()).exists() {
+        if process_identity_changed(identity) {
             return true;
         }
         std::thread::sleep(Duration::from_millis(25));
     }
-    !Path::new("/proc").join(pid.to_string()).exists()
+    process_identity_changed(identity)
+}
+
+fn process_identity_changed(identity: &ProcessIdentity) -> bool {
+    read_start_token(identity.pid).map_or(true, |token| token != identity.start_token)
 }
 
 fn identity_error(pid: u32, message: &str) -> ApplicationError {
@@ -216,5 +226,22 @@ mod tests {
         )
         .expect_err("foreign instance must be refused");
         assert_eq!(error.code(), ErrorCode::ProcessIdentityMismatch);
+    }
+
+    #[test]
+    fn refuses_process_group_and_system_pids() {
+        for pid in [0, 1] {
+            let error = record_identity(pid, "daemon").expect_err("protected pid");
+            assert_eq!(error.code(), ErrorCode::ProcessIdentityMismatch);
+        }
+    }
+
+    #[test]
+    fn a_live_identity_is_not_reported_as_gone() {
+        let identity = record_identity(std::process::id(), "daemon").expect("identity");
+        assert!(!wait_until_identity_gone(
+            &identity,
+            Duration::from_millis(10)
+        ));
     }
 }

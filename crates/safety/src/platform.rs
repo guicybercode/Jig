@@ -12,7 +12,7 @@ pub struct PlatformPaths {
     pub log_dir: PathBuf,
     /// Runtime directory for the daemon socket.
     pub runtime_dir: PathBuf,
-    /// SQLite database path.
+    /// `SQLite` database path.
     pub database_path: PathBuf,
     /// Managed worktree root.
     pub worktree_root: PathBuf,

@@ -22,7 +22,18 @@ export function WorktreeRemoveDialog({
   onConfirm,
 }: WorktreeRemoveDialogProps) {
   const titleId = useId();
-  const [allowDirty, setAllowDirty] = useState(false);
+  const previewKey = JSON.stringify([
+    preview.path,
+    preview.branch,
+    preview.dirty,
+    preview.inUse,
+  ]);
+  const [dirtyApproval, setDirtyApproval] = useState({
+    previewKey,
+    allowed: false,
+  });
+  const allowDirty =
+    dirtyApproval.previewKey === previewKey && dirtyApproval.allowed;
   const blocked = preview.inUse || (preview.dirty && !allowDirty);
 
   return (
@@ -65,7 +76,10 @@ export function WorktreeRemoveDialog({
               type="checkbox"
               checked={allowDirty}
               onChange={(event) => {
-                setAllowDirty(event.target.checked);
+                setDirtyApproval({
+                  previewKey,
+                  allowed: event.target.checked,
+                });
               }}
             />
             <span>

@@ -1,7 +1,12 @@
+use std::env;
 use std::ffi::OsStr;
+use std::fmt;
+use std::fs;
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -11,7 +16,7 @@ use cli_master_core::{
 
 /// Structured process invocation. The executable and arguments are never joined
 /// into a shell string.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct SpawnRequest {
     executable: PathBuf,
     args: Vec<String>,
@@ -21,6 +26,29 @@ pub struct SpawnRequest {
     timeout: Duration,
     max_output: usize,
     allow_login_shell: bool,
+}
+
+impl fmt::Debug for SpawnRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SpawnRequest")
+            .field("executable", &self.executable)
+            .field("args_count", &self.args.len())
+            .field("cwd", &self.cwd)
+            .field(
+                "env_keys",
+                &self
+                    .extra_env
+                    .iter()
+                    .map(|(key, _)| key)
+                    .collect::<Vec<_>>(),
+            )
+            .field("clear_env", &self.clear_env)
+            .field("timeout", &self.timeout)
+            .field("max_output", &self.max_output)
+            .field("allow_login_shell", &self.allow_login_shell)
+            .finish()
+    }
 }
 
 impl SpawnRequest {
@@ -114,7 +142,7 @@ impl SpawnRequest {
 }
 
 /// Captured result of a bounded subprocess.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct ProcessOutput {
     /// Process exit code, if it exited before the timeout.
     pub exit_code: Option<i32>,
@@ -126,6 +154,19 @@ pub struct ProcessOutput {
     pub truncated: bool,
     /// Whether the process was killed because it exceeded the timeout.
     pub timed_out: bool,
+}
+
+impl fmt::Debug for ProcessOutput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProcessOutput")
+            .field("exit_code", &self.exit_code)
+            .field("stdout_bytes", &self.stdout.len())
+            .field("stderr_bytes", &self.stderr.len())
+            .field("truncated", &self.truncated)
+            .field("timed_out", &self.timed_out)
+            .finish()
+    }
 }
 
 impl ProcessOutput {
@@ -158,27 +199,116 @@ pub fn assert_structured_command(
     executable: &Path,
     args: &[String],
 ) -> Result<(), ApplicationError> {
-    let file_name = executable
-        .file_name()
-        .and_then(OsStr::to_str)
-        .unwrap_or_default();
-    let is_shell = matches!(
-        file_name,
-        "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish" | "csh" | "tcsh"
-    );
-    let uses_command_string = args
-        .iter()
-        .any(|argument| argument == "-c" || argument == "-lc");
-    if is_shell && uses_command_string {
-        return Err(ApplicationError::new(
-            ErrorCode::ShellInvocationRefused,
-            "Refusing to start a shell with a command string.",
-        )
-        .not_recoverable()
-        .with_action("Pass an executable and an argument array instead of `sh -c`.")
-        .with_context("executable", file_name));
+    if executable_has_name(executable, "env")
+        && args
+            .iter()
+            .any(|argument| argument == "-S" || argument == "--split-string")
+    {
+        return Err(shell_invocation_error(executable));
+    }
+    if let Some((nested, nested_args)) = wrapped_command(executable, args) {
+        return assert_structured_command(Path::new(nested), nested_args);
+    }
+
+    let shell = shell_kind(executable);
+    let uses_command_string = match shell {
+        Some(ShellKind::Posix) => args.iter().any(|argument| {
+            let argument = argument.to_ascii_lowercase();
+            argument == "--command"
+                || argument.starts_with("--command=")
+                || argument == "--init-command"
+                || argument.starts_with("--init-command=")
+                || argument
+                    .strip_prefix('-')
+                    .is_some_and(|flags| !flags.starts_with('-') && flags.contains('c'))
+        }),
+        Some(ShellKind::PowerShell) => args.iter().any(|argument| {
+            let flag = argument.trim_start_matches(['-', '/']).to_ascii_lowercase();
+            !flag.is_empty()
+                && ("command".starts_with(&flag)
+                    || "commandwithargs".starts_with(&flag)
+                    || "encodedcommand".starts_with(&flag))
+        }),
+        Some(ShellKind::Cmd) => args.iter().any(|argument| {
+            let argument = argument.to_ascii_lowercase();
+            argument.starts_with("/c") || argument.starts_with("/k")
+        }),
+        None => false,
+    };
+    if shell.is_some() && uses_command_string {
+        return Err(shell_invocation_error(executable));
     }
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum ShellKind {
+    Posix,
+    PowerShell,
+    Cmd,
+}
+
+fn shell_kind(executable: &Path) -> Option<ShellKind> {
+    let direct = executable.file_name().and_then(OsStr::to_str);
+    let canonical = fs::canonicalize(executable)
+        .ok()
+        .and_then(|path| path.file_name().map(OsStr::to_owned))
+        .and_then(|name| name.into_string().ok());
+    direct
+        .into_iter()
+        .chain(canonical.as_deref())
+        .find_map(classify_shell_name)
+}
+
+fn classify_shell_name(name: &str) -> Option<ShellKind> {
+    let name = name.to_ascii_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    match name {
+        "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish" | "csh" | "tcsh" | "nu" | "xonsh" => {
+            Some(ShellKind::Posix)
+        }
+        "powershell" | "pwsh" => Some(ShellKind::PowerShell),
+        "cmd" => Some(ShellKind::Cmd),
+        _ => None,
+    }
+}
+
+fn executable_has_name(executable: &Path, expected: &str) -> bool {
+    let direct = executable.file_name().and_then(OsStr::to_str);
+    let canonical = fs::canonicalize(executable)
+        .ok()
+        .and_then(|path| path.file_name().map(OsStr::to_owned))
+        .and_then(|name| name.into_string().ok());
+    direct
+        .into_iter()
+        .chain(canonical.as_deref())
+        .any(|name| name.trim_end_matches(".exe").eq_ignore_ascii_case(expected))
+}
+
+fn wrapped_command<'a>(executable: &Path, args: &'a [String]) -> Option<(&'a str, &'a [String])> {
+    if executable_has_name(executable, "busybox") {
+        let (nested, rest) = args.split_first()?;
+        return classify_shell_name(nested).map(|_| (nested.as_str(), rest));
+    }
+    if !executable_has_name(executable, "env") {
+        return None;
+    }
+    for (index, argument) in args.iter().enumerate() {
+        if classify_shell_name(argument).is_some() {
+            return Some((argument, &args[index + 1..]));
+        }
+    }
+    None
+}
+
+fn shell_invocation_error(executable: &Path) -> ApplicationError {
+    ApplicationError::new(
+        ErrorCode::ShellInvocationRefused,
+        "Refusing to start a shell with a command string.",
+    )
+    .not_recoverable()
+    .with_action("Pass an executable and an argument array instead of `sh -c`.")
+    .with_context("executable", executable.display().to_string())
 }
 
 /// Runs a [`CommandSpec`] without a shell.
@@ -223,10 +353,11 @@ pub fn run_command(request: &SpawnRequest) -> Result<ProcessOutput, ApplicationE
 ///
 /// Returns an error for shell invocations, spawn failures, and timeouts.
 pub fn run_command_unchecked(request: &SpawnRequest) -> Result<ProcessOutput, ApplicationError> {
+    let executable = resolved_spawn_executable(request);
     if request.allow_login_shell {
         // Documented exception: import_login_path uses a constant command string.
     } else {
-        assert_structured_command(&request.executable, &request.args)?;
+        assert_structured_command(&executable, &request.args)?;
     }
     if request.executable.as_os_str().is_empty() {
         return Err(
@@ -235,11 +366,12 @@ pub fn run_command_unchecked(request: &SpawnRequest) -> Result<ProcessOutput, Ap
         );
     }
 
-    let mut command = Command::new(&request.executable);
+    let mut command = Command::new(&executable);
     command.args(&request.args);
     command.stdin(Stdio::null());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
+    command.process_group(0);
     if let Some(cwd) = &request.cwd {
         command.current_dir(cwd);
     }
@@ -270,14 +402,14 @@ pub fn run_command_unchecked(request: &SpawnRequest) -> Result<ProcessOutput, Ap
         .with_source(&error)
     })?;
 
-    let mut stdout = child.stdout.take().ok_or_else(|| {
+    let stdout = child.stdout.take().ok_or_else(|| {
         ApplicationError::new(
             ErrorCode::PtySpawnFailed,
             "Process stdout was not captured.",
         )
         .with_action("Retry the operation.")
     })?;
-    let mut stderr = child.stderr.take().ok_or_else(|| {
+    let stderr = child.stderr.take().ok_or_else(|| {
         ApplicationError::new(
             ErrorCode::PtySpawnFailed,
             "Process stderr was not captured.",
@@ -286,21 +418,23 @@ pub fn run_command_unchecked(request: &SpawnRequest) -> Result<ProcessOutput, Ap
     })?;
 
     let max_output = request.max_output;
-    let stdout_handle = thread::spawn(move || read_capped(&mut stdout, max_output));
-    let stderr_handle = thread::spawn(move || read_capped(&mut stderr, max_output));
+    let stdout_receiver = read_capped_async(stdout, max_output);
+    let stderr_receiver = read_capped_async(stderr, max_output);
 
-    let wait_outcome = wait_with_timeout(&mut child, request.timeout)?;
+    let wait_outcome = wait_with_timeout(&mut child, request.timeout).inspect_err(|_| {
+        terminate_process_group(&mut child);
+    })?;
     let (timed_out, exit_code) = match wait_outcome {
         WaitOutcome::Exited(status) => (false, status.code()),
         WaitOutcome::TimedOut => {
-            let _ = child.kill();
+            terminate_process_group(&mut child);
             let _ = child.wait();
             (true, None)
         }
     };
 
-    let (stdout, stdout_truncated) = stdout_handle.join().unwrap_or_else(|_| (Vec::new(), false));
-    let (stderr, stderr_truncated) = stderr_handle.join().unwrap_or_else(|_| (Vec::new(), false));
+    let (stdout, stdout_truncated) = receive_capped_output(&stdout_receiver, &mut child);
+    let (stderr, stderr_truncated) = receive_capped_output(&stderr_receiver, &mut child);
 
     let output = ProcessOutput {
         exit_code,
@@ -328,6 +462,34 @@ pub fn run_command_unchecked(request: &SpawnRequest) -> Result<ProcessOutput, Ap
     }
 
     Ok(output)
+}
+
+fn resolved_spawn_executable(request: &SpawnRequest) -> PathBuf {
+    if request.executable.is_absolute() || request.executable.components().count() != 1 {
+        return fs::canonicalize(&request.executable)
+            .unwrap_or_else(|_| request.executable.clone());
+    }
+    let path_override = request
+        .extra_env
+        .iter()
+        .rev()
+        .find(|(key, _)| key == "PATH")
+        .map(|(_, value)| OsStr::new(value).to_os_string());
+    let search_path = path_override.or_else(|| {
+        if request.clear_env {
+            None
+        } else {
+            env::var_os("PATH")
+        }
+    });
+    if let Some(search_path) = search_path {
+        for directory in env::split_paths(&search_path) {
+            if let Ok(candidate) = fs::canonicalize(directory.join(&request.executable)) {
+                return candidate;
+            }
+        }
+    }
+    request.executable.clone()
 }
 
 enum WaitOutcome {
@@ -386,8 +548,51 @@ fn read_capped(reader: &mut dyn Read, max_output: usize) -> (Vec<u8>, bool) {
     (buffer, truncated)
 }
 
+fn read_capped_async<R>(mut reader: R, max_output: usize) -> Receiver<(Vec<u8>, bool)>
+where
+    R: Read + Send + 'static,
+{
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let _ = sender.send(read_capped(&mut reader, max_output));
+    });
+    receiver
+}
+
+fn receive_capped_output(
+    receiver: &Receiver<(Vec<u8>, bool)>,
+    child: &mut std::process::Child,
+) -> (Vec<u8>, bool) {
+    match receiver.recv_timeout(Duration::from_millis(250)) {
+        Ok(output) => output,
+        Err(RecvTimeoutError::Timeout) => {
+            terminate_process_group(child);
+            receiver
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap_or_else(|_| (Vec::new(), true))
+        }
+        Err(RecvTimeoutError::Disconnected) => (Vec::new(), true),
+    }
+}
+
+fn terminate_process_group(child: &mut std::process::Child) {
+    let process_group = format!("-{}", child.id());
+    let _ = Command::new("/bin/kill")
+        .args(["-KILL", "--"])
+        .arg(process_group)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = child.kill();
+}
+
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::symlink;
+
+    use tempfile::TempDir;
+
     use super::*;
 
     #[test]
@@ -413,6 +618,124 @@ mod tests {
         .expect_err("shell -c should be refused");
         assert_eq!(error.code(), ErrorCode::ShellInvocationRefused);
         assert!(error.suggested_action().is_some());
+    }
+
+    #[test]
+    fn refuses_combined_shell_flags_wrappers_and_shell_symlinks() {
+        let combined = assert_structured_command(
+            Path::new("/bin/bash"),
+            &["-xc".to_owned(), "echo injected".to_owned()],
+        )
+        .expect_err("combined -c must be refused");
+        assert_eq!(combined.code(), ErrorCode::ShellInvocationRefused);
+
+        let wrapped = assert_structured_command(
+            Path::new("/usr/bin/env"),
+            &[
+                "bash".to_owned(),
+                "-c".to_owned(),
+                "echo injected".to_owned(),
+            ],
+        )
+        .expect_err("env wrapper must be refused");
+        assert_eq!(wrapped.code(), ErrorCode::ShellInvocationRefused);
+
+        let wrapped_with_options = assert_structured_command(
+            Path::new("/usr/bin/env"),
+            &[
+                "-u".to_owned(),
+                "TOKEN".to_owned(),
+                "bash".to_owned(),
+                "-c".to_owned(),
+                "echo injected".to_owned(),
+            ],
+        )
+        .expect_err("env option wrapper must be refused");
+        assert_eq!(
+            wrapped_with_options.code(),
+            ErrorCode::ShellInvocationRefused
+        );
+
+        let powershell_abbreviation = assert_structured_command(
+            Path::new("pwsh"),
+            &["-com".to_owned(), "Write-Host injected".to_owned()],
+        )
+        .expect_err("PowerShell command abbreviations must be refused");
+        assert_eq!(
+            powershell_abbreviation.code(),
+            ErrorCode::ShellInvocationRefused
+        );
+
+        let temp = TempDir::new().expect("temp");
+        let alias = temp.path().join("helper");
+        symlink("/bin/sh", &alias).expect("shell alias");
+        let aliased =
+            assert_structured_command(&alias, &["-c".to_owned(), "echo injected".to_owned()])
+                .expect_err("shell symlink must be refused");
+        assert_eq!(aliased.code(), ErrorCode::ShellInvocationRefused);
+
+        let bare_alias = run_command_unchecked(
+            &SpawnRequest::new("helper")
+                .args(["-c", "echo injected"])
+                .env("PATH", temp.path().display().to_string()),
+        )
+        .expect_err("PATH-resolved shell alias must be refused");
+        assert_eq!(bare_alias.code(), ErrorCode::ShellInvocationRefused);
+    }
+
+    #[test]
+    fn debug_output_never_contains_arguments_environment_values_or_process_output() {
+        let request = SpawnRequest::new("agent")
+            .arg("--token=argument-secret")
+            .env("TOKEN", "environment-secret");
+        let request_debug = format!("{request:?}");
+        assert!(!request_debug.contains("argument-secret"));
+        assert!(!request_debug.contains("environment-secret"));
+
+        let output = ProcessOutput {
+            exit_code: Some(0),
+            stdout: b"stdout-secret".to_vec(),
+            stderr: b"stderr-secret".to_vec(),
+            truncated: false,
+            timed_out: false,
+        };
+        let output_debug = format!("{output:?}");
+        assert!(!output_debug.contains("stdout-secret"));
+        assert!(!output_debug.contains("stderr-secret"));
+    }
+
+    #[test]
+    fn descendant_holding_output_open_cannot_bypass_the_timeout() {
+        let started = Instant::now();
+        let output = run_command_unchecked(
+            &SpawnRequest::new(std::env::current_exe().expect("test executable"))
+                .args([
+                    "--exact",
+                    "process::tests::spawn_output_holder_helper",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("CLI_MASTER_TEST_PIPE_HOLDER", "1")
+                .timeout(Duration::from_secs(2)),
+        )
+        .expect("direct child exits successfully");
+        assert!(output.success());
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    #[ignore = "subprocess helper for descendant pipe test"]
+    #[allow(clippy::zombie_processes)]
+    fn spawn_output_holder_helper() {
+        if std::env::var_os("CLI_MASTER_TEST_PIPE_HOLDER").is_none() {
+            return;
+        }
+        // Intentionally leave the child alive: the parent test verifies that the
+        // process runner kills the isolated group and does not block on its pipe.
+        let _child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn output holder");
     }
 
     #[test]

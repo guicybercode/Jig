@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -216,17 +216,50 @@ fn write_line(logger: &Logger, record: &StructuredLog) {
     };
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
+        let Ok(metadata) = fs::symlink_metadata(parent) else {
+            return;
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return;
+        }
         let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
     }
     rotate_if_needed(&path);
-    if let Ok(mut file) = OpenOptions::new()
+    if let Some(mut file) = open_log_file(&path) {
+        let _ = writeln!(file, "{json}");
+    }
+}
+
+fn open_log_file(path: &Path) -> Option<fs::File> {
+    let before = fs::symlink_metadata(path).ok();
+    if before
+        .as_ref()
+        .is_some_and(|metadata| metadata.file_type().is_symlink() || !metadata.is_file())
+    {
+        return None;
+    }
+    let file = OpenOptions::new()
         .create(true)
         .append(true)
         .mode(0o600)
-        .open(&path)
+        .open(path)
+        .ok()?;
+    let opened = file.metadata().ok()?;
+    let current = fs::symlink_metadata(path).ok()?;
+    if !opened.is_file()
+        || current.file_type().is_symlink()
+        || !current.is_file()
+        || opened.dev() != current.dev()
+        || opened.ino() != current.ino()
+        || before.as_ref().is_some_and(|metadata| {
+            metadata.dev() != opened.dev() || metadata.ino() != opened.ino()
+        })
     {
-        let _ = writeln!(file, "{json}");
+        return None;
     }
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+        .ok()?;
+    Some(file)
 }
 
 fn rotate_if_needed(path: &Path) {
@@ -276,7 +309,10 @@ fn civil_from_days(days: u64) -> (i32, u32, u32) {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
     use cli_master_core::{ApplicationError, ErrorCode};
+    use tempfile::TempDir;
 
     use super::*;
 
@@ -330,5 +366,52 @@ mod tests {
         assert!(logs.iter().any(|record| {
             record.message.contains("[redacted]") && !record.message.contains("hidden")
         }));
+    }
+
+    #[test]
+    fn logger_refuses_a_symlink_log_target() {
+        let temp = TempDir::new().expect("temp");
+        let victim = temp.path().join("victim");
+        let log = temp.path().join("audit.jsonl");
+        fs::write(&victim, "must survive\n").expect("victim");
+        symlink(&victim, &log).expect("log symlink");
+        let logger = Logger {
+            recent: Mutex::new(VecDeque::new()),
+            recent_errors: Mutex::new(VecDeque::new()),
+            file_path: Mutex::new(Some(log)),
+        };
+
+        logger.write(&StructuredLog::new(
+            LogLevel::Info,
+            "audit",
+            "symlink",
+            "should not be written",
+        ));
+        assert_eq!(
+            fs::read_to_string(victim).expect("victim"),
+            "must survive\n"
+        );
+    }
+
+    #[test]
+    fn logger_tightens_permissions_on_an_existing_file() {
+        let temp = TempDir::new().expect("temp");
+        let log = temp.path().join("audit.jsonl");
+        fs::write(&log, "existing\n").expect("log");
+        fs::set_permissions(&log, fs::Permissions::from_mode(0o644)).expect("permissions");
+        let logger = Logger {
+            recent: Mutex::new(VecDeque::new()),
+            recent_errors: Mutex::new(VecDeque::new()),
+            file_path: Mutex::new(Some(log.clone())),
+        };
+
+        logger.write(&StructuredLog::new(
+            LogLevel::Info,
+            "audit",
+            "permissions",
+            "safe",
+        ));
+        let mode = fs::metadata(log).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 }

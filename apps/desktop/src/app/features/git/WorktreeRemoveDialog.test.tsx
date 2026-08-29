@@ -57,4 +57,46 @@ describe("WorktreeRemoveDialog", () => {
       "A session is still using this worktree",
     );
   });
+
+  it("clears dirty consent when the removal target changes", async () => {
+    const user = userEvent.setup();
+    const onConfirm = vi.fn();
+    const view = render(
+      <WorktreeRemoveDialog
+        preview={{
+          path: "/tmp/data/worktrees/project/first",
+          branch: "agent/first",
+          dirty: true,
+          inUse: false,
+        }}
+        onCancel={() => undefined}
+        onConfirm={onConfirm}
+      />,
+    );
+    await user.click(
+      screen.getByRole("checkbox", { name: /uncommitted changes/i }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Remove worktree" }),
+    ).toBeEnabled();
+
+    view.rerender(
+      <WorktreeRemoveDialog
+        preview={{
+          path: "/tmp/data/worktrees/project/second",
+          branch: "agent/second",
+          dirty: true,
+          inUse: false,
+        }}
+        onCancel={() => undefined}
+        onConfirm={onConfirm}
+      />,
+    );
+
+    expect(screen.getByRole("checkbox")).not.toBeChecked();
+    expect(
+      screen.getByRole("button", { name: "Remove worktree" }),
+    ).toBeDisabled();
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
 });

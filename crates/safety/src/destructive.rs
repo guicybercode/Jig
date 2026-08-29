@@ -1,13 +1,19 @@
 use std::collections::HashMap;
+use std::fmt;
+use std::fs;
+use std::os::unix::fs::MetadataExt;
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
 
 use cli_master_core::{
-    ApplicationError, CONFIRMATION_TTL, ErrorCode, ProjectId, SessionId, WorktreeId,
+    AgentId, ApplicationError, CONFIRMATION_TTL, ErrorCode, ProjectId, SessionId, WorktreeId,
 };
 use uuid::Uuid;
 
 use crate::paths::{ManagedRoots, assert_managed_worktree, resolve_path};
+
+const MAX_PENDING_CONFIRMATIONS: usize = 128;
 
 /// Kind of irreversible or process-stopping operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,6 +46,8 @@ pub struct DestructiveRequest {
     pub project_id: Option<ProjectId>,
     /// Worktree being removed.
     pub worktree_id: Option<WorktreeId>,
+    /// Custom agent definition being removed.
+    pub agent_id: Option<AgentId>,
     /// Whether Git reports uncommitted changes.
     pub dirty: bool,
     /// Whether a live session still uses the resource.
@@ -51,7 +59,8 @@ pub struct DestructiveRequest {
 }
 
 /// User-visible plan returned by a prepare step.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct RemovalPlan {
     /// Operation that will run if confirmed.
     pub kind: DestructiveKind,
@@ -67,34 +76,179 @@ pub struct RemovalPlan {
     pub token: String,
     /// Whether `allowDirty` must be set to continue.
     pub requires_allow_dirty: bool,
+    /// Whether this plan authorizes escalation to `SIGKILL`.
+    pub force: bool,
+}
+
+impl fmt::Debug for RemovalPlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RemovalPlan")
+            .field("kind", &self.kind)
+            .field("path", &self.path)
+            .field("branch", &self.branch)
+            .field("dirty", &self.dirty)
+            .field("in_use", &self.in_use)
+            .field("token", &"[redacted]")
+            .field("requires_allow_dirty", &self.requires_allow_dirty)
+            .field("force", &self.force)
+            .finish()
+    }
 }
 
 /// Git-facing worktree removal decision.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct WorktreeRemovalState {
     /// Canonical worktree path.
-    pub path: PathBuf,
+    path: PathBuf,
     /// Checked-out branch.
-    pub branch: String,
+    branch: String,
     /// Whether Git reports a dirty tree.
-    pub dirty: bool,
+    dirty: bool,
     /// Whether a live session still uses it.
-    pub in_use: bool,
+    in_use: bool,
     /// Whether `git worktree remove --force` is permitted.
-    pub allow_force: bool,
+    allow_force: bool,
+    identity: FileIdentity,
+}
+
+/// A destructive operation whose target and observed state were confirmed.
+#[derive(Debug, Eq, PartialEq)]
+pub enum ConfirmedDestructiveOperation {
+    /// Project metadata may be unregistered. Repository files remain untouched.
+    RemoveProject {
+        /// Confirmed project identifier.
+        project_id: ProjectId,
+    },
+    /// Session metadata may be deleted after its process stopped.
+    DeleteSession {
+        /// Confirmed session identifier.
+        session_id: SessionId,
+    },
+    /// A process owned by this session may be stopped.
+    StopProcess {
+        /// Confirmed session identifier.
+        session_id: SessionId,
+        /// Whether the user explicitly confirmed escalation to SIGKILL.
+        force: bool,
+    },
+    /// A Git worktree may be removed under the contained state.
+    RemoveWorktree(WorktreeRemovalState),
+    /// A custom agent definition may be deleted.
+    DeleteCustomAgent {
+        /// Confirmed agent identifier.
+        agent_id: AgentId,
+    },
+}
+
+impl ConfirmedDestructiveOperation {
+    /// Extracts a confirmed worktree removal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorCode::ConfirmationMismatch`] for a different operation.
+    pub fn into_worktree_removal(self) -> Result<WorktreeRemovalState, ApplicationError> {
+        match self {
+            Self::RemoveWorktree(state) => Ok(state),
+            _ => Err(ApplicationError::new(
+                ErrorCode::ConfirmationMismatch,
+                "This confirmation does not authorize worktree removal.",
+            )
+            .not_recoverable()
+            .with_action("Use the confirmation handler for the requested operation.")),
+        }
+    }
+}
+
+impl WorktreeRemovalState {
+    /// Returns the canonical worktree path bound to the confirmation.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Returns the branch observed when the confirmation was issued.
+    #[must_use]
+    pub fn branch(&self) -> &str {
+        &self.branch
+    }
+
+    /// Returns whether the confirmed worktree was dirty.
+    #[must_use]
+    pub const fn dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// Returns whether the confirmed worktree was in use.
+    #[must_use]
+    pub const fn in_use(&self) -> bool {
+        self.in_use
+    }
+
+    /// Returns whether force removal was explicitly confirmed for a dirty tree.
+    #[must_use]
+    pub const fn allows_force(&self) -> bool {
+        self.allow_force
+    }
+
+    /// Rechecks that `path` still names the confirmed filesystem object.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorCode::ConfirmationMismatch`] if the path was replaced,
+    /// moved, or changed into a symbolic link after confirmation.
+    pub fn revalidate_path(&self, path: &Path) -> Result<(), ApplicationError> {
+        let resolved = resolve_path(path)?;
+        let identity = file_identity(&resolved.path)?;
+        if resolved.last_component_symlink
+            || resolved.path != self.path
+            || identity != self.identity
+        {
+            return Err(confirmation_changed());
+        }
+        Ok(())
+    }
 }
 
 /// In-memory confirmation tokens tied to an observed fingerprint.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct ConfirmationStore {
     pending: HashMap<String, PendingConfirmation>,
 }
 
-#[derive(Debug)]
 struct PendingConfirmation {
-    kind: DestructiveKind,
-    fingerprint: String,
+    binding: ConfirmationBinding,
     expires_at: Instant,
+}
+
+impl fmt::Debug for ConfirmationStore {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ConfirmationStore")
+            .field("pending_count", &self.pending.len())
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ConfirmationBinding {
+    kind: DestructiveKind,
+    path: Option<PathBuf>,
+    path_identity: Option<FileIdentity>,
+    branch: Option<String>,
+    session_id: Option<SessionId>,
+    project_id: Option<ProjectId>,
+    worktree_id: Option<WorktreeId>,
+    agent_id: Option<AgentId>,
+    dirty: bool,
+    in_use: bool,
+    force: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
 }
 
 impl ConfirmationStore {
@@ -116,24 +270,26 @@ impl ConfirmationStore {
         roots: &ManagedRoots,
     ) -> Result<RemovalPlan, ApplicationError> {
         self.expire();
-        validate_request(request, roots)?;
+        validate_request(request, roots, ConfirmationPhase::Prepare)?;
+        self.evict_oldest_if_full();
+        let binding = confirmation_binding(request, roots)?;
         let token = Uuid::now_v7().to_string();
         self.pending.insert(
             token.clone(),
             PendingConfirmation {
-                kind: request.kind,
-                fingerprint: fingerprint(request),
+                binding: binding.clone(),
                 expires_at: Instant::now() + CONFIRMATION_TTL,
             },
         );
         Ok(RemovalPlan {
             kind: request.kind,
-            path: request.path.clone(),
+            path: binding.path,
             branch: request.branch.clone(),
             dirty: request.dirty,
             in_use: request.in_use,
             token,
             requires_allow_dirty: request.kind == DestructiveKind::RemoveWorktree && request.dirty,
+            force: request.force,
         })
     }
 
@@ -148,7 +304,7 @@ impl ConfirmationStore {
         token: &str,
         request: &DestructiveRequest,
         roots: &ManagedRoots,
-    ) -> Result<WorktreeRemovalState, ApplicationError> {
+    ) -> Result<ConfirmedDestructiveOperation, ApplicationError> {
         self.expire();
         let pending = self.pending.remove(token).ok_or_else(|| {
             ApplicationError::new(
@@ -157,24 +313,43 @@ impl ConfirmationStore {
             )
             .with_action("Review the path and branch, then confirm again.")
         })?;
-        if pending.kind != request.kind || pending.fingerprint != fingerprint(request) {
-            return Err(ApplicationError::new(
-                ErrorCode::ConfirmationMismatch,
-                "The resource changed after confirmation was issued.",
-            )
-            .with_action("Review the current path, branch, and dirty state, then confirm again."));
+        validate_request(request, roots, ConfirmationPhase::Confirm)?;
+        let binding = confirmation_binding(request, roots)?;
+        if pending.binding != binding {
+            return Err(confirmation_changed());
         }
-        validate_request(request, roots)?;
-        worktree_state(request, roots)
+        Ok(confirmed_operation(request, &binding))
     }
+}
+
+#[derive(Clone, Copy)]
+enum ConfirmationPhase {
+    Prepare,
+    Confirm,
 }
 
 fn validate_request(
     request: &DestructiveRequest,
     roots: &ManagedRoots,
+    phase: ConfirmationPhase,
 ) -> Result<(), ApplicationError> {
+    if matches!(phase, ConfirmationPhase::Prepare) && request.allow_dirty {
+        return Err(ApplicationError::new(
+            ErrorCode::ConfirmationMismatch,
+            "Dirty-worktree approval cannot be set before the confirmation step.",
+        )
+        .not_recoverable()
+        .with_action("Prepare the operation, review the target, then confirm it."));
+    }
+    if request.allow_dirty && request.kind != DestructiveKind::RemoveWorktree {
+        return Err(invalid_confirmation_flag("allowDirty"));
+    }
+    if request.force && request.kind != DestructiveKind::StopProcess {
+        return Err(invalid_confirmation_flag("force"));
+    }
     match request.kind {
         DestructiveKind::RemoveProject => {
+            require_target(request.project_id.as_ref(), "projectId")?;
             if request.in_use {
                 return Err(in_use_error(
                     ErrorCode::ProjectInUse,
@@ -185,6 +360,7 @@ fn validate_request(
             Ok(())
         }
         DestructiveKind::DeleteSession => {
+            require_target(request.session_id.as_ref(), "sessionId")?;
             if request.in_use {
                 return Err(in_use_error(
                     ErrorCode::SessionInUse,
@@ -194,9 +370,13 @@ fn validate_request(
             }
             Ok(())
         }
-        DestructiveKind::StopProcess => Ok(()),
-        DestructiveKind::RemoveWorktree => validate_worktree(request, roots),
+        DestructiveKind::StopProcess => {
+            require_target(request.session_id.as_ref(), "sessionId")?;
+            Ok(())
+        }
+        DestructiveKind::RemoveWorktree => validate_worktree(request, roots, phase),
         DestructiveKind::DeleteCustomAgent => {
+            require_target(request.agent_id.as_ref(), "agentId")?;
             if request.in_use {
                 return Err(in_use_error(
                     ErrorCode::AgentInUse,
@@ -212,12 +392,33 @@ fn validate_request(
 fn validate_worktree(
     request: &DestructiveRequest,
     roots: &ManagedRoots,
+    phase: ConfirmationPhase,
 ) -> Result<(), ApplicationError> {
+    require_target(request.project_id.as_ref(), "projectId")?;
+    require_target(request.worktree_id.as_ref(), "worktreeId")?;
     let path = request.path.as_ref().ok_or_else(|| {
         ApplicationError::new(ErrorCode::InvalidPath, "Worktree removal requires a path.")
             .with_action("Select a managed worktree.")
     })?;
-    assert_managed_worktree(path, roots)?;
+    let resolved = assert_managed_worktree(path, roots)?;
+    let metadata = fs::metadata(&resolved).map_err(|error| {
+        ApplicationError::new(
+            ErrorCode::InvalidPath,
+            "The confirmed worktree path no longer exists.",
+        )
+        .not_recoverable()
+        .with_action("Refresh worktrees and prepare the removal again.")
+        .with_context("path", resolved.display().to_string())
+        .with_source(&error)
+    })?;
+    if !metadata.is_dir() {
+        return Err(ApplicationError::new(
+            ErrorCode::InvalidPath,
+            "Worktree removal requires a directory.",
+        )
+        .not_recoverable()
+        .with_action("Refresh worktrees and select the worktree directory."));
+    }
     if request.in_use {
         return Err(ApplicationError::new(
             ErrorCode::WorktreeInUse,
@@ -231,7 +432,7 @@ fn validate_worktree(
         .with_context("path", path.display().to_string())
         .with_context("branch", request.branch.clone().unwrap_or_default()));
     }
-    if request.dirty && !request.allow_dirty {
+    if matches!(phase, ConfirmationPhase::Confirm) && request.dirty && !request.allow_dirty {
         return Err(ApplicationError::new(
             ErrorCode::WorktreeDirty,
             format!(
@@ -248,39 +449,112 @@ fn validate_worktree(
     Ok(())
 }
 
-fn worktree_state(
+fn confirmed_operation(
     request: &DestructiveRequest,
-    _roots: &ManagedRoots,
-) -> Result<WorktreeRemovalState, ApplicationError> {
-    if request.kind != DestructiveKind::RemoveWorktree {
-        return Ok(WorktreeRemovalState {
-            path: request.path.clone().unwrap_or_else(|| PathBuf::from(".")),
-            branch: request.branch.clone().unwrap_or_default(),
-            dirty: request.dirty,
-            in_use: request.in_use,
-            allow_force: false,
-        });
+    binding: &ConfirmationBinding,
+) -> ConfirmedDestructiveOperation {
+    match request.kind {
+        DestructiveKind::RemoveProject => ConfirmedDestructiveOperation::RemoveProject {
+            project_id: request.project_id.expect("project id is validated"),
+        },
+        DestructiveKind::DeleteSession => ConfirmedDestructiveOperation::DeleteSession {
+            session_id: request.session_id.expect("session id is validated"),
+        },
+        DestructiveKind::StopProcess => ConfirmedDestructiveOperation::StopProcess {
+            session_id: request.session_id.expect("session id is validated"),
+            force: request.force,
+        },
+        DestructiveKind::RemoveWorktree => {
+            let path = binding.path.clone().expect("worktree path is validated");
+            let identity = binding
+                .path_identity
+                .expect("existing worktree identity is validated");
+            ConfirmedDestructiveOperation::RemoveWorktree(WorktreeRemovalState {
+                path,
+                branch: request.branch.clone().unwrap_or_default(),
+                dirty: request.dirty,
+                in_use: request.in_use,
+                allow_force: request.dirty && request.allow_dirty,
+                identity,
+            })
+        }
+        DestructiveKind::DeleteCustomAgent => ConfirmedDestructiveOperation::DeleteCustomAgent {
+            agent_id: request.agent_id.expect("agent id is validated"),
+        },
     }
-    let path = request.path.as_ref().expect("validated");
-    Ok(WorktreeRemovalState {
-        path: resolve_path(path)?.path,
-        branch: request.branch.clone().unwrap_or_default(),
+}
+
+fn confirmation_binding(
+    request: &DestructiveRequest,
+    roots: &ManagedRoots,
+) -> Result<ConfirmationBinding, ApplicationError> {
+    let path = match (&request.path, request.kind) {
+        (Some(path), DestructiveKind::RemoveWorktree) => {
+            Some(assert_managed_worktree(path, roots)?)
+        }
+        (Some(path), _) => Some(resolve_path(path)?.path),
+        (None, _) => None,
+    };
+    let path_identity = path.as_deref().map(file_identity).transpose()?;
+    Ok(ConfirmationBinding {
+        kind: request.kind,
+        path,
+        path_identity,
+        branch: request.branch.clone(),
+        session_id: request.session_id,
+        project_id: request.project_id,
+        worktree_id: request.worktree_id,
+        agent_id: request.agent_id,
         dirty: request.dirty,
         in_use: request.in_use,
-        allow_force: request.allow_dirty,
+        force: request.force,
     })
 }
 
-fn fingerprint(request: &DestructiveRequest) -> String {
-    format!(
-        "{:?}|{:?}|{:?}|{:?}|{}|{}",
-        request.kind,
-        request.path.as_ref().map(|path| path.display().to_string()),
-        request.branch,
-        request.session_id.map(|id| id.to_string()),
-        request.dirty,
-        request.in_use
+fn file_identity(path: &Path) -> Result<FileIdentity, ApplicationError> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        ApplicationError::new(
+            ErrorCode::InvalidPath,
+            "The destructive target no longer exists.",
+        )
+        .not_recoverable()
+        .with_action("Refresh the resource and prepare the operation again.")
+        .with_context("path", path.display().to_string())
+        .with_source(&error)
+    })?;
+    Ok(FileIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+fn require_target<T>(value: Option<&T>, field: &str) -> Result<(), ApplicationError> {
+    if value.is_some() {
+        return Ok(());
+    }
+    Err(ApplicationError::new(
+        ErrorCode::InvalidIpcPayload,
+        format!("Destructive operation requires {field}."),
     )
+    .not_recoverable()
+    .with_action("Refresh the resource and prepare the operation again."))
+}
+
+fn confirmation_changed() -> ApplicationError {
+    ApplicationError::new(
+        ErrorCode::ConfirmationMismatch,
+        "The resource changed after confirmation was issued.",
+    )
+    .with_action("Review the current target and state, then confirm again.")
+}
+
+fn invalid_confirmation_flag(flag: &str) -> ApplicationError {
+    ApplicationError::new(
+        ErrorCode::InvalidIpcPayload,
+        format!("{flag} is not valid for this destructive operation."),
+    )
+    .not_recoverable()
+    .with_action("Refresh the resource and prepare the operation again.")
 }
 
 fn in_use_error(code: ErrorCode, message: &str, action: &str) -> ApplicationError {
@@ -291,6 +565,20 @@ impl ConfirmationStore {
     fn expire(&mut self) {
         let now = Instant::now();
         self.pending.retain(|_, pending| pending.expires_at > now);
+    }
+
+    fn evict_oldest_if_full(&mut self) {
+        if self.pending.len() < MAX_PENDING_CONFIRMATIONS {
+            return;
+        }
+        let oldest = self
+            .pending
+            .iter()
+            .min_by_key(|(_, pending)| pending.expires_at)
+            .map(|(token, _)| token.clone());
+        if let Some(token) = oldest {
+            self.pending.remove(&token);
+        }
     }
 }
 
@@ -309,8 +597,9 @@ mod tests {
             path: Some(path),
             branch: Some("agent/topic".to_owned()),
             session_id: None,
-            project_id: None,
-            worktree_id: None,
+            project_id: Some(ProjectId::new()),
+            worktree_id: Some(WorktreeId::new()),
+            agent_id: None,
             dirty,
             in_use: false,
             allow_dirty,
@@ -319,17 +608,30 @@ mod tests {
     }
 
     #[test]
-    fn dirty_worktree_requires_explicit_allow_dirty() {
+    fn dirty_worktree_plan_requires_explicit_allow_dirty_at_confirm() {
         let temp = TempDir::new().expect("temp");
         let data = temp.path().join("data");
         let worktree = data.join("worktrees/project/topic");
         fs::create_dir_all(&worktree).expect("worktree");
         let roots = ManagedRoots::new(&data);
         let mut store = ConfirmationStore::new();
-        let request = worktree_request(worktree, true, false);
-        let error = store.prepare(&request, &roots).expect_err("dirty");
+        let mut request = worktree_request(worktree, true, false);
+        let plan = store.prepare(&request, &roots).expect("prepare dirty plan");
+        assert!(plan.requires_allow_dirty);
+        let error = store
+            .confirm(&plan.token, &request, &roots)
+            .expect_err("dirty confirmation requires consent");
         assert_eq!(error.code(), ErrorCode::WorktreeDirty);
-        assert!(error.suggested_action().is_some());
+
+        request.allow_dirty = false;
+        let plan = store.prepare(&request, &roots).expect("prepare again");
+        request.allow_dirty = true;
+        let state = store
+            .confirm(&plan.token, &request, &roots)
+            .expect("explicit dirty consent")
+            .into_worktree_removal()
+            .expect("worktree confirmation");
+        assert!(state.allows_force());
     }
 
     #[test]
@@ -374,8 +676,10 @@ mod tests {
         assert!(!plan.requires_allow_dirty);
         let state = store
             .confirm(&plan.token, &request, &roots)
-            .expect("confirm");
-        assert!(!state.allow_force);
+            .expect("confirm")
+            .into_worktree_removal()
+            .expect("worktree confirmation");
+        assert!(!state.allows_force());
         store
             .confirm(&plan.token, &request, &roots)
             .expect_err("token is single use");
@@ -393,8 +697,9 @@ mod tests {
             path: Some(project.clone()),
             branch: None,
             session_id: None,
-            project_id: None,
+            project_id: Some(ProjectId::new()),
             worktree_id: None,
+            agent_id: None,
             dirty: false,
             in_use: false,
             allow_dirty: false,
@@ -403,5 +708,151 @@ mod tests {
         let plan = store.prepare(&request, &roots).expect("metadata only");
         assert_eq!(plan.kind, DestructiveKind::RemoveProject);
         assert!(project.exists());
+    }
+
+    #[test]
+    fn token_is_bound_to_worktree_and_project_ids() {
+        let temp = TempDir::new().expect("temp");
+        let data = temp.path().join("data");
+        let worktree = data.join("worktrees/project/topic");
+        fs::create_dir_all(&worktree).expect("worktree");
+        let roots = ManagedRoots::new(&data);
+        let mut store = ConfirmationStore::new();
+        let request = worktree_request(worktree, false, false);
+        let plan = store.prepare(&request, &roots).expect("prepare");
+        let mut switched = request.clone();
+        switched.worktree_id = Some(WorktreeId::new());
+
+        let error = store
+            .confirm(&plan.token, &switched, &roots)
+            .expect_err("token must not switch worktrees");
+        assert_eq!(error.code(), ErrorCode::ConfirmationMismatch);
+    }
+
+    #[test]
+    fn token_detects_replacement_at_the_same_path() {
+        let temp = TempDir::new().expect("temp");
+        let data = temp.path().join("data");
+        let worktree = data.join("worktrees/project/topic");
+        fs::create_dir_all(&worktree).expect("worktree");
+        let roots = ManagedRoots::new(&data);
+        let mut store = ConfirmationStore::new();
+        let request = worktree_request(worktree.clone(), false, false);
+        let plan = store.prepare(&request, &roots).expect("prepare");
+        fs::remove_dir(&worktree).expect("remove original");
+        fs::create_dir(&worktree).expect("replace target");
+
+        let error = store
+            .confirm(&plan.token, &request, &roots)
+            .expect_err("replacement must invalidate confirmation");
+        assert_eq!(error.code(), ErrorCode::ConfirmationMismatch);
+    }
+
+    #[test]
+    fn confirmed_state_revalidates_identity_before_mutation() {
+        let temp = TempDir::new().expect("temp");
+        let data = temp.path().join("data");
+        let worktree = data.join("worktrees/project/topic");
+        fs::create_dir_all(&worktree).expect("worktree");
+        let roots = ManagedRoots::new(&data);
+        let mut store = ConfirmationStore::new();
+        let request = worktree_request(worktree.clone(), false, false);
+        let plan = store.prepare(&request, &roots).expect("prepare");
+        let state = store
+            .confirm(&plan.token, &request, &roots)
+            .expect("confirm")
+            .into_worktree_removal()
+            .expect("worktree state");
+        fs::remove_dir(&worktree).expect("remove original");
+        fs::create_dir(&worktree).expect("replace target");
+
+        let error = state
+            .revalidate_path(&worktree)
+            .expect_err("confirmed inode was replaced");
+        assert_eq!(error.code(), ErrorCode::ConfirmationMismatch);
+    }
+
+    #[test]
+    fn debug_output_does_not_expose_confirmation_tokens() {
+        let temp = TempDir::new().expect("temp");
+        let data = temp.path().join("data");
+        let worktree = data.join("worktrees/project/topic");
+        fs::create_dir_all(&worktree).expect("worktree");
+        let roots = ManagedRoots::new(&data);
+        let mut store = ConfirmationStore::new();
+        let request = worktree_request(worktree, false, false);
+        let plan = store.prepare(&request, &roots).expect("prepare");
+
+        assert!(!format!("{store:?}").contains(&plan.token));
+        assert!(!format!("{plan:?}").contains(&plan.token));
+    }
+
+    #[test]
+    fn stop_token_cannot_be_elevated_to_force() {
+        let temp = TempDir::new().expect("temp");
+        let roots = ManagedRoots::new(temp.path());
+        let mut store = ConfirmationStore::new();
+        let request = DestructiveRequest {
+            kind: DestructiveKind::StopProcess,
+            path: None,
+            branch: None,
+            session_id: Some(SessionId::new()),
+            project_id: None,
+            worktree_id: None,
+            agent_id: None,
+            dirty: false,
+            in_use: true,
+            allow_dirty: false,
+            force: false,
+        };
+        let plan = store.prepare(&request, &roots).expect("graceful plan");
+        assert!(!plan.force);
+        let mut elevated = request.clone();
+        elevated.force = true;
+
+        let error = store
+            .confirm(&plan.token, &elevated, &roots)
+            .expect_err("force changes the confirmation binding");
+        assert_eq!(error.code(), ErrorCode::ConfirmationMismatch);
+
+        let forced_plan = store.prepare(&elevated, &roots).expect("forced plan");
+        assert!(forced_plan.force);
+        let confirmed = store
+            .confirm(&forced_plan.token, &elevated, &roots)
+            .expect("forced confirmation");
+        assert!(matches!(
+            confirmed,
+            ConfirmedDestructiveOperation::StopProcess { force: true, .. }
+        ));
+    }
+
+    #[test]
+    fn pending_confirmation_store_is_bounded() {
+        let temp = TempDir::new().expect("temp");
+        let roots = ManagedRoots::new(temp.path());
+        let mut store = ConfirmationStore::new();
+        let request = DestructiveRequest {
+            kind: DestructiveKind::DeleteSession,
+            path: None,
+            branch: None,
+            session_id: Some(SessionId::new()),
+            project_id: None,
+            worktree_id: None,
+            agent_id: None,
+            dirty: false,
+            in_use: false,
+            allow_dirty: false,
+            force: false,
+        };
+        let first = store.prepare(&request, &roots).expect("first plan");
+        for _ in 1..=MAX_PENDING_CONFIRMATIONS {
+            store.prepare(&request, &roots).expect("bounded plan");
+        }
+
+        assert_eq!(store.pending.len(), MAX_PENDING_CONFIRMATIONS);
+        let error = store
+            .confirm(&first.token, &request, &roots)
+            .expect_err("oldest token is evicted");
+        assert_eq!(error.code(), ErrorCode::ConfirmationMismatch);
     }
 }

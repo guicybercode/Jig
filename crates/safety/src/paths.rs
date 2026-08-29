@@ -55,11 +55,13 @@ pub fn normalize_lexical(path: &Path) -> PathBuf {
     for component in path.components() {
         match component {
             Component::CurDir => {}
-            Component::ParentDir => {
-                if !out.pop() {
-                    out.push("..");
+            Component::ParentDir => match out.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    out.pop();
                 }
-            }
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                Some(Component::ParentDir | Component::CurDir) | None => out.push(".."),
+            },
             other => out.push(other.as_os_str()),
         }
     }
@@ -121,17 +123,27 @@ pub fn resolve_path(path: &Path) -> Result<ResolvedPath, ApplicationError> {
 
     let mut existing = absolute.clone();
     let mut missing = Vec::new();
-    while !existing.exists() {
-        match existing.parent() {
-            Some(parent) if parent != existing => {
-                match existing.components().next_back() {
-                    Some(Component::ParentDir) => missing.push("..".into()),
-                    Some(Component::Normal(name)) => missing.push(name.to_os_string()),
-                    Some(Component::CurDir | Component::Prefix(_) | Component::RootDir) | None => {}
+    loop {
+        match fs::symlink_metadata(&existing) {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => match existing.parent() {
+                Some(parent) if parent != existing => {
+                    match existing.components().next_back() {
+                        Some(Component::ParentDir) => missing.push("..".into()),
+                        Some(Component::Normal(name)) => missing.push(name.to_os_string()),
+                        Some(Component::CurDir | Component::Prefix(_) | Component::RootDir)
+                        | None => {}
+                    }
+                    existing = parent.to_path_buf();
                 }
-                existing = parent.to_path_buf();
+                _ => break,
+            },
+            Err(error) => {
+                return Err(
+                    invalid_path(&existing, "Could not inspect an existing path prefix.")
+                        .with_source(&error),
+                );
             }
-            _ => break,
         }
     }
 
@@ -179,9 +191,12 @@ pub fn is_within(candidate: &Path, root: &Path) -> Result<bool, ApplicationError
 /// Returns [`ErrorCode::CriticalPathRefused`] when the path is protected.
 pub fn assert_not_critical(path: &Path, roots: &ManagedRoots) -> Result<(), ApplicationError> {
     let resolved = resolve_path(path)?.path;
-    let forbidden = critical_paths(roots);
+    let forbidden = critical_paths(roots)
+        .into_iter()
+        .map(|item| resolve_path(&item).map(|resolved| resolved.path))
+        .collect::<Result<Vec<_>, _>>()?;
 
-    if forbidden.iter().any(|item| paths_equal(item, &resolved)) {
+    if forbidden.iter().any(|item| item == &resolved) {
         return Err(ApplicationError::new(
             ErrorCode::CriticalPathRefused,
             format!("Refusing to modify protected path {}.", resolved.display()),
@@ -204,12 +219,22 @@ pub fn assert_managed_worktree(
     path: &Path,
     roots: &ManagedRoots,
 ) -> Result<PathBuf, ApplicationError> {
-    let resolved = resolve_path(path)?.path;
+    let resolved_path = resolve_path(path)?;
+    if resolved_path.last_component_symlink {
+        return Err(ApplicationError::new(
+            ErrorCode::InvalidPath,
+            "Refusing to operate on a worktree path that is a symbolic link.",
+        )
+        .not_recoverable()
+        .with_action("Select the real managed worktree directory.")
+        .with_context("path", path.display().to_string()));
+    }
+    let resolved = resolved_path.path;
+    let worktree_root = resolve_path(&roots.worktree_root)?.path;
+    let data_dir = resolve_path(&roots.data_dir)?.path;
     assert_not_critical(&resolved, roots)?;
 
-    if !path_is_prefix(&roots.worktree_root, &resolved)
-        && !is_within(&resolved, &roots.worktree_root)?
-    {
+    if !path_is_prefix(&worktree_root, &resolved) {
         return Err(ApplicationError::new(
             ErrorCode::UnmanagedPath,
             format!(
@@ -220,10 +245,10 @@ pub fn assert_managed_worktree(
         .not_recoverable()
         .with_action("Use a worktree created by CLI Master.")
         .with_context("path", resolved.display().to_string())
-        .with_context("worktreeRoot", roots.worktree_root.display().to_string()));
+        .with_context("worktreeRoot", worktree_root.display().to_string()));
     }
 
-    if resolved == roots.worktree_root || resolved == roots.data_dir {
+    if resolved == worktree_root || resolved == data_dir {
         return Err(ApplicationError::new(
             ErrorCode::CriticalPathRefused,
             "Refusing to delete the application data or worktree root.",
@@ -245,19 +270,24 @@ fn invalid_path(path: &Path, message: &str) -> ApplicationError {
 fn critical_paths(roots: &ManagedRoots) -> Vec<PathBuf> {
     let mut paths = vec![PathBuf::from("/")];
     if let Some(home) = env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        paths.push(home.clone());
-        if let Some(parent) = home.parent() {
-            if parent.as_os_str() != "/" && !parent.as_os_str().is_empty() {
-                paths.push(parent.to_path_buf());
+        let mut current = Some(PathBuf::from(home));
+        while let Some(path) = current {
+            if path.as_os_str().is_empty() || path == Path::new("/") {
+                break;
             }
+            current = path.parent().map(Path::to_path_buf);
+            paths.push(path);
         }
     }
     paths.push(PathBuf::from("/home"));
     paths.push(PathBuf::from("/Users"));
     paths.push(roots.data_dir.clone());
+    paths.push(roots.worktree_root.clone());
     paths.extend(roots.project_roots.iter().cloned());
     paths
+        .into_iter()
+        .filter(|path| !path.as_os_str().is_empty())
+        .collect()
 }
 
 fn path_is_prefix(root: &Path, candidate: &Path) -> bool {
@@ -270,10 +300,6 @@ fn path_is_prefix(root: &Path, candidate: &Path) -> bool {
     stripped
         .components()
         .all(|component| !matches!(component, Component::ParentDir))
-}
-
-fn paths_equal(left: &Path, right: &Path) -> bool {
-    normalize_lexical(left) == normalize_lexical(right)
 }
 
 #[cfg(test)]
@@ -291,6 +317,10 @@ mod tests {
         assert_eq!(
             normalize_lexical(path),
             PathBuf::from("/tmp/worktrees/session")
+        );
+        assert_eq!(
+            normalize_lexical(Path::new("../../child")),
+            PathBuf::from("../../child")
         );
     }
 
@@ -371,5 +401,68 @@ mod tests {
 
         let error = assert_not_critical(&project, &roots).expect_err("project");
         assert_eq!(error.code(), ErrorCode::CriticalPathRefused);
+    }
+
+    #[test]
+    fn relative_managed_roots_cannot_authorize_the_worktree_root_itself() {
+        let current = env::current_dir().expect("current directory");
+        let temp = tempfile::tempdir_in(&current).expect("temp in current directory");
+        let relative_data = temp
+            .path()
+            .strip_prefix(&current)
+            .expect("temp should be below current directory")
+            .join("data");
+        let absolute_root = current.join(&relative_data).join("worktrees");
+        fs::create_dir_all(&absolute_root).expect("worktree root");
+
+        let roots = ManagedRoots::new(relative_data);
+        let error = assert_managed_worktree(&absolute_root, &roots).expect_err("managed root");
+        assert_eq!(error.code(), ErrorCode::CriticalPathRefused);
+    }
+
+    #[test]
+    fn canonical_project_root_is_protected_when_registered_through_a_symlink() {
+        let temp = TempDir::new().expect("temp");
+        let project = temp.path().join("project");
+        let alias = temp.path().join("project-alias");
+        fs::create_dir_all(&project).expect("project");
+        symlink(&project, &alias).expect("project alias");
+        let roots = ManagedRoots::new(temp.path().join("data")).with_project_root(alias);
+
+        let error = assert_not_critical(&project, &roots).expect_err("project root");
+        assert_eq!(error.code(), ErrorCode::CriticalPathRefused);
+    }
+
+    #[test]
+    fn final_component_symlink_is_never_a_removal_target() {
+        let temp = TempDir::new().expect("temp");
+        let data = temp.path().join("data");
+        let real_worktree = data.join("worktrees/project/real");
+        let alias = data.join("worktrees/project/alias");
+        fs::create_dir_all(&real_worktree).expect("worktree");
+        symlink(&real_worktree, &alias).expect("alias");
+        let roots = ManagedRoots::new(data);
+
+        let error = assert_managed_worktree(&alias, &roots).expect_err("symlink target");
+        assert_eq!(error.code(), ErrorCode::InvalidPath);
+    }
+
+    #[test]
+    fn broken_symlink_prefix_cannot_authorize_a_future_escape() {
+        let temp = TempDir::new().expect("temp");
+        let data = temp.path().join("data");
+        let managed = data.join("worktrees/project");
+        let outside = temp.path().join("outside-not-created");
+        fs::create_dir_all(&managed).expect("managed");
+        let escape = managed.join("escape");
+        symlink(&outside, &escape).expect("broken escape symlink");
+        let roots = ManagedRoots::new(data);
+
+        let error = assert_managed_worktree(&escape.join("future"), &roots)
+            .expect_err("broken symlink prefix");
+        assert!(matches!(
+            error.code(),
+            ErrorCode::InvalidPath | ErrorCode::UnmanagedPath
+        ));
     }
 }

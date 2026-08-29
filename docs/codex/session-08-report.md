@@ -38,15 +38,15 @@ was not turned into a sandbox. Agent CLIs still launch as structured processes.
 | Area | Change |
 |---|---|
 | Errors | `ApplicationError` + `ErrorCode` (`AGENT_NOT_FOUND`, `WORKTREE_DIRTY`, …). IPC projection remains `ApiError` with optional `title`/`recoverable`. Source chain is log-only. |
-| Redaction | Names containing TOKEN, SECRET, PASSWORD, API_KEY, AUTH, COOKIE, CREDENTIAL. `AUTHOR` is not treated as `AUTH`. |
-| Spawn | `SpawnRequest` / `run_command_unchecked`. Refuses `sh|bash|zsh -c`. Timeout + output cap. Login-shell PATH import is the only exception. |
-| Paths | Resolve existing prefix via canonicalize; join missing suffix lexically; keep `..`. Managed worktree root, critical path refusal, symlink escape tests. |
-| Destructive | Prepare/confirm tokens. Dirty and in-use worktrees blocked. Project remove is metadata-only. Unmanaged paths refused. |
-| Git | `cli-master-git`: structured `git -C` / args, porcelain dirty check, no silent `--force`. |
+| Redaction | Sensitive names, auth/cookie headers, private-key blocks, and common provider token formats. `AUTHOR` is not treated as `AUTH`; API errors and Debug projections are sanitized. |
+| Spawn | `SpawnRequest` / `run_command_unchecked`. Refuses command-string flags for known shells, canonical aliases, and direct `env`/BusyBox wrappers. Process-group timeout and bounded readers prevent descendants retaining pipes. Login-shell PATH import is the only exception. |
+| Paths | Resolve existing prefixes via canonicalize; keep leading `..`; reject broken/final symlinks; canonicalize every protected root. Worktree confirmation binds device/inode and revalidates immediately before Git. |
+| Destructive | Typed prepare/confirm capabilities, all target IDs and force mode bound, single-use on every attempt, five-minute TTL, 128-entry cap. Dirty and in-use gates remain explicit. Project remove is metadata-only. |
+| Git | `cli-master-git`: structured `git -C` / args, porcelain dirty/branch recheck, consumed confirmation object, no silent `--force`. |
 | Process identity | Start-time token + daemon instance; refuse stale PIDs. |
 | Logs | JSON lines with timestamp, level, target, operation, session/project IDs, error code. File mode `0600`, size rotation. |
-| Diagnostics | `diagnostics.get` / `diagnostics.export` Tauri commands and a Diagnostics dialog with copy. |
-| IPC | Allow-listed methods; reject `command`/`shell` keys and escaping paths. |
+| Diagnostics | `diagnostics.get` / `diagnostics.export` Tauri commands. Export masks the home prefix; UI copy uses only native sanitized export and fails closed. |
+| IPC | Allow-listed methods; reject shell/command aliases and validate method-specific paths against registered/managed roots. |
 | Workspace | `crates/agents`, `crates/safety`, `crates/git` are workspace members. |
 
 ## Accepted risks
@@ -57,11 +57,16 @@ was not turned into a sandbox. Agent CLIs still launch as structured processes.
   until those crates land.
 - Dirty worktree removal is allowed after an explicit `allowDirty` confirmation.
 - Login-shell PATH import still runs a constant `-lc` command.
-- TOCTOU remains between path resolve and Git worktree remove.
+- A narrow TOCTOU remains after the last path identity check and before Git
+  opens the worktree. Descriptor-relative mutation would be required to close it.
+- Arbitrary executable/interpreter wrappers are not a sandbox boundary. Direct
+  known wrappers are modeled, but an exhaustive wrapper denylist is impossible
+  without an explicit executable allowlist or sandbox.
+- `in_use` remains caller-supplied until `SessionManager` is wired.
 - macOS process identity uses `ps` lstart, which is weaker than Linux
   `/proc` starttime. pidfd is deferred.
 - Orphaned children after daemon crash remain a v0.1 limitation.
-- Secret denylist cannot catch every custom name.
+- Secret pattern redaction cannot catch every unlabelled custom format.
 
 ## Tests
 
@@ -70,21 +75,26 @@ Rust:
 - command args with `;`, `$(...)` are not executed by a shell
 - `bash -c` refused
 - timeout kills `sleep`
-- path traversal, symlink escape, unicode/spaces
-- `/` and `$HOME` refused
+- path traversal, broken/final symlink escape, unicode/spaces
+- `/`, `$HOME`, home ancestors, canonical data/worktree/project roots refused
 - unmanaged path delete refused
-- dirty worktree not removed without force
-- redaction of TOKEN/PASSWORD/COOKIE
+- dirty/branch state revalidated before Git; newly dirty worktree survives
+- confirmation is single-use, bound to all IDs plus device/inode, rejects
+  same-path replacement, and cannot elevate a non-force stop token
+- redaction of labelled values, auth/cookie headers, private keys, provider
+  tokens, error fields, and Debug projections
 - `ApplicationError` serializes without technical/source fields and with an action
 - diagnostics export omits injected secrets and the environment map
 - unknown IPC method and `command` field rejected
-- confirmation token is single-use
+- descendant retaining stdout cannot hold the runner past its bounded wait;
+  the isolated process group is killed
 
 Frontend:
 
-- Diagnostics dialog renders a sanitized snapshot and copies it
+- Diagnostics dialog copies only native sanitized export and fails closed
 - Worktree remove is disabled while dirty until the checkbox, and always
   disabled while in use
+- `allowDirty` consent resets immediately when path/branch/state changes
 
 ## Integration review
 
