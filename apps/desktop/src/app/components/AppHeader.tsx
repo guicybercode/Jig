@@ -1,6 +1,11 @@
 import type { AppPlatform } from "../../ipc/client";
 import type { Project } from "../../ipc/types";
 import { Icon } from "./Icon";
+import {
+  useDaemonReady,
+  useSelectedProject,
+  useWorkspaceActions,
+} from "../workspace";
 
 interface AppHeaderProps {
   readonly project?: Project;

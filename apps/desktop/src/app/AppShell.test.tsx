@@ -1146,6 +1146,39 @@ describe("AppShell project and session workflows", () => {
     expect(agentDialog).toBeVisible();
     expect(addArgument).toHaveFocus();
   });
+
+  it("shows connected project metadata from the official hello and snapshot", async () => {
+    renderConnectedShell();
+
+    expect(
+      await screen.findByRole("heading", { name: "Demo", level: 1 }),
+    ).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("Daemon connected");
+    expect(screen.getByRole("button", { name: "New Session" })).toBeEnabled();
+    expect(screen.getByText("/tmp/demo · main")).toBeVisible();
+  });
+
+  it("opens the new session dialog from the header and keeps keyboard focus inside it", async () => {
+    const user = userEvent.setup();
+    renderConnectedShell();
+    await screen.findByRole("heading", { name: "Demo", level: 1 });
+
+    const opener = screen.getByRole("button", { name: "New Session" });
+    await user.click(opener);
+
+    const dialog = await screen.findByRole("dialog", { name: "New session" });
+    expect(dialog).toBeVisible();
+
+    await waitFor(() => {
+      expect(dialog.querySelector("#new-session-dialog-form-name")).toHaveFocus();
+    });
+
+    await user.keyboard("{Escape}");
+    expect(
+      screen.queryByRole("dialog", { name: "New session" }),
+    ).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
+  });
 });
 
 async function renderApp(client: MockIpcClient) {

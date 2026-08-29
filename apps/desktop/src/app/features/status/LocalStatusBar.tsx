@@ -1,5 +1,6 @@
 import type { Project, Session, Worktree } from "../../../ipc/types";
 import { Icon } from "../../components/Icon";
+import { useConnection, useConnectionLabel } from "../../workspace";
 
 type ConnectionState = "connecting" | "connected" | "disconnected" | "fatal";
 

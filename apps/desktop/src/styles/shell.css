@@ -2309,6 +2309,10 @@
   .metadata-grid__wide {
     grid-column: auto;
   }
+
+  .workspace__panels {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* At narrow widths navigation becomes an explicit, keyboard-operable drawer. */
