@@ -26,6 +26,12 @@ API server. Authentication remains with each CLI installed on the machine.
 > [docs/backup-and-recovery.md](docs/backup-and-recovery.md),
 > [docs/troubleshooting.md](docs/troubleshooting.md),
 > [docs/uninstall.md](docs/uninstall.md).
+>
+> The current Beta package has a known domain-IPC gap: its daemon returns an
+> empty snapshot and does not yet implement the project/session mutations
+> needed to add a project, create a live session, or populate `TerminalGrid`
+> through the packaged GUI. Runtime-crate acceptance is not end-to-end desktop
+> acceptance. See [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
 
 ## Supported platforms
 
@@ -94,7 +100,9 @@ pnpm tauri dev
 ```
 
 This command starts Vite and the Tauri desktop process. It does not start an
-agent until the user creates a session.
+agent automatically. The current daemon domain-IPC gap prevents the packaged
+GUI from completing project/session creation; see
+[docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
 
 For browser-only UI development:
 
@@ -124,8 +132,8 @@ disagree. Packaging CI smoke-tests the AppImage / `.app` bundle, not only
 
 Runtime acceptance for two live sessions, worktree isolation, subscription
 disconnect/reconnect, and daemon recovery lives in `crates/e2e`. Playwright
-covers the empty/disconnected desktop shell; a real Tauri-window harness
-remains an explicit gap. See
+covers the empty/disconnected desktop shell; the required project/session
+daemon mutations and a real Tauri-window harness remain explicit gaps. See
 [docs/playwright-testing.md](docs/playwright-testing.md).
 Platform-specific PTY tests run in the Linux and macOS CI jobs.
 

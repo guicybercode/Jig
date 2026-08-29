@@ -7,10 +7,12 @@ isolated agent sessions, treat the window as disposable, refuse dirty
 worktree deletes, and survive daemon restart without murdering leftover
 PIDs.
 
-The PTY manager, Git worktree safety, SQLite, and daemon bind were already
-on `main`. The React shell was not. It still renders an empty workspace.
-A Playwright suite that clicked a grid would have been testing fiction, or
-it would have needed a test-only UI.
+The PTY manager, Git worktree safety, SQLite, and daemon bind were already on
+`main`. During reconciliation, the React shell also contained `TerminalGrid`
+and its workspace surfaces, but the production daemon still returned an empty
+snapshot and did not implement the domain mutations needed to populate them.
+A Playwright suite that clicked live tiles would therefore have needed fake
+project/session state and tested a path users cannot reach.
 
 During reconciliation, `main` already owned daemon startup recovery through
 `Storage::reconcile_sessions` and its current `EventBus` composition. The old

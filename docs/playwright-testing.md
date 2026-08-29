@@ -1,8 +1,9 @@
 # Playwright testing
 
-Playwright covers the desktop UI that actually exists. It does not fake a
-session grid, and it does not add production hooks so a browser test can pretend
-the daemon is connected.
+Playwright covers the disconnected desktop state that the browser preview can
+actually exercise. It does not inject fake project/session state into the
+existing terminal grid or add production hooks so a browser test can pretend
+the daemon domain API is implemented.
 
 ## What runs in CI
 
@@ -34,9 +35,10 @@ and recreating PTY subscriptions verifies replay semantics, but it is not
 described as a real window test. There are no placeholder or unconditionally
 skipped Playwright cases: every test listed by Playwright executes.
 
-Add a separate Tauri-driver suite when a real window can host the live grid.
-That future suite must perform window-level actions and must fail when its
-harness is unavailable instead of silently skipping the acceptance criteria.
+Add a separate Tauri-driver suite after the daemon domain API can populate the
+existing grid in a real window. That future suite must perform window-level
+actions and must fail when its harness is unavailable instead of silently
+skipping the acceptance criteria.
 
 ## Commands
 
@@ -53,5 +55,6 @@ Playwright. Install the browser once with:
 pnpm exec playwright install --with-deps chromium
 ```
 
-Do not point these tests at `tauri dev` until the grid exists. Browser-only
-Vite cannot spawn PTYs, and the current shell does not claim that it can.
+Do not point these tests at `tauri dev` until the domain IPC and a Tauri-driver
+harness can populate the existing grid. Browser-only Vite cannot spawn PTYs,
+and the disconnected shell does not claim that it can.
