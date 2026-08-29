@@ -84,6 +84,7 @@ struct LiveState {
     rows: u16,
     stop_requested: bool,
     kill_requested: bool,
+    rollback_in_progress: bool,
 }
 
 enum WriteOp {
@@ -218,6 +219,7 @@ impl SessionManager {
                 rows: size.rows,
                 stop_requested: false,
                 kill_requested: false,
+                rollback_in_progress: false,
             }),
             output: broadcast::channel(self.inner.config.subscriber_capacity.max(1)).0,
             writer_tx: Mutex::new(None),
@@ -244,7 +246,7 @@ impl SessionManager {
         let live = self.lookup(id)?;
         let event = {
             let mut state = lock(&live.state);
-            if state.record.status.is_live() {
+            if state.record.status.is_live() || state.rollback_in_progress {
                 return Err(SessionError::AlreadyRunning(id));
             }
             state.generation += 1;
@@ -434,6 +436,12 @@ impl SessionManager {
         };
         let (pgid, mut killer) = {
             let mut state = lock(&live.state);
+            if state.rollback_in_progress {
+                return Err(SessionError::Signal(format!(
+                    "rollback is already in progress for session {id}"
+                )));
+            }
+            state.rollback_in_progress = true;
             state.stop_requested = true;
             state.kill_requested = true;
             (
@@ -456,6 +464,7 @@ impl SessionManager {
         }
         if lock(&live.state).record.status.is_live() {
             live.force_cleanup();
+            lock(&live.state).rollback_in_progress = false;
             return Err(signal_error.unwrap_or(SessionError::StopTimeout(id)));
         }
 
@@ -1045,6 +1054,7 @@ fn short_id(id: SessionId) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::Condvar;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
@@ -1063,6 +1073,190 @@ mod tests {
         fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
             Box::new(self.clone())
         }
+    }
+
+    #[derive(Debug, Default)]
+    struct BlockingKillerState {
+        called: bool,
+        released: bool,
+    }
+
+    #[derive(Clone, Debug)]
+    struct BlockingKiller {
+        gate: Arc<(Mutex<BlockingKillerState>, Condvar)>,
+    }
+
+    impl ChildKiller for BlockingKiller {
+        fn kill(&mut self) -> io::Result<()> {
+            let (state, signal) = &*self.gate;
+            let mut state = lock(state);
+            state.called = true;
+            signal.notify_all();
+            while !state.released {
+                state = signal
+                    .wait(state)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(self.clone())
+        }
+    }
+
+    fn test_live_session(
+        id: SessionId,
+        killer: Box<dyn ChildKiller + Send + Sync>,
+        config: SessionManagerConfig,
+    ) -> Arc<LiveSession> {
+        let cwd = std::env::current_dir().expect("current directory should be available");
+        let command = CommandSpec::try_from_parts(
+            "/definitely/missing/cli-master-test-agent",
+            Vec::<String>::new(),
+            cwd.clone(),
+            BTreeMap::new(),
+        )
+        .expect("test command should be valid");
+        let record = Session {
+            id,
+            project_id: ProjectId::new(),
+            name: "rollback-test".to_owned(),
+            agent_id: AgentId::new(),
+            cwd,
+            pid: Some(42),
+            pty_id: Some("test-pty".to_owned()),
+            branch: None,
+            worktree_id: None,
+            worktree_path: None,
+            status: SessionStatus::Running,
+            exit_code: None,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            last_activity_at_ms: None,
+            error_code: None,
+        };
+        let (output, _) = broadcast::channel(1);
+        let (events, _) = broadcast::channel(1);
+        Arc::new(LiveSession {
+            id,
+            config,
+            state: Mutex::new(LiveState {
+                record,
+                command,
+                buffer: ReplayBuffer::new(1),
+                master: None,
+                killer: Some(killer),
+                pid: Some(42),
+                pgid: None,
+                generation: 0,
+                last_activity: Instant::now(),
+                cols: 80,
+                rows: 24,
+                stop_requested: false,
+                kill_requested: false,
+                rollback_in_progress: false,
+            }),
+            output,
+            writer_tx: Mutex::new(None),
+            events,
+        })
+    }
+
+    fn test_manager(live: &Arc<LiveSession>, config: SessionManagerConfig) -> SessionManager {
+        let (events, _) = broadcast::channel(1);
+        let mut sessions = HashMap::new();
+        sessions.insert(live.id, Arc::clone(live));
+        SessionManager {
+            inner: Arc::new(Inner {
+                config,
+                backend: Arc::new(NativePtyBackend),
+                sessions: Mutex::new(sessions),
+                events,
+            }),
+        }
+    }
+
+    #[test]
+    fn rollback_rejects_restart_after_exit_until_runtime_is_forgotten() {
+        let id = SessionId::new();
+        let config = SessionManagerConfig::for_tests();
+        let gate = Arc::new((Mutex::new(BlockingKillerState::default()), Condvar::new()));
+        let live = test_live_session(
+            id,
+            Box::new(BlockingKiller {
+                gate: Arc::clone(&gate),
+            }),
+            config.clone(),
+        );
+        let manager = test_manager(&live, config);
+        let rollback_manager = manager.clone();
+        let handle = std::thread::spawn(move || rollback_manager.rollback_created(id));
+
+        {
+            let (state, signal) = &*gate;
+            let mut state = lock(state);
+            while !state.called {
+                state = signal
+                    .wait(state)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        }
+        {
+            let mut state = lock(&live.state);
+            state.record.status = SessionStatus::Exited;
+            state.record.pid = None;
+            state.pid = None;
+        }
+
+        let restart = manager.start(id);
+        {
+            let (state, signal) = &*gate;
+            let mut state = lock(state);
+            state.released = true;
+            signal.notify_all();
+        }
+
+        assert!(matches!(restart, Err(SessionError::AlreadyRunning(found)) if found == id));
+        handle
+            .join()
+            .expect("rollback thread should finish")
+            .expect("observed exit should prove rollback");
+        assert!(manager.get(id).is_none());
+    }
+
+    #[test]
+    fn rollback_timeout_keeps_runtime_registered_for_safe_recovery() {
+        let id = SessionId::new();
+        let mut config = SessionManagerConfig::for_tests();
+        config.kill_timeout = Duration::from_millis(20);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let live = test_live_session(
+            id,
+            Box::new(TrackingKiller {
+                calls: Arc::clone(&calls),
+            }),
+            config.clone(),
+        );
+        let manager = test_manager(&live, config);
+
+        let error = manager
+            .rollback_created(id)
+            .expect_err("unobserved exit must fail rollback");
+
+        assert!(matches!(error, SessionError::StopTimeout(found) if found == id));
+        assert!(
+            manager.get(id).is_some(),
+            "ownership must remain registered"
+        );
+        assert!(!lock(&live.state).rollback_in_progress);
+        assert!(calls.load(Ordering::SeqCst) >= 1);
+
+        lock(&live.state).record.status = SessionStatus::Exited;
+        manager
+            .rollback_created(id)
+            .expect("a later observed exit should allow cleanup");
+        assert!(manager.get(id).is_none());
     }
 
     #[test]
@@ -1116,6 +1310,7 @@ mod tests {
                 rows: 24,
                 stop_requested: false,
                 kill_requested: false,
+                rollback_in_progress: false,
             }),
             output,
             writer_tx: Mutex::new(None),

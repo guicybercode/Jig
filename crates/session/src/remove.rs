@@ -82,6 +82,22 @@ pub(crate) fn remove<S: SessionSpawner>(
             return Err(error);
         }
     };
+    if stored.session_id != record.session_id {
+        saga.storage().update_worktree_state(
+            worktree_id,
+            WorktreeState::Active,
+            stored.is_dirty,
+            stored.session_id,
+            now,
+        )?;
+        return Err(SagaError::new(
+            SagaErrorKind::InvalidToken,
+            "Worktree session association changed after the confirmation token was issued",
+            "Call worktree.prepare_remove again for the current session association",
+        )
+        .with_worktree_id(worktree_id)
+        .with_path(stored.path));
+    }
     let _destination = lock_destination(&saga.destinations, stored.path.clone())?;
     let project = require_project(saga, stored.project_id)?;
     let usage = read_usage(saga, stored.session_id)?;

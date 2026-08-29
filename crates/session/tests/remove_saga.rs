@@ -183,3 +183,37 @@ fn token_is_bound_to_the_inspected_clean_state() {
     assert_eq!(error.kind(), SagaErrorKind::InvalidToken);
     assert!(worktree.path.join("after-token.txt").is_file());
 }
+
+#[test]
+fn token_is_invalidated_when_the_session_association_changes() {
+    let fixture = Fixture::new();
+    let saga = fixture.saga(FakeSpawner::succeeding(28));
+    let created = saga
+        .create_session(&fixture.request("Association Bound", Some("a550c1a7")))
+        .unwrap();
+    saga.record_session_exit(created.session.id, Some(0))
+        .unwrap();
+    let worktree = created.worktree.unwrap();
+    let prepared = saga.prepare_remove(worktree.id).unwrap();
+    let WorktreePrepareRemoveResponse::Ready {
+        confirmation_token, ..
+    } = prepared
+    else {
+        panic!("expected ready token: {prepared:?}");
+    };
+    saga.delete_session(created.session.id).unwrap();
+
+    let error = saga
+        .remove_worktree(worktree.id, &confirmation_token)
+        .expect_err("session association changed after inspection");
+
+    assert_eq!(error.kind(), SagaErrorKind::InvalidToken);
+    assert!(worktree.path.is_dir());
+    let stored = Storage::open(&fixture.database)
+        .unwrap()
+        .get_worktree(worktree.id)
+        .unwrap()
+        .expect("worktree metadata must remain");
+    assert_eq!(stored.state, cli_master_storage::WorktreeState::Active);
+    assert!(stored.session_id.is_none());
+}

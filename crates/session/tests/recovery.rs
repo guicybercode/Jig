@@ -115,6 +115,56 @@ fn recover_orphans_a_creating_row_when_the_worktree_exists() {
 }
 
 #[test]
+fn recover_preserves_a_missing_creating_path_still_registered_by_git() {
+    let fixture = Fixture::new();
+    let git = Git::discover().unwrap();
+    let created = git
+        .create_worktree(
+            &fixture.repository,
+            &fixture.managed,
+            "Registered Missing",
+            "regm1551",
+        )
+        .unwrap();
+    let worktree_id = WorktreeId::new();
+    {
+        let storage = Storage::open(&fixture.database).unwrap();
+        storage
+            .insert_worktree(&StoredWorktree {
+                id: worktree_id,
+                project_id: fixture.project_id,
+                session_id: None,
+                path: created.path.clone(),
+                branch: created.branch.clone().unwrap(),
+                state: WorktreeState::Creating,
+                is_dirty: false,
+                created_at_ms: CREATED_AT_MS,
+                updated_at_ms: CREATED_AT_MS,
+            })
+            .unwrap();
+    }
+    fs::remove_dir_all(&created.path).unwrap();
+    assert!(
+        git.list_worktrees(&fixture.repository)
+            .unwrap()
+            .iter()
+            .any(|worktree| worktree.path == created.path),
+        "fixture must remain registered in Git after its directory disappears"
+    );
+
+    let saga = fixture.saga(FakeSpawner::succeeding(36));
+    let report = saga.recover().unwrap();
+
+    assert_eq!(report.orphaned, vec![worktree_id]);
+    let stored = Storage::open(&fixture.database)
+        .unwrap()
+        .get_worktree(worktree_id)
+        .unwrap()
+        .expect("uncertain worktree metadata must be preserved");
+    assert_eq!(stored.state, WorktreeState::Orphaned);
+}
+
+#[test]
 fn recover_restores_remove_pending_when_the_worktree_still_exists() {
     let fixture = Fixture::new();
     let created = {

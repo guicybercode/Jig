@@ -1,15 +1,17 @@
 mod support;
 
 use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use cli_master_session::{
     CreateFaults, CreateStep, FakeSpawner, SagaErrorKind, SessionError, SessionEvent,
     SessionManager, SessionManagerConfig, SessionSpawner, SessionWorktreeSaga, SpawnRequest,
     SpawnedSession,
 };
-use cli_master_storage::{Storage, WorktreeState};
+use cli_master_storage::{SessionRuntimeUpdate, Storage, WorktreeState};
 use support::{Fixture, branch_exists, git};
 
 #[test]
@@ -137,6 +139,36 @@ impl SessionSpawner for RollbackFailingSpawner {
         Err(SessionError::Signal(
             "test could not prove process-group termination".to_owned(),
         ))
+    }
+}
+
+#[derive(Clone)]
+struct ReadyManagerSpawner {
+    manager: SessionManager,
+    ready: PathBuf,
+}
+
+impl SessionSpawner for ReadyManagerSpawner {
+    fn spawn(&self, request: SpawnRequest<'_>) -> Result<SpawnedSession, SessionError> {
+        let session = SessionSpawner::spawn(&self.manager, request)?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !self.ready.is_file() {
+            if Instant::now() >= deadline {
+                return Err(SessionError::Io(
+                    "descendant process did not report readiness".to_owned(),
+                ));
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        Ok(session)
+    }
+
+    fn rollback(&self, session_id: cli_master_core::SessionId) -> Result<(), SessionError> {
+        SessionSpawner::rollback(&self.manager, session_id)
+    }
+
+    fn is_live(&self, session_id: cli_master_core::SessionId) -> bool {
+        SessionSpawner::is_live(&self.manager, session_id)
     }
 }
 
@@ -304,6 +336,34 @@ async fn production_spawner_registers_the_saga_session_in_the_pty_manager() {
         .expect_err("durable status must not outrun the PTY runtime");
     assert_eq!(premature_exit.kind(), SagaErrorKind::SessionInUse);
 
+    Storage::open(&fixture.database)
+        .unwrap()
+        .update_session_runtime(
+            created.session.id,
+            &SessionRuntimeUpdate {
+                status: cli_master_core::SessionStatus::Exited,
+                runtime_pid: None,
+                daemon_instance_id: None,
+                exit_code: Some(0),
+                error_code: None,
+                last_activity_at_ms: Some(support::CREATED_AT_MS + 1),
+                updated_at_ms: support::CREATED_AT_MS + 1,
+            },
+        )
+        .unwrap();
+    let prepared = saga
+        .prepare_remove(created.worktree.as_ref().unwrap().id)
+        .expect("live runtime inspection should succeed");
+    let cli_master_core::wire::WorktreePrepareRemoveResponse::Blocked { blockers, .. } = prepared
+    else {
+        panic!("runtime ownership must block removal despite exited durable state: {prepared:?}");
+    };
+    assert!(blockers.iter().any(|blocker| matches!(
+        blocker,
+        cli_master_core::wire::WorktreeRemovalBlocker::Running
+            | cli_master_core::wire::WorktreeRemovalBlocker::InUse
+    )));
+
     manager
         .kill(created.session.id)
         .await
@@ -347,6 +407,57 @@ async fn saga_failure_after_spawn_rolls_back_the_pty_runtime() {
             .is_empty()
     );
     assert_eq!(git_worktree_count(&fixture.repository), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn saga_rollback_kills_the_entire_process_group_before_removing_the_worktree() {
+    let fixture = Fixture::new();
+    let ready = fixture.temp.path().join("descendant-ready");
+    let leaked = fixture.temp.path().join("descendant-survived");
+    fixture.replace_agent_command(
+        "/bin/sh",
+        vec![
+            "-c".to_owned(),
+            "(trap '' HUP INT TERM; printf ready > \"$1\"; sleep 1; printf leaked > \"$2\") & wait"
+                .to_owned(),
+            "rollback-process-group".to_owned(),
+            ready.to_string_lossy().into_owned(),
+            leaked.to_string_lossy().into_owned(),
+        ],
+    );
+    let manager = SessionManager::new(SessionManagerConfig::for_tests());
+    let spawner = ReadyManagerSpawner {
+        manager: manager.clone(),
+        ready,
+    };
+    let storage = Storage::open_migrated(&fixture.database).unwrap();
+    let saga = SessionWorktreeSaga::new(
+        cli_master_git::Git::discover().unwrap(),
+        storage,
+        spawner,
+        support::DAEMON_ID,
+    )
+    .unwrap();
+    let faults = CreateFaults {
+        fail_after: Some(CreateStep::Spawn),
+        ..CreateFaults::default()
+    };
+
+    let error = saga
+        .create_session_injected(
+            &fixture.request("Rollback Process Group", Some("manager3")),
+            &faults,
+        )
+        .expect_err("post-spawn failure should roll back the process group");
+
+    assert_eq!(error.kind(), SagaErrorKind::InjectedFailure);
+    assert!(manager.list().is_empty());
+    assert_eq!(git_worktree_count(&fixture.repository), 1);
+    thread::sleep(Duration::from_millis(1_200));
+    assert!(
+        !leaked.exists(),
+        "a descendant survived after the worktree was removed"
+    );
 }
 
 fn git_worktree_count(repository: &std::path::Path) -> usize {
