@@ -16,7 +16,6 @@ use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 const REPLAY_LIMIT: usize = 8 * 1024 * 1024;
 const READ_CHUNK: usize = 32 * 1024;
-const BATCH_WINDOW: Duration = Duration::from_millis(8);
 const STOP_GRACE: Duration = Duration::from_millis(400);
 
 /// Failure while starting or controlling a live PTY session.
@@ -408,25 +407,13 @@ fn wait_until_stopped(manager: &SessionManager, session_id: SessionId, budget: D
 
 fn read_loop(manager: &SessionManager, session_id: SessionId, mut reader: Box<dyn Read + Send>) {
     let mut buffer = vec![0_u8; READ_CHUNK];
-    let mut pending = Vec::new();
-    let mut last_flush = Instant::now();
     loop {
         match reader.read(&mut buffer) {
             Ok(0) => {
-                if !pending.is_empty() {
-                    manager.push_output(session_id, &pending);
-                }
                 manager.finish(session_id, None);
                 break;
             }
-            Ok(read) => {
-                pending.extend_from_slice(&buffer[..read]);
-                if pending.len() >= READ_CHUNK || last_flush.elapsed() >= BATCH_WINDOW {
-                    manager.push_output(session_id, &pending);
-                    pending.clear();
-                    last_flush = Instant::now();
-                }
-            }
+            Ok(read) => manager.push_output(session_id, &buffer[..read]),
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => break,
         }
