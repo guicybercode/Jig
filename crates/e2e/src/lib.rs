@@ -16,7 +16,7 @@ use std::time::Duration;
 use cli_master_core::{AgentId, CommandSpec, ProjectId, Session, SessionId, SessionStatus};
 use cli_master_fake_agent::compiled_executable;
 use cli_master_session::{
-    CreateSession, SessionError, SessionManager, SessionManagerConfig, SessionSubscription,
+    SessionError, SessionLaunchRequest, SessionManager, SessionManagerConfig, SessionSubscription,
 };
 use tempfile::TempDir;
 
@@ -137,7 +137,7 @@ impl SessionFixture {
         cwd: &Path,
         extra_args: &[&str],
     ) -> Result<Session, SessionError> {
-        self.manager.create(CreateSession {
+        self.manager.create(SessionLaunchRequest {
             project_id,
             agent_id,
             name: name.to_owned(),

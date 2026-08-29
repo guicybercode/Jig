@@ -209,14 +209,6 @@ fn remove_stale_socket(path: &Path) -> Result<(), DaemonError> {
         .map_err(|error| DaemonError::io("remove stale daemon socket", path, error))
 }
 
-fn unix_now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
-        .unwrap_or(0)
-}
-
 struct SocketOwner {
     path: PathBuf,
     device: u64,

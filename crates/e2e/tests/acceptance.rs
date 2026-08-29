@@ -21,7 +21,7 @@ use cli_master_storage::{Storage, StoredAgent, StoredSession, StoredWorktree, Wo
 async fn adds_a_local_repository_and_runs_two_grid_sessions() {
     let repo = RepositoryFixture::new();
     let git = Git::discover().expect("Git should be on PATH");
-    let mut storage = Storage::open_in_memory().expect("database should open");
+    let storage = Storage::open_in_memory().expect("database should open");
     storage.migrate().expect("database should migrate");
     let created_at = now_ms();
     let (project, agent) = register_local_repository(&storage, &git, &repo, created_at);
@@ -141,7 +141,7 @@ async fn daemon_restart_converts_stale_live_sessions_to_unknown_without_killing_
         .expect("leftover process should start");
     let leftover_pid = leftover.id();
 
-    let mut storage = Storage::open(config.database_path()).expect("storage open");
+    let storage = Storage::open(config.database_path()).expect("storage open");
     storage.migrate().expect("migrate");
     let created_at = now_ms();
     let project = Project {

@@ -39,12 +39,11 @@ fn fail_and_exit_codes_are_observable() {
         .stderr(Stdio::null())
         .spawn()
         .and_then(|mut child| {
-            {
-                let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
-                let mut stdin = child.stdin.take().expect("stdin");
-                wait_ready(&mut stdout);
-                writeln!(stdin, "fail").expect("fail");
-            }
+            let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+            let mut stdin = child.stdin.take().expect("stdin");
+            wait_ready(&mut stdout);
+            writeln!(stdin, "fail").expect("fail");
+            drop(stdin);
             child.wait()
         })
         .expect("fail command");
