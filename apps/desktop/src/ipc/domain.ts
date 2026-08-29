@@ -218,11 +218,18 @@ export type SessionListResponse = {
 
 export type GitTarget =
   | { kind: "project"; projectId: ProjectId }
-  | { kind: "session"; sessionId: SessionId };
+  | { kind: "session"; sessionId: SessionId }
+  | { kind: "worktree"; worktreeId: WorktreeId };
 
 export type GitStatusRequest = { target: GitTarget };
-export type GitDiffRequest = { target: GitTarget };
-export type GitChangeKind = "modified" | "added" | "deleted" | "untracked";
+export type GitDiffRequest = { target: GitTarget; path?: string };
+export type GitChangeKind =
+  | "modified"
+  | "added"
+  | "deleted"
+  | "untracked"
+  | "renamed"
+  | "ignored";
 
 export type GitChangedFile = {
   path: string;
@@ -237,6 +244,8 @@ export type GitStatusCounts = {
   added: number;
   deleted: number;
   untracked: number;
+  renamed: number;
+  ignored: number;
 };
 
 export type GitStatusResponse = {
@@ -249,7 +258,7 @@ export type GitStatusResponse = {
   isDirty: boolean;
 };
 
-export type GitDiffResponse = { text: string; truncated: boolean };
+export type GitDiffResponse = { text: string; truncated: boolean; binary: boolean };
 
 export type WorktreePrepareRemoveRequest = { worktreeId: WorktreeId };
 

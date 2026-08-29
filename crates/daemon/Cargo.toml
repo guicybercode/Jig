@@ -18,8 +18,8 @@ path = "src/main.rs"
 [dependencies]
 base64 = "0.22.1"
 cli-master-core = { path = "../core" }
-cli-master-storage = { path = "../storage" }
 cli-master-git = { path = "../git" }
+cli-master-storage = { path = "../storage" }
 cli-master-agents = { path = "../agents" }
 futures-util = { version = "0.3.31", features = ["sink"] }
 rustix = { version = "1.1.4", features = ["fs", "net", "process"] }

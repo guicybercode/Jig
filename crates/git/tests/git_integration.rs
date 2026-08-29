@@ -75,14 +75,14 @@ fn branch_generation_is_ascii_and_adds_collision_suffix() {
         .generate_branch_name(&fixture.repository, "Olá / Auth API", "abc123")
         .expect("branch should be generated");
     assert!(first.is_ascii());
-    assert!(first.starts_with("agent/"));
+    assert_eq!(first, "agent/ola-auth-api-abc123");
     command(&fixture.repository, ["branch", &first]);
 
     let second = git
         .generate_branch_name(&fixture.repository, "Olá / Auth API", "abc123")
         .expect("colliding branch should be generated");
     assert_eq!(second, format!("{first}-2"));
-    assert_eq!(slugify("Olá / Auth API"), "ol-auth-api");
+    assert_eq!(slugify("Olá / Auth API"), "ola-auth-api");
 }
 
 #[test]
@@ -115,6 +115,113 @@ fn unborn_repository_diff_reports_staged_initial_content() {
     assert!(!diff.truncated);
     assert!(diff.text.contains("initial.txt"));
     assert!(diff.text.contains("+first content"));
+}
+
+#[test]
+fn status_reports_renames_ignored_paths_and_preserves_non_utf8() {
+    let fixture = RepositoryFixture::new();
+    fs::write(fixture.repository.join(".gitignore"), "noise.log\n")
+        .expect("gitignore should be written");
+    fs::write(fixture.repository.join("noise.log"), "ignored\n")
+        .expect("ignored file should be written");
+    command(&fixture.repository, ["add", ".gitignore"]);
+    command(&fixture.repository, ["commit", "-m", "ignore noise"]);
+    command(&fixture.repository, ["mv", "tracked.txt", "renamed.txt"]);
+    #[cfg(target_os = "linux")]
+    {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        fs::write(
+            fixture.repository.join(OsStr::from_bytes(b"caf\xe9.txt")),
+            "cafe\n",
+        )
+        .expect("non-utf8 file should be written");
+    }
+    let git = Git::discover().expect("Git should be discovered");
+    let status = git
+        .status(&fixture.repository)
+        .expect("status should parse");
+
+    assert!(status.files.iter().any(|file| {
+        file.path == Path::new("renamed.txt")
+            && file.original_path.as_deref() == Some(Path::new("tracked.txt"))
+            && file.kind == ChangeKind::Renamed
+            && file.staged
+    }));
+    assert!(
+        status.files.iter().any(|file| {
+            file.path == Path::new("noise.log") && file.kind == ChangeKind::Ignored
+        })
+    );
+    assert_eq!(status.counts.renamed, 1);
+    assert!(status.counts.ignored >= 1);
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        assert!(status.files.iter().any(|file| {
+            file.path.as_os_str().as_bytes() == b"caf\xe9.txt" && file.kind == ChangeKind::Untracked
+        }));
+    }
+}
+
+#[test]
+fn binary_diff_is_flagged_without_file_bytes() {
+    let fixture = RepositoryFixture::new();
+    fs::write(fixture.repository.join("blob.bin"), [0_u8, 1, 2, 0, 255])
+        .expect("binary file should be written");
+    command(&fixture.repository, ["add", "blob.bin"]);
+    command(&fixture.repository, ["commit", "-m", "binary"]);
+    fs::write(fixture.repository.join("blob.bin"), [0_u8, 9, 9, 0, 254])
+        .expect("binary file should be modified");
+    let git = Git::discover().expect("Git should be discovered");
+
+    let diff = git
+        .diff_path(&fixture.repository, Path::new("blob.bin"), 64 * 1024)
+        .expect("binary diff should be generated");
+    assert!(diff.binary);
+    assert!(!diff.text.contains('\0'));
+    assert!(diff.text.contains("Binary files") || diff.text.is_empty());
+}
+
+#[test]
+fn file_diff_and_overall_diff_cover_text_changes() {
+    let fixture = RepositoryFixture::new();
+    fs::write(fixture.repository.join("tracked.txt"), "changed line\n")
+        .expect("tracked file should be modified");
+    let git = Git::discover().expect("Git should be discovered");
+
+    let file_diff = git
+        .diff_path(&fixture.repository, Path::new("tracked.txt"), 64 * 1024)
+        .expect("file diff should be generated");
+    assert!(!file_diff.truncated);
+    assert!(!file_diff.binary);
+    assert!(file_diff.text.contains("tracked.txt"));
+    assert!(file_diff.text.contains("+changed line"));
+
+    let overall = git
+        .diff(&fixture.repository, 64 * 1024)
+        .expect("overall diff should be generated");
+    assert!(overall.text.contains("tracked.txt"));
+}
+
+#[test]
+fn unsafe_and_option_like_pathspecs_are_rejected() {
+    let fixture = RepositoryFixture::new();
+    let git = Git::discover().expect("Git should be discovered");
+    for pathspec in ["../secret", "/tmp/secret", "-u", "--"] {
+        let error = git
+            .diff_path(&fixture.repository, Path::new(pathspec), 1024)
+            .expect_err("unsafe pathspec should be rejected");
+        assert!(
+            matches!(
+                error.kind(),
+                GitErrorKind::InvalidInput | GitErrorKind::UnsafePath
+            ),
+            "{pathspec}: {:?}",
+            error.kind()
+        );
+        assert!(!error.message().contains("/etc/"));
+    }
 }
 
 #[cfg(unix)]

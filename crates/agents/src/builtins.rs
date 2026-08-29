@@ -1,9 +1,6 @@
-use cli_master_core::{AgentSource, CommandSpec};
+use cli_master_core::AgentSource;
 
-use crate::{
-    AgentAdapter, AgentError, DetectionResult, LaunchContext, LaunchEnvironment,
-    adapter::resolved_executable,
-};
+use crate::AgentAdapter;
 
 macro_rules! built_in_adapter {
     ($type_name:ident, $key:literal, $display_name:literal, $executable:literal) => {
@@ -24,20 +21,8 @@ macro_rules! built_in_adapter {
                 AgentSource::BuiltIn
             }
 
-            fn detect(&self, environment: &LaunchEnvironment) -> DetectionResult {
-                environment.detect($executable)
-            }
-
-            fn build_command(&self, context: &LaunchContext) -> Result<CommandSpec, AgentError> {
-                context.validate_cwd()?;
-                let executable = resolved_executable(self.detect(context.environment()))?;
-                let executable = executable
-                    .to_str()
-                    .ok_or(AgentError::NonUtf8ExecutablePath)?;
-
-                // No vendor flags are guessed. Each CLI starts in its normal
-                // interactive mode, with no copied environment variables.
-                CommandSpec::new(executable, context.cwd()).map_err(AgentError::from)
+            fn executable_name(&self) -> &str {
+                $executable
             }
         }
     };

@@ -11,6 +11,7 @@ mod diff;
 mod error;
 mod naming;
 mod path_safety;
+mod pathspec;
 mod repository;
 mod status;
 mod worktree;
@@ -18,9 +19,10 @@ mod worktree_creation;
 mod worktree_reconcile;
 mod worktree_removal;
 
-pub use diff::Diff;
+pub use diff::{Diff, MAX_DIFF_BYTES};
 pub use error::{GitError, GitErrorKind};
 pub use naming::slugify;
+pub use pathspec::display_path;
 pub use repository::RepositoryInspection;
 pub use status::{ChangeKind, ChangedFile, RepositoryStatus, StatusCounts};
 pub use worktree::{WorktreeInfo, WorktreeUse};
@@ -196,7 +198,8 @@ impl Git {
     ///
     /// Output is always generated without color or external diff drivers and is
     /// capped at `max_bytes`. The returned [`Diff::truncated`] flag reports when
-    /// bytes were omitted.
+    /// bytes were omitted. Binary files are reported through [`Diff::binary`]
+    /// instead of dumping their contents.
     ///
     /// # Errors
     ///
@@ -204,6 +207,25 @@ impl Git {
     /// Git invocation.
     pub fn diff(&self, path: impl AsRef<Path>, max_bytes: usize) -> Result<Diff, GitError> {
         diff::read(self, path.as_ref(), max_bytes)
+    }
+
+    /// Returns a bounded diff for one repository-relative pathspec.
+    ///
+    /// The pathspec is rejected when it is absolute, contains traversal
+    /// components, or looks like a Git option. Git always receives the path
+    /// after `--`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsafe pathspec, a zero limit, an invalid
+    /// repository, a timeout, or a failed Git invocation.
+    pub fn diff_path(
+        &self,
+        path: impl AsRef<Path>,
+        pathspec: impl AsRef<Path>,
+        max_bytes: usize,
+    ) -> Result<Diff, GitError> {
+        diff::read_path(self, path.as_ref(), pathspec.as_ref(), max_bytes)
     }
 
     /// Lists all worktrees registered by a repository.

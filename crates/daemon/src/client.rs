@@ -3,8 +3,8 @@ use std::io;
 use std::sync::Arc;
 
 use cli_master_core::wire::{
-    self, DiagnosticsResponse, EmptyRequest, EmptyResponse, SessionSubscribeRequest,
-    SessionUnsubscribeRequest, StateSnapshotResponse,
+    self, DiagnosticsResponse, EmptyRequest, EmptyResponse, GitDiffRequest, GitStatusRequest,
+    SessionSubscribeRequest, SessionUnsubscribeRequest, StateSnapshotResponse,
 };
 use cli_master_core::{
     ApiError, EnvelopeKind, PROTOCOL_V1, RequestEnvelope, RequestId, ResponseEnvelope,
@@ -76,7 +76,7 @@ pub(crate) async fn serve_client(
 
         match decode_request(&bytes) {
             Ok(request) => {
-                let (response, replay) = dispatch(request, &state, &client);
+                let (response, replay) = dispatch(request, &state, &client).await;
                 if !send_json(&mut framed, &response).await {
                     break;
                 }
@@ -141,7 +141,7 @@ fn validate_peer(_stream: &UnixStream) -> Result<(), io::Error> {
     Ok(())
 }
 
-fn dispatch(
+async fn dispatch(
     request: RequestEnvelope<Value>,
     state: &ServerState,
     client: &ClientHandle,
@@ -186,6 +186,12 @@ fn dispatch(
             }
             serde_json::to_value(diagnostics_payload(state))
         }
+        wire::method::GIT_STATUS => {
+            return handle_git_status(request.request_id, request.payload, state).await;
+        }
+        wire::method::GIT_DIFF => {
+            return handle_git_diff(request.request_id, request.payload, state).await;
+        }
         method if wire::method::is_supported(method) => {
             return (
                 ResponseEnvelope::failure(
@@ -224,6 +230,36 @@ fn dispatch(
             ),
             Vec::new(),
         ),
+    }
+}
+
+async fn handle_git_status(
+    request_id: RequestId,
+    payload: Value,
+    state: &ServerState,
+) -> (ResponseEnvelope<Value>, Vec<FanoutEvent>) {
+    let payload = match decode_payload::<GitStatusRequest>(payload) {
+        Ok(payload) => payload,
+        Err(error) => return (invalid_payload(request_id, &error), Vec::new()),
+    };
+    match crate::git_inspection::status(&state.storage, state.git.as_ref(), payload).await {
+        Ok(response) => (encode_success(request_id, response), Vec::new()),
+        Err(error) => (ResponseEnvelope::failure(request_id, error), Vec::new()),
+    }
+}
+
+async fn handle_git_diff(
+    request_id: RequestId,
+    payload: Value,
+    state: &ServerState,
+) -> (ResponseEnvelope<Value>, Vec<FanoutEvent>) {
+    let payload = match decode_payload::<GitDiffRequest>(payload) {
+        Ok(payload) => payload,
+        Err(error) => return (invalid_payload(request_id, &error), Vec::new()),
+    };
+    match crate::git_inspection::diff(&state.storage, state.git.as_ref(), payload).await {
+        Ok(response) => (encode_success(request_id, response), Vec::new()),
+        Err(error) => (ResponseEnvelope::failure(request_id, error), Vec::new()),
     }
 }
 
@@ -351,13 +387,14 @@ fn decode_request(bytes: &[u8]) -> Result<RequestEnvelope<Value>, RequestFailure
 mod tests {
     use cli_master_core::wire::HelloResponse;
     use cli_master_core::{DaemonInstanceId, EnvelopeKind, PROTOCOL_V1, RequestEnvelope};
+    use cli_master_storage::Storage;
     use serde_json::json;
 
     use super::*;
     use crate::{DaemonConfig, EventBus};
 
-    #[test]
-    fn dispatch_rejects_non_request_kind() {
+    #[tokio::test]
+    async fn dispatch_rejects_non_request_kind() {
         let request_id = RequestId::new();
         let events = EventBus::new(crate::DiagnosticLog::default());
         let client = events.connect_client();
@@ -378,9 +415,12 @@ mod tests {
                 schema_version: 1,
                 config: DaemonConfig::from_paths("/tmp/data", "/tmp/run"),
                 events,
+                storage: Storage::open_in_memory_migrated().expect("test storage should migrate"),
+                git: None,
             },
             &client,
-        );
+        )
+        .await;
 
         assert!(replay.is_empty());
         match response.payload {

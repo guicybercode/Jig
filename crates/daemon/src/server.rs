@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cli_master_core::wire::HelloResponse;
 use cli_master_core::{DaemonInstanceId, PROTOCOL_V1};
+use cli_master_git::Git;
 use cli_master_storage::{RecoveryContext, Storage};
 use tokio::net::UnixListener;
 use tokio::task::JoinSet;
@@ -26,6 +27,8 @@ pub(crate) struct ServerState {
     pub(crate) schema_version: u32,
     pub(crate) config: DaemonConfig,
     pub(crate) events: EventBus,
+    pub(crate) storage: Storage,
+    pub(crate) git: Option<Git>,
 }
 
 /// Bound, single-instance local daemon.
@@ -38,7 +41,6 @@ pub struct Daemon {
     listener: UnixListener,
     socket_owner: SocketOwner,
     _instance_lock: InstanceLock,
-    storage: Storage,
     state: Arc<ServerState>,
 }
 
@@ -66,6 +68,7 @@ impl Daemon {
             .filter(|event| event.previous_status != event.new_status)
             .count();
         let schema_version = storage.schema_version()?;
+        let git = crate::git_inspection::discover_git();
 
         remove_stale_socket(config.socket_path())?;
         let listener = UnixListener::bind(config.socket_path())
@@ -83,6 +86,8 @@ impl Daemon {
             schema_version,
             config: config.clone(),
             events: EventBus::new(crate::DiagnosticLog::default()),
+            storage,
+            git,
         });
 
         info!(
@@ -99,7 +104,6 @@ impl Daemon {
             listener,
             socket_owner,
             _instance_lock: instance_lock,
-            storage,
             state,
         })
     }
@@ -162,7 +166,7 @@ impl Daemon {
             }
         }
         self.socket_owner.remove_if_owned();
-        self.storage.close()?;
+        self.state.storage.close()?;
         info!(instance_id = %self.state.hello.instance_id, "daemon stopped");
         Ok(())
     }
@@ -172,6 +176,7 @@ fn unix_epoch_ms() -> Result<i64, DaemonError> {
     let elapsed = SystemTime::now().duration_since(UNIX_EPOCH)?;
     i64::try_from(elapsed.as_millis()).map_err(|_| DaemonError::TimestampOverflow)
 }
+
 fn remove_stale_socket(path: &Path) -> Result<(), DaemonError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
