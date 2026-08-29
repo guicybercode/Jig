@@ -7,7 +7,7 @@ interface TerminalGridProps {
   readonly sessions: Session[];
 }
 
-/** Renders up to four interactive terminals. xterm state lives outside React. */
+/** Renders up to four interactive terminals. Output is polled into a textarea host. */
 export function TerminalGrid({ sessions }: TerminalGridProps) {
   const workspace = useWorkspace();
   const visible = sessions.filter((session) =>

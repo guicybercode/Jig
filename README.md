@@ -16,37 +16,39 @@ CLI Master does not require an account, cloud backend, telemetry service, or
 API server. Authentication remains with each CLI installed on the machine.
 
 > [!IMPORTANT]
-> Beta v0.1 is under active development. The repository currently contains the
-> architecture and the first buildable Tauri/React foundation. Do not treat the
-> current `main` branch as a finished release.
+> Beta v0.1.0-beta.1 is a local Linux/macOS desktop. The daemon and workspace
+> crates are in this repository. Read [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md)
+> before treating a path as finished. Windows is out of scope.
 
 ## Supported platforms
 
-- Linux is a first-class target. AppImage is the initial package format; a
-  Debian package follows when the packaging path is reliable.
+- Linux is a first-class target. AppImage is the intended package format; a
+  Debian package follows when `pnpm tauri build` produces it on that host.
 - macOS is a first-class target on Apple Silicon and supported modern releases.
-  The initial artifacts are an application bundle and DMG.
+  The intended artifacts are an application bundle and DMG. This integrator
+  did not run on macOS; use CI or a Mac.
 - Windows is explicitly outside the Beta v0.1 scope.
 
 ## How it works
 
 ```text
-React + xterm.js
-       │ typed Tauri commands and events
+React workspace
+       │ typed Tauri commands
        ▼
 Tauri 2 desktop bridge
-       │ versioned local IPC
+       │ length-prefixed JSON on a Unix socket
        ▼
-CLI Master daemon
+cli-masterd
        ├── PTY session manager ── Codex / Claude / Gemini / OpenCode
        ├── Git and worktree service
        └── SQLite metadata storage
 ```
 
 The separate daemon owns live PTYs and SQLite. Closing or reloading the desktop
-window therefore does not inherently stop active sessions. Read
-[ARCHITECTURE.md](ARCHITECTURE.md) for the protocol, schema, lifecycle, and
-safety decisions.
+window therefore does not inherently stop active sessions. Beta v0.1 hosts
+terminal I/O in a textarea and polls replay snapshots; the architecture target
+in [ARCHITECTURE.md](ARCHITECTURE.md) still describes xterm.js. Read that file
+for the protocol, schema, lifecycle, and safety decisions.
 
 ## Prerequisites
 
@@ -108,9 +110,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-`pnpm check` type-checks and builds the frontend, then checks every Rust crate.
-Platform-specific PTY and packaging tests run in their Linux and macOS CI jobs
-as those subsystems land.
+See [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) and
+[docs/BETA_V0.1_ACCEPTANCE.md](docs/BETA_V0.1_ACCEPTANCE.md).
 
 ## Build packages
 
