@@ -55,7 +55,7 @@ pub enum SessionErrorKind {
     InjectedFailure,
     /// The Git crate rejected an orchestration operation.
     Git,
-    /// SQLite rejected an orchestration operation.
+    /// `SQLite` rejected an orchestration operation.
     Storage,
 }
 

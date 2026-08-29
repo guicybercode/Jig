@@ -9,7 +9,7 @@ use std::{
 
 use cli_master_core::{AgentId, AgentSource, Project, ProjectId, wire::SessionIsolation};
 use cli_master_git::Git;
-use cli_master_session::{CreateSession, FakeSpawner, SessionWorktreeSaga};
+use cli_master_session::{CreateSession, SessionSpawner, SessionWorktreeSaga};
 use cli_master_storage::{Storage, StoredAgent};
 use tempfile::TempDir;
 
@@ -82,7 +82,7 @@ impl Fixture {
         }
     }
 
-    pub fn saga(&self, spawner: FakeSpawner) -> SessionWorktreeSaga<FakeSpawner> {
+    pub fn saga<S: SessionSpawner>(&self, spawner: S) -> SessionWorktreeSaga<S> {
         let storage = Storage::open(&self.database).expect("database should reopen");
         storage.migrate().expect("database should migrate");
         SessionWorktreeSaga::new(

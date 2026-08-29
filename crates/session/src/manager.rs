@@ -140,7 +140,7 @@ impl SessionManager {
 
     pub(crate) fn create_prepared(
         &self,
-        request: SpawnRequest<'_>,
+        request: &SpawnRequest<'_>,
     ) -> Result<Session, SessionError> {
         self.create_with_identity(
             SessionLaunchRequest {
@@ -429,22 +429,45 @@ impl SessionManager {
     }
 
     pub(crate) fn rollback_created(&self, id: SessionId) -> Result<(), SessionError> {
-        let live = lock(&self.inner.sessions)
-            .remove(&id)
-            .ok_or(SessionError::NotFound(id))?;
-        {
+        let Some(live) = lock(&self.inner.sessions).get(&id).cloned() else {
+            return Ok(());
+        };
+        let (pgid, mut killer) = {
             let mut state = lock(&live.state);
-            state.generation = state.generation.saturating_add(1);
             state.stop_requested = true;
             state.kill_requested = true;
+            (
+                state.pgid,
+                state.killer.as_mut().map(|killer| killer.clone_killer()),
+            )
+        };
+
+        let signal_error = pgid
+            .map(|pgid| crate::unix::signal_group(pgid, crate::unix::kill_signal()))
+            .transpose()
+            .err();
+        if let Some(killer) = killer.as_mut() {
+            let _ = killer.kill();
         }
-        live.force_cleanup();
-        let mut record = lock(&live.state).record.clone();
-        record.pid = None;
-        record.pty_id = None;
-        record.status = SessionStatus::Failed;
-        record.error_code = Some("session_create_rolled_back".to_owned());
-        record.updated_at_ms = unix_now_ms();
+
+        let deadline = Instant::now() + self.inner.config.kill_timeout;
+        while lock(&live.state).record.status.is_live() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if lock(&live.state).record.status.is_live() {
+            live.force_cleanup();
+            return Err(signal_error.unwrap_or(SessionError::StopTimeout(id)));
+        }
+
+        let record = lock(&live.state).record.clone();
+        let mut sessions = lock(&self.inner.sessions);
+        if sessions
+            .get(&id)
+            .is_some_and(|registered| Arc::ptr_eq(registered, &live))
+        {
+            sessions.remove(&id);
+        }
+        drop(sessions);
         let _ = self.inner.events.send(SessionEvent::Deleted(record));
         Ok(())
     }

@@ -5,8 +5,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
 use cli_master_session::{
-    CreateFaults, CreateStep, FakeSpawner, SagaErrorKind, SessionEvent, SessionManager,
-    SessionManagerConfig, SessionWorktreeSaga,
+    CreateFaults, CreateStep, FakeSpawner, SagaErrorKind, SessionError, SessionEvent,
+    SessionManager, SessionManagerConfig, SessionSpawner, SessionWorktreeSaga, SpawnRequest,
+    SpawnedSession,
 };
 use cli_master_storage::{Storage, WorktreeState};
 use support::{Fixture, branch_exists, git};
@@ -119,6 +120,51 @@ fn compensation_preserves_data_when_worktree_is_dirty() {
         .unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].state, WorktreeState::Orphaned);
+}
+
+#[derive(Debug)]
+struct RollbackFailingSpawner;
+
+impl SessionSpawner for RollbackFailingSpawner {
+    fn spawn(&self, _request: SpawnRequest<'_>) -> Result<SpawnedSession, SessionError> {
+        Ok(SpawnedSession {
+            pid: 99,
+            pty_id: Some("uncertain-pty".to_owned()),
+        })
+    }
+
+    fn rollback(&self, _session_id: cli_master_core::SessionId) -> Result<(), SessionError> {
+        Err(SessionError::Signal(
+            "test could not prove process-group termination".to_owned(),
+        ))
+    }
+}
+
+#[test]
+fn failed_runtime_rollback_preserves_the_worktree_and_ownership_metadata() {
+    let fixture = Fixture::new();
+    let saga = fixture.saga(RollbackFailingSpawner);
+    let faults = CreateFaults {
+        fail_after: Some(CreateStep::Spawn),
+        ..CreateFaults::default()
+    };
+
+    let error = saga
+        .create_session_injected(
+            &fixture.request("Uncertain Rollback", Some("uncertain1")),
+            &faults,
+        )
+        .expect_err("unproven process termination must abort compensation");
+
+    assert_eq!(error.kind(), SagaErrorKind::PartialWorktree);
+    let storage = Storage::open(&fixture.database).unwrap();
+    let sessions = storage.list_sessions().unwrap();
+    let worktrees = storage.list_worktrees().unwrap();
+    assert_eq!(sessions.len(), 1, "live ownership metadata must remain");
+    assert_eq!(worktrees.len(), 1);
+    assert_eq!(worktrees[0].state, WorktreeState::Orphaned);
+    assert_eq!(worktrees[0].session_id, Some(sessions[0].id));
+    assert!(worktrees[0].path.is_dir());
 }
 
 #[test]
@@ -253,6 +299,10 @@ async fn production_spawner_registers_the_saga_session_in_the_pty_manager() {
         events.recv().await.unwrap(),
         SessionEvent::Created(_)
     ));
+    let premature_exit = saga
+        .record_session_exit(created.session.id, None)
+        .expect_err("durable status must not outrun the PTY runtime");
+    assert_eq!(premature_exit.kind(), SagaErrorKind::SessionInUse);
 
     manager
         .kill(created.session.id)

@@ -58,6 +58,15 @@ pub trait SessionSpawner: Send + Sync {
     fn rollback(&self, _session_id: SessionId) -> Result<(), SessionError> {
         Ok(())
     }
+
+    /// Returns whether this runtime currently owns a live process for `session_id`.
+    ///
+    /// Durable status is checked independently; removal is blocked when either
+    /// source reports a live owner.
+    #[must_use]
+    fn is_live(&self, _session_id: SessionId) -> bool {
+        false
+    }
 }
 
 /// Test double that records spawn attempts and can fail on demand.
@@ -111,7 +120,7 @@ impl SessionSpawner for FakeSpawner {
 impl SessionSpawner for SessionManager {
     fn spawn(&self, request: SpawnRequest<'_>) -> Result<SpawnedSession, SessionError> {
         let session_id = request.session_id;
-        match self.create_prepared(request) {
+        match self.create_prepared(&request) {
             Ok(session) => {
                 let Some(pid) = session.pid else {
                     let _ = self.rollback_created(session_id);
@@ -133,5 +142,10 @@ impl SessionSpawner for SessionManager {
 
     fn rollback(&self, session_id: SessionId) -> Result<(), SessionError> {
         self.rollback_created(session_id)
+    }
+
+    fn is_live(&self, session_id: SessionId) -> bool {
+        self.get(session_id)
+            .is_some_and(|session| session.status.is_live())
     }
 }

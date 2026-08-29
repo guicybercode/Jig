@@ -136,18 +136,18 @@ fn create_current<S: SessionSpawner>(
         })
         .inspect_err(|_| discard_session(saga, session_id))?;
     if let Err(error) = maybe_fail(faults, CreateStep::Spawn) {
-        rollback_spawned(saga, session_id);
-        return Err(error);
+        return Err(rollback_spawned(saga, session_id, error));
     }
     if let Err(error) = persist_running(saga, session_id, spawned.pid, now) {
-        rollback_spawned(saga, session_id);
-        return Err(error);
+        return Err(rollback_spawned(saga, session_id, error));
     }
     if let Err(error) = maybe_fail(faults, CreateStep::PersistRunning) {
-        rollback_spawned(saga, session_id);
-        return Err(error);
+        return Err(rollback_spawned(saga, session_id, error));
     }
-    let stored = require_session(saga, session_id)?;
+    let stored = match require_session(saga, session_id) {
+        Ok(stored) => stored,
+        Err(error) => return Err(rollback_spawned(saga, session_id, error)),
+    };
     Ok(CreatedSession {
         session: session_dto(stored, None, spawned.pty_id),
         worktree: None,
@@ -273,8 +273,14 @@ fn persist_spawn_and_run<S: SessionSpawner>(
         return Err(compensate(saga, plan, worktree_id, Some(session_id), error));
     }
 
-    let stored_session = require_session(saga, session_id)?;
-    let stored_worktree = require_worktree(saga, worktree_id)?;
+    let stored_session = match require_session(saga, session_id) {
+        Ok(stored) => stored,
+        Err(error) => return Err(compensate(saga, plan, worktree_id, Some(session_id), error)),
+    };
+    let stored_worktree = match require_worktree(saga, worktree_id) {
+        Ok(stored) => stored,
+        Err(error) => return Err(compensate(saga, plan, worktree_id, Some(session_id), error)),
+    };
     Ok(CreatedSession {
         session: session_dto(stored_session, Some(&stored_worktree), spawned.pty_id),
         worktree: Some(worktree_dto(stored_worktree)),
@@ -377,7 +383,7 @@ fn after_git_create_failure<S: SessionSpawner>(
 ) -> SagaError {
     let saga_error = SagaError::from(error);
     if saga_error.kind() == SagaErrorKind::PartialWorktree {
-        mark_orphaned(saga, worktree_id);
+        mark_orphaned(saga, worktree_id, None);
         return saga_error.with_worktree_id(worktree_id);
     }
     discard_worktree(saga, worktree_id);
@@ -393,7 +399,15 @@ fn compensate<S: SessionSpawner>(
     original: SagaError,
 ) -> SagaError {
     if let Some(session_id) = session_id {
-        let _ = saga.spawner.rollback(session_id);
+        if let Err(rollback_error) = saga.spawner.rollback(session_id) {
+            mark_orphaned(saga, worktree_id, Some(session_id));
+            return SagaError::partial_worktree(
+                plan.destination(),
+                format!("session runtime rollback failed: {rollback_error}"),
+            )
+            .with_worktree_id(worktree_id)
+            .with_session_id(session_id);
+        }
         discard_session(saga, session_id);
     }
     match saga.git.remove_worktree(
@@ -410,7 +424,7 @@ fn compensate<S: SessionSpawner>(
             original
         }
         Err(error) => {
-            mark_orphaned(saga, worktree_id);
+            mark_orphaned(saga, worktree_id, session_id);
             if error.kind() == cli_master_git::GitErrorKind::PartialWorktree {
                 return SagaError::from(error).with_worktree_id(worktree_id);
             }
@@ -420,9 +434,18 @@ fn compensate<S: SessionSpawner>(
     }
 }
 
-fn rollback_spawned<S: SessionSpawner>(saga: &SessionWorktreeSaga<S>, session_id: SessionId) {
-    let _ = saga.spawner.rollback(session_id);
-    discard_session(saga, session_id);
+fn rollback_spawned<S: SessionSpawner>(
+    saga: &SessionWorktreeSaga<S>,
+    session_id: SessionId,
+    original: SagaError,
+) -> SagaError {
+    match saga.spawner.rollback(session_id) {
+        Ok(()) => {
+            discard_session(saga, session_id);
+            original
+        }
+        Err(error) => error.with_session_id(session_id),
+    }
 }
 
 fn discard_worktree<S: SessionSpawner>(saga: &SessionWorktreeSaga<S>, worktree_id: WorktreeId) {
@@ -433,12 +456,16 @@ fn discard_session<S: SessionSpawner>(saga: &SessionWorktreeSaga<S>, session_id:
     let _ = saga.storage().remove_session_metadata(session_id);
 }
 
-fn mark_orphaned<S: SessionSpawner>(saga: &SessionWorktreeSaga<S>, worktree_id: WorktreeId) {
+fn mark_orphaned<S: SessionSpawner>(
+    saga: &SessionWorktreeSaga<S>,
+    worktree_id: WorktreeId,
+    session_id: Option<SessionId>,
+) {
     let _ = saga.storage().update_worktree_state(
         worktree_id,
         WorktreeState::Orphaned,
         true,
-        None,
+        session_id,
         now_ms(),
     );
 }

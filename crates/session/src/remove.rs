@@ -133,6 +133,14 @@ pub(crate) fn record_session_exit<S: SessionSpawner>(
     session_id: SessionId,
     exit_code: Option<i32>,
 ) -> Result<(), SagaError> {
+    if saga.spawner.is_live(session_id) {
+        return Err(SagaError::new(
+            SagaErrorKind::SessionInUse,
+            format!("Session {session_id} still has a daemon-owned process"),
+            "Wait for the SessionManager exit event before recording durable exit state",
+        )
+        .with_session_id(session_id));
+    }
     let now = now_ms();
     saga.storage()
         .update_session_runtime(
@@ -155,7 +163,7 @@ pub(crate) fn delete_session<S: SessionSpawner>(
     session_id: SessionId,
 ) -> Result<(), SagaError> {
     let session = require_session(saga, session_id)?;
-    if is_live(session.status) {
+    if is_live(session.status) || saga.spawner.is_live(session_id) {
         return Err(SagaError::new(
             SagaErrorKind::SessionInUse,
             format!("Session {session_id} is still live and cannot have its metadata deleted"),
@@ -242,7 +250,7 @@ fn read_usage<S: SessionSpawner>(
             in_use: false,
         });
     };
-    let live = is_live(session.status);
+    let live = is_live(session.status) || saga.spawner.is_live(session_id);
     Ok(WorktreeUse {
         running: live,
         in_use: live,

@@ -1,6 +1,6 @@
 //! Recoverable worktree orchestration and PTY-backed session lifecycle.
 //!
-//! [`SessionWorktreeSaga`] keeps Git and SQLite effects consistent and
+//! [`SessionWorktreeSaga`] keeps Git and `SQLite` effects consistent and
 //! delegates process ownership through [`SessionSpawner`]. [`SessionManager`]
 //! is the production spawner and remains the only owner of PTY masters,
 //! process groups, replay buffers, and in-memory status events.
@@ -207,7 +207,7 @@ impl<S: SessionSpawner> SessionWorktreeSaga<S> {
     ///
     /// # Errors
     ///
-    /// Returns an error when SQLite cannot list or update worktree rows.
+    /// Returns an error when `SQLite` cannot list or update worktree rows.
     pub fn recover(&self) -> Result<RecoveryReport, SessionError> {
         recover::recover(self)
     }
