@@ -1,0 +1,18 @@
+[package]
+name = "cli-master-git"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Safe system-Git operations for repository detection, status, and worktrees"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+cli-master-core = { path = "../core" }
+serde = { version = "1.0.229", features = ["derive"] }
+unicode-normalization = "0.1.24"
+
+[dev-dependencies]
+tempfile = "3.24.0"
