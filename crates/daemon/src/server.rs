@@ -1,3 +1,4 @@
+use std::env;
 use std::fs;
 use std::io;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
@@ -5,8 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cli_master_core::{
-    AgentDefinition, ApiError, EnvelopeKind, PROTOCOL_V1, Project, RequestEnvelope, RequestId,
-    ResponseEnvelope, Session, Worktree,
+    AgentDefinition, ApiError, DaemonInstanceId, EnvelopeKind, PROTOCOL_V1, Project,
+    RequestEnvelope, RequestId, ResponseEnvelope, Session, Worktree,
+    wire::{DiagnosticsResponse, method},
 };
 use cli_master_storage::Storage;
 use futures_util::{SinkExt, StreamExt};
@@ -57,6 +59,7 @@ pub struct StateSnapshot {
 struct ServerState {
     hello: HelloResponse,
     schema_version: u32,
+    diagnostics: DiagnosticsResponse,
 }
 
 /// Bound, single-instance local daemon.
@@ -83,6 +86,8 @@ impl Daemon {
     pub fn bind(config: DaemonConfig) -> Result<Self, DaemonError> {
         ensure_private_directory(config.data_directory())?;
         ensure_private_directory(config.runtime_directory())?;
+        let log_path = config.data_directory().join("logs");
+        ensure_private_directory(&log_path)?;
 
         let instance_lock = InstanceLock::acquire(config.lock_path())?;
         remove_stale_socket(config.socket_path())?;
@@ -98,6 +103,17 @@ impl Daemon {
         )?;
         let socket_owner = SocketOwner::new(config.socket_path())?;
         let instance_id = Uuid::now_v7();
+        let diagnostics = DiagnosticsResponse {
+            daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
+            protocol_version: PROTOCOL_V1,
+            schema_version,
+            daemon_instance_id: DaemonInstanceId::from_uuid(instance_id),
+            data_path: config.data_directory().to_path_buf(),
+            runtime_path: config.runtime_directory().to_path_buf(),
+            log_path,
+            effective_path: effective_executable_paths(),
+            recent_issues: Vec::new(),
+        };
         let state = Arc::new(ServerState {
             hello: HelloResponse {
                 protocol_version: PROTOCOL_V1,
@@ -105,6 +121,7 @@ impl Daemon {
                 instance_id,
             },
             schema_version,
+            diagnostics,
         });
 
         info!(
@@ -288,14 +305,15 @@ fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> ResponseEnv
     }
 
     let result = match request.method.as_str() {
-        "system.hello" => serde_json::to_value(&state.hello),
-        "state.snapshot" => serde_json::to_value(StateSnapshot {
+        method::SYSTEM_HELLO => serde_json::to_value(&state.hello),
+        method::STATE_SNAPSHOT => serde_json::to_value(StateSnapshot {
             schema_version: state.schema_version,
             projects: Vec::new(),
             agents: Vec::new(),
             sessions: Vec::new(),
             worktrees: Vec::new(),
         }),
+        method::DIAGNOSTICS_GET => serde_json::to_value(&state.diagnostics),
         _ => {
             return ResponseEnvelope::failure(
                 request.request_id,
@@ -313,6 +331,20 @@ fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> ResponseEnv
                 .with_detail("reason", error.to_string()),
         ),
     }
+}
+
+fn effective_executable_paths() -> Vec<PathBuf> {
+    let Some(value) = env::var_os("PATH") else {
+        return Vec::new();
+    };
+
+    let mut paths = Vec::new();
+    for path in env::split_paths(&value).filter(|path| path.is_absolute()) {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    paths
 }
 
 struct RequestFailure {
@@ -441,6 +473,17 @@ mod tests {
                     instance_id: Uuid::now_v7(),
                 },
                 schema_version: 1,
+                diagnostics: DiagnosticsResponse {
+                    daemon_version: "test".to_owned(),
+                    protocol_version: PROTOCOL_V1,
+                    schema_version: 1,
+                    daemon_instance_id: DaemonInstanceId::new(),
+                    data_path: PathBuf::from("/tmp/cli-master-data"),
+                    runtime_path: PathBuf::from("/tmp/cli-master-runtime"),
+                    log_path: PathBuf::from("/tmp/cli-master-data/logs"),
+                    effective_path: Vec::new(),
+                    recent_issues: Vec::new(),
+                },
             },
         );
 

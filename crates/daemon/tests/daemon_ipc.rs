@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use cli_master_core::{
     EnvelopeKind, PROTOCOL_V1, RequestEnvelope, RequestId, ResponseEnvelope, ResponsePayload,
+    wire::DiagnosticsResponse,
 };
 use cli_master_daemon::{
     Daemon, DaemonConfig, DaemonError, HelloResponse, MAX_FRAME_LENGTH, StateSnapshot,
@@ -145,6 +146,47 @@ async fn snapshot_reports_applied_migration_and_typed_empty_collections() {
     assert!(snapshot.agents.is_empty());
     assert!(snapshot.sessions.is_empty());
     assert!(snapshot.worktrees.is_empty());
+
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn diagnostics_report_sanitized_runtime_metadata() {
+    let temporary = TempDir::new().expect("temporary directory should exist");
+    let daemon = RunningDaemon::start(temporary.path());
+    let mut client = connect(daemon.config.socket_path()).await;
+
+    let response = exchange(
+        &mut client,
+        &RequestEnvelope::v1("diagnostics.get", json!({})),
+    )
+    .await;
+    let ResponsePayload::Success { data } = response.payload else {
+        panic!("diagnostics should succeed");
+    };
+    let diagnostics: DiagnosticsResponse =
+        serde_json::from_value(data).expect("diagnostics should decode");
+
+    assert_eq!(diagnostics.protocol_version, PROTOCOL_V1);
+    assert_eq!(diagnostics.schema_version, LATEST_SCHEMA_VERSION);
+    assert_eq!(
+        diagnostics.daemon_instance_id.into_uuid(),
+        daemon.instance_id,
+    );
+    assert_eq!(diagnostics.data_path, daemon.config.data_directory());
+    assert_eq!(diagnostics.runtime_path, daemon.config.runtime_directory());
+    assert_eq!(
+        diagnostics.log_path,
+        daemon.config.data_directory().join("logs"),
+    );
+    assert!(diagnostics.log_path.is_dir());
+    assert!(
+        diagnostics
+            .effective_path
+            .iter()
+            .all(|path| path.is_absolute())
+    );
+    assert!(diagnostics.recent_issues.is_empty());
 
     daemon.stop().await;
 }
