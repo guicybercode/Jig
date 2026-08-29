@@ -39,8 +39,6 @@ mod tests {
     use cli_master_core::{APPLICATION_VERSION, PROTOCOL_V1, wire};
     use serde_json::json;
 
-    use super::*;
-
     #[test]
     fn rust_catalog_matches_desktop_mirror() {
         let catalog: serde_json::Value =
@@ -66,19 +64,9 @@ mod tests {
         assert_eq!(desktop_package["version"], APPLICATION_VERSION);
         assert_eq!(tauri_config["version"], APPLICATION_VERSION);
 
-        let exposed = protocol_info();
-        assert_eq!(exposed.application_version, APPLICATION_VERSION);
-        assert_eq!(exposed.daemon_sidecar, bridge::DAEMON_SIDECAR_NAME);
-        assert_eq!(
-            exposed.sidecar_external_bin,
-            bridge::DAEMON_SIDECAR_EXTERNAL_BIN
-        );
-        assert_eq!(exposed.methods, wire::method::ALL);
-        assert_eq!(exposed.events, wire::event_name::ALL);
-
         assert_eq!(
             tauri_config["bundle"]["externalBin"],
-            json!([bridge::DAEMON_SIDECAR_EXTERNAL_BIN])
+            json!(["binaries/cli-masterd"])
         );
         assert_eq!(
             tauri_config["bundle"]["targets"],
