@@ -37,6 +37,42 @@
   background: rgb(249 249 248 / 96%);
   box-shadow: 0.5rem 0 2rem rgb(35 37 39 / 6%);
   backdrop-filter: blur(18px);
+  transition:
+    width var(--duration-feedback) var(--ease-feedback),
+    opacity var(--duration-feedback) var(--ease-feedback);
+}
+
+.app-shell--canvas-sidebar-collapsed .app-shell__body {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+.app-shell--canvas-sidebar-collapsed .navigation-pane {
+  width: 0;
+  visibility: hidden;
+  border-right: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.app-shell--canvas-sidebar-collapsed .canvas-context {
+  left: 5rem;
+}
+
+.canvas-sidebar-reveal {
+  position: absolute;
+  z-index: 12;
+  top: 1rem;
+  left: 1rem;
+  width: 3rem;
+  height: 3rem;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgb(25 27 29 / 9%);
+  border-radius: 50%;
+  color: var(--canvas-text-muted);
+  background: var(--canvas-chrome);
+  box-shadow: 0 0.5rem 1.75rem rgb(30 33 36 / 10%);
+  backdrop-filter: blur(18px);
 }
 
 .canvas-sidebar {
@@ -53,7 +89,7 @@
 .canvas-sidebar__topbar {
   min-height: 2rem;
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
 }
 
 .canvas-sidebar__topbar button,
@@ -190,6 +226,7 @@
 
 @media (hover: hover) {
   .canvas-sidebar__topbar button:hover,
+  .canvas-sidebar-reveal:hover,
   .canvas-sidebar nav button:hover,
   .canvas-sidebar footer button:hover {
     color: var(--canvas-accent);

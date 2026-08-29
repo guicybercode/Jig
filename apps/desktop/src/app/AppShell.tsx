@@ -13,10 +13,15 @@ import { AppDialogs } from "./AppDialogs";
 import { useWorkspace } from "./state/WorkspaceContext";
 import { isLiveStatus } from "./utils";
 
+const CANVAS_SIDEBAR_COLLAPSED_KEY = "cli-master.canvas.sidebar-collapsed";
+
 /** Composes the persistent desktop regions around centralized metadata state. */
 export function AppShell() {
   const workspace = useWorkspace();
   const [navigationOpen, setNavigationOpen] = useState(false);
+  const [canvasSidebarCollapsed, setCanvasSidebarCollapsed] = useState(
+    readCanvasSidebarCollapsed,
+  );
   const navigationRef = useRef<HTMLDivElement>(null);
   const modifier = workspace.platform === "macos" ? "⌘" : "Ctrl";
   const repositoryUnavailable =
@@ -108,6 +113,17 @@ export function AppShell() {
     },
     onFocusSession: focusSessionByNumber,
   });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        CANVAS_SIDEBAR_COLLAPSED_KEY,
+        String(canvasSidebarCollapsed),
+      );
+    } catch {
+      // The sidebar remains operable when local persistence is unavailable.
+    }
+  }, [canvasSidebarCollapsed]);
 
   useEffect(() => {
     if (!navigationOpen) return undefined;
@@ -295,7 +311,11 @@ export function AppShell() {
     <div
       className={
         workspace.view === "canvas"
-          ? "app-shell app-shell--canvas"
+          ? `app-shell app-shell--canvas${
+              canvasSidebarCollapsed
+                ? " app-shell--canvas-sidebar-collapsed"
+                : ""
+            }`
           : "app-shell"
       }
     >
@@ -332,7 +352,21 @@ export function AppShell() {
         </div>
       ) : null}
       <div className="app-shell__body">
-        <div ref={navigationRef} className="navigation-pane" data-open={navigationOpen ? "true" : "false"}>
+        <div
+          ref={navigationRef}
+          className="navigation-pane"
+          data-open={navigationOpen ? "true" : "false"}
+          aria-hidden={
+            workspace.view === "canvas" && canvasSidebarCollapsed
+              ? true
+              : undefined
+          }
+          inert={
+            workspace.view === "canvas" && canvasSidebarCollapsed
+              ? true
+              : undefined
+          }
+        >
           <div className="navigation-pane__mobile-header">
             <strong>Navigation</strong>
             <button className="icon-button" type="button" aria-label="Close navigation" onClick={() => setNavigationOpen(false)}>
@@ -346,6 +380,7 @@ export function AppShell() {
               selectedProjectId={workspace.selectedProjectId ?? undefined}
               canManageProjects={workspace.isConnected}
               onSelectProject={selectCanvasProject}
+              onHide={() => setCanvasSidebarCollapsed(true)}
               onAddProject={openAddProject}
               onOpenSettings={() => {
                 workspace.setView("settings");
@@ -389,6 +424,17 @@ export function AppShell() {
             </>
           )}
         </div>
+        {workspace.view === "canvas" && canvasSidebarCollapsed ? (
+          <button
+            className="canvas-sidebar-reveal"
+            type="button"
+            aria-label="Show workspace sidebar"
+            title="Show sidebar"
+            onClick={() => setCanvasSidebarCollapsed(false)}
+          >
+            <Icon name="sidebar" />
+          </button>
+        ) : null}
         {navigationOpen ? <button className="navigation-backdrop" type="button" aria-label="Dismiss navigation" onClick={() => setNavigationOpen(false)} /> : null}
         <Workspace
           connectionStatus={workspace.connection.status}
@@ -438,6 +484,14 @@ export function AppShell() {
       <AppDialogs />
     </div>
   );
+}
+
+function readCanvasSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(CANVAS_SIDEBAR_COLLAPSED_KEY) === "true";
+  } catch {
+    return false;
+  }
 }
 
 const NAVIGATION_FOCUSABLE = [

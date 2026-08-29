@@ -15,6 +15,7 @@ interface CanvasSidebarProps {
   readonly selectedProjectId?: string;
   readonly canManageProjects: boolean;
   readonly onSelectProject: (projectId: string) => void;
+  readonly onHide: () => void;
   readonly onAddProject: () => void;
   readonly onOpenSettings: () => void;
   readonly onOpenDiagnostics: () => void;
@@ -27,6 +28,7 @@ export function CanvasSidebar({
   selectedProjectId,
   canManageProjects,
   onSelectProject,
+  onHide,
   onAddProject,
   onOpenSettings,
   onOpenDiagnostics,
@@ -72,6 +74,14 @@ export function CanvasSidebar({
           onClick={onAddProject}
         >
           <Icon name="plus" />
+        </button>
+        <button
+          type="button"
+          aria-label="Hide workspace sidebar"
+          title="Hide sidebar"
+          onClick={onHide}
+        >
+          <Icon name="sidebar" />
         </button>
       </div>
 

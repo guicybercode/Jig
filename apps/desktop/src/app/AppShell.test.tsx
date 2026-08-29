@@ -22,6 +22,33 @@ import {
 const TEST_TIME = 1_725_000_000_000;
 
 describe("AppShell project and session workflows", () => {
+  it("hides and restores the canvas workspace sidebar", async () => {
+    localStorage.removeItem("cli-master.canvas.sidebar-collapsed");
+    const client = createMockIpcClient({ bootstrap: EMPTY_BOOTSTRAP });
+    const user = userEvent.setup();
+    const { container } = render(<App client={client} />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Hide workspace sidebar" }),
+    );
+    expect(container.querySelector(".app-shell")).toHaveClass(
+      "app-shell--canvas-sidebar-collapsed",
+    );
+    expect(localStorage.getItem("cli-master.canvas.sidebar-collapsed")).toBe(
+      "true",
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Show workspace sidebar" }),
+    );
+    expect(container.querySelector(".app-shell")).not.toHaveClass(
+      "app-shell--canvas-sidebar-collapsed",
+    );
+    expect(localStorage.getItem("cli-master.canvas.sidebar-collapsed")).toBe(
+      "false",
+    );
+  });
+
   it("adds a daemon-validated project and selects it", async () => {
     const addedProject = createProject({
       name: "CLI Master",

@@ -54,11 +54,24 @@ describe("CanvasSidebar", () => {
 
     expect(onSelectProject).toHaveBeenCalledWith(PROJECT.id);
   });
+
+  it("offers a control to hide the workspace sidebar", async () => {
+    const user = userEvent.setup();
+    const onHide = vi.fn();
+    renderSidebar([], vi.fn(), onHide);
+
+    await user.click(
+      screen.getByRole("button", { name: "Hide workspace sidebar" }),
+    );
+
+    expect(onHide).toHaveBeenCalledOnce();
+  });
 });
 
 function renderSidebar(
   projects: readonly Project[],
   onSelectProject = vi.fn(),
+  onHide = vi.fn(),
 ) {
   return render(
     <CanvasSidebar
@@ -66,6 +79,7 @@ function renderSidebar(
       sessions={[]}
       canManageProjects
       onSelectProject={onSelectProject}
+      onHide={onHide}
       onAddProject={vi.fn()}
       onOpenSettings={vi.fn()}
       onOpenDiagnostics={vi.fn()}
