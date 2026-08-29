@@ -607,6 +607,21 @@ mod tests {
     }
 
     #[test]
+    fn existing_worktree_directory_is_rejected() {
+        if !git_available() {
+            return;
+        }
+        let (temp, service, repo) = init_repo();
+        let managed = temp.path().join("worktrees");
+        let worktree = managed.join("taken-abc123");
+        fs::create_dir_all(&worktree).expect("preexisting");
+        let error = service
+            .create_worktree(&repo, &managed, &worktree, "agent/taken-abc123")
+            .expect_err("existing directory");
+        assert!(matches!(error, GitError::AlreadyExists { .. }));
+    }
+
+    #[test]
     fn existing_branch_is_rejected() {
         if !git_available() {
             return;
