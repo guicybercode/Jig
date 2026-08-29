@@ -258,11 +258,23 @@ fn timeout_kills_process_group_without_waiting_for_descendant_pipe() {
     let error = git
         .inspect_repository(temp.path())
         .expect_err("fake Git should time out");
+    let elapsed = started.elapsed();
 
     assert_eq!(error.kind(), GitErrorKind::Timeout);
-    assert!(started.elapsed() < Duration::from_secs(2));
-    let pid = fs::read_to_string(&child_pid)
-        .expect("descendant should report its pid")
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "timeout exceeded deadline budget: {elapsed:?}"
+    );
+    let leader_pid = read_pid(&process_group_leader_pid, "leader");
+    let descendant_pid = read_pid(&child_pid, "descendant");
+    assert_process_stopped(&leader_pid, "Git process-group leader");
+    assert_process_stopped(&descendant_pid, "Git descendant");
+}
+
+#[cfg(unix)]
+fn read_pid(path: &Path, process: &str) -> String {
+    fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("{process} should report its pid: {error}"))
         .trim()
         .to_owned()
 }
