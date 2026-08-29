@@ -27,7 +27,9 @@ fn version_probe_captures_first_line_with_timeout() {
 #[test]
 fn version_probe_times_out_on_hanging_executable() {
     let temp = TempDir::new().expect("temporary directory should be created");
-    script(temp.path(), "codex", "while true; do :; done");
+    // Sleep instead of a busy loop so parallel workspace tests cannot starve
+    // process creation on Linux CI runners.
+    script(temp.path(), "codex", "exec sleep 30");
     let report = test_executable(
         "codex",
         &isolated_env(&temp),

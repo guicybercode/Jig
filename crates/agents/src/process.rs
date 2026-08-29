@@ -31,7 +31,20 @@ pub(crate) fn run_limited(
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
 
-    let mut child = command.spawn()?;
+    let mut child = spawn_with_retry(&mut command)?;
+    let started = run_spawned_child(&mut child, timeout, max_output);
+    if started.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    started
+}
+
+fn run_spawned_child(
+    child: &mut Child,
+    timeout: Duration,
+    max_output: usize,
+) -> io::Result<LimitedOutput> {
     let start = Instant::now();
     let stdout = child
         .stdout
@@ -44,7 +57,7 @@ pub(crate) fn run_limited(
     let stdout_reader = spawn_limited_reader("agent-probe-stdout", stdout, max_output)?;
     let stderr_reader = spawn_limited_reader("agent-probe-stderr", stderr, max_output)?;
 
-    let wait_result = wait_with_timeout(&mut child, start, timeout);
+    let wait_result = wait_with_timeout(child, start, timeout);
     if wait_result.is_err() {
         let _ = child.kill();
         let _ = child.wait();
@@ -62,6 +75,28 @@ pub(crate) fn run_limited(
     })
 }
 
+fn spawn_with_retry(command: &mut Command) -> io::Result<Child> {
+    let mut last_error = None;
+    for attempt in 0..8 {
+        match command.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error) if is_transient_spawn_error(&error) => {
+                last_error = Some(error);
+                thread::sleep(Duration::from_millis(15 * (attempt + 1)));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| io::Error::other("process spawn retries exhausted")))
+}
+
+fn is_transient_spawn_error(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+    ) || matches!(error.raw_os_error(), Some(11 | 35))
+}
+
 fn wait_with_timeout(
     child: &mut Child,
     start: Instant,
@@ -71,13 +106,14 @@ fn wait_with_timeout(
         match child.try_wait()? {
             Some(status) => return Ok((false, status.code())),
             None if start.elapsed() >= timeout => {
-                if let Err(kill_error) = child.kill() {
-                    if let Some(status) = child.try_wait()? {
-                        return Ok((false, status.code()));
+                match child.kill() {
+                    Ok(()) => {
+                        let _ = child.wait();
                     }
-                    return Err(kill_error);
+                    Err(_) => {
+                        let _ = child.try_wait();
+                    }
                 }
-                child.wait()?;
                 return Ok((true, None));
             }
             None => {
@@ -150,5 +186,15 @@ mod tests {
         assert_eq!(output.stderr.len(), 257);
         assert!(output.stdout.starts_with(b"stdout-"));
         assert!(output.stderr.starts_with(b"stderr-"));
+    }
+
+    #[test]
+    fn times_out_a_sleeping_child_without_busy_looping() {
+        let mut command = Command::new("/bin/sleep");
+        command.arg("30");
+        let output =
+            run_limited(command, Duration::from_millis(200), 64).expect("timeout should return");
+        assert!(output.timed_out);
+        assert!(output.exit_code.is_none());
     }
 }
