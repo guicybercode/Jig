@@ -1,14 +1,15 @@
-use cli_master_core::{PROTOCOL_V1, wire};
+use cli_master_core::{APPLICATION_VERSION, PROTOCOL_V1, wire};
 use serde::Serialize;
 
 /// Desktop-side protocol catalog. This is not `system.hello`.
 ///
 /// The Tauri process is a typed bridge. Live sessions belong to `cli-masterd`.
 /// Until the Tauri bridge connects to the daemon, the UI can still read the
-/// frozen method list.
+/// frozen method list and the application version that must match the sidecar.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProtocolInfo {
+    application_version: &'static str,
     protocol_version: u16,
     methods: Vec<&'static str>,
     events: Vec<&'static str>,
@@ -17,6 +18,7 @@ struct ProtocolInfo {
 #[tauri::command]
 fn protocol_info() -> ProtocolInfo {
     ProtocolInfo {
+        application_version: APPLICATION_VERSION,
         protocol_version: PROTOCOL_V1,
         methods: wire::method::ALL.to_vec(),
         events: wire::event_name::ALL.to_vec(),
@@ -50,10 +52,26 @@ mod tests {
                 .expect("desktop protocol mirror should parse");
 
         assert_eq!(catalog["protocolVersion"], PROTOCOL_V1);
+        assert_eq!(catalog["applicationVersion"], APPLICATION_VERSION);
         assert_eq!(catalog["methods"], json!(wire::method::ALL));
         assert_eq!(catalog["events"], json!(wire::event_name::ALL));
 
+        let root_package: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../package.json"))
+                .expect("root package.json should parse");
+        let desktop_package: serde_json::Value =
+            serde_json::from_str(include_str!("../../../package.json"))
+                .expect("desktop package.json should parse");
+        let tauri_config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json"))
+                .expect("tauri.conf.json should parse");
+
+        assert_eq!(root_package["version"], APPLICATION_VERSION);
+        assert_eq!(desktop_package["version"], APPLICATION_VERSION);
+        assert_eq!(tauri_config["version"], APPLICATION_VERSION);
+
         let exposed = protocol_info();
+        assert_eq!(exposed.application_version, APPLICATION_VERSION);
         assert_eq!(exposed.methods, wire::method::ALL);
         assert_eq!(exposed.events, wire::event_name::ALL);
     }

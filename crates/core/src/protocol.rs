@@ -5,6 +5,13 @@ use crate::{ApiError, RequestId};
 /// Current stable IPC protocol version.
 pub const PROTOCOL_V1: u16 = 1;
 
+/// Semantic version of the CLI Master application and `cli-masterd`.
+///
+/// This value matches `[workspace.package].version` in `Cargo.toml`. The
+/// desktop `package.json`, Tauri config, and `protocol/catalog.json` mirrors
+/// are checked against it in tests. It is not the IPC protocol version.
+pub const APPLICATION_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Discriminator identifying the shape and direction of an IPC envelope.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -260,6 +267,17 @@ mod tests {
         };
 
         assert!(!request.is_supported());
+    }
+
+    #[test]
+    fn catalog_application_version_matches_cargo_package() {
+        let catalog: serde_json::Value =
+            serde_json::from_str(include_str!("../../../protocol/catalog.json"))
+                .expect("protocol catalog should parse");
+
+        assert_eq!(catalog["protocolVersion"], PROTOCOL_V1);
+        assert_eq!(catalog["applicationVersion"], APPLICATION_VERSION);
+        assert_eq!(APPLICATION_VERSION, env!("CARGO_PKG_VERSION"));
     }
 
     #[test]

@@ -6,6 +6,7 @@
   "scripts": {
     "build": "pnpm --filter @cli-master/desktop build",
     "check": "pnpm --filter @cli-master/desktop check && cargo check --workspace",
+    "check:versions": "bash scripts/check-versions.sh",
     "dev": "pnpm --filter @cli-master/desktop dev",
     "tauri": "pnpm --filter @cli-master/desktop tauri",
     "test": "pnpm --filter @cli-master/desktop test && cargo test --workspace"
