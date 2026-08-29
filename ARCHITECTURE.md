@@ -234,17 +234,21 @@ a runtime discovery snapshot keyed by the adapter registry key. It is distinct
 from the persisted `cli_master_core::AgentDefinition`, whose `id` is an
 `AgentId` and whose structured default launch is a `CommandSpec`.
 
-Persisted built-in and custom definitions both receive UUIDv7 `AgentId` values.
-Adapter registry keys such as `codex`, `claude`, `gemini`, and `opencode`
-identify discovery implementations; they are not wire or database entity IDs.
+Public and persisted agent identifiers are UUIDv7 values (`AgentId`). Built-in
+adapter keys remain `codex`, `claude`, `gemini`, and `opencode` for PATH lookup
+and registry indexing; they are never used as `AgentId` on the wire, in SQLite,
+or in the desktop UI. The four built-in public ids are stable UUIDv7 constants
+shared by `cli-master-core` and the desktop client.
 Adapters do not guess optional vendor flags. In v0.1 they resolve the executable
 and launch the CLI in its normal interactive mode. Flags are added only after
 validation against the installed CLI version. User-configured extra arguments
 remain a structured array on `LaunchContext`.
 
 Custom agents store a display name, executable, ordered argument array,
-non-secret environment additions, optional default directory, optional icon or
-color metadata, and whether a PTY is required. The daemon rejects NUL bytes,
+environment override map, optional default directory, optional icon or
+color metadata, and whether a PTY is required. Environment *values* stay on the
+daemon side; `agent.list`, `agent.detect`, diagnostics, logs, and the DOM expose
+variable names only. The daemon rejects NUL bytes,
 empty names or executables, `~user` paths, relative executables that are not a
 bare PATH name, and an invalid working directory. An executable may be absolute,
 `~/…`, a controlled placeholder, or resolved from the effective PATH. Arguments
