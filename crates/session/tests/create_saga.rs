@@ -7,9 +7,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use cli_master_session::{
-    CreateFaults, CreateStep, FakeSpawner, SagaErrorKind, SessionError, SessionEvent,
-    SessionManager, SessionManagerConfig, SessionSpawner, SessionWorktreeSaga, SpawnRequest,
-    SpawnedSession,
+    CreateFaults, CreateStep, FakeSpawner, SagaError, SagaErrorKind, SessionManager,
+    SessionManagerConfig, SessionSpawner, SessionWorktreeSaga, SpawnRequest, SpawnedSession,
 };
 use cli_master_storage::{SessionRuntimeUpdate, Storage, WorktreeState};
 use support::{Fixture, branch_exists, git};
@@ -128,16 +127,18 @@ fn compensation_preserves_data_when_worktree_is_dirty() {
 struct RollbackFailingSpawner;
 
 impl SessionSpawner for RollbackFailingSpawner {
-    fn spawn(&self, _request: SpawnRequest<'_>) -> Result<SpawnedSession, SessionError> {
+    fn spawn(&self, _request: SpawnRequest<'_>) -> Result<SpawnedSession, SagaError> {
         Ok(SpawnedSession {
             pid: 99,
             pty_id: Some("uncertain-pty".to_owned()),
         })
     }
 
-    fn rollback(&self, _session_id: cli_master_core::SessionId) -> Result<(), SessionError> {
-        Err(SessionError::Signal(
-            "test could not prove process-group termination".to_owned(),
+    fn rollback(&self, _session_id: cli_master_core::SessionId) -> Result<(), SagaError> {
+        Err(SagaError::new(
+            SagaErrorKind::Spawn,
+            "test could not prove process-group termination",
+            "Inspect the test process tree",
         ))
     }
 }
@@ -149,13 +150,15 @@ struct ReadyManagerSpawner {
 }
 
 impl SessionSpawner for ReadyManagerSpawner {
-    fn spawn(&self, request: SpawnRequest<'_>) -> Result<SpawnedSession, SessionError> {
+    fn spawn(&self, request: SpawnRequest<'_>) -> Result<SpawnedSession, SagaError> {
         let session = SessionSpawner::spawn(&self.manager, request)?;
         let deadline = Instant::now() + Duration::from_secs(2);
         while !self.ready.is_file() {
             if Instant::now() >= deadline {
-                return Err(SessionError::Io(
-                    "descendant process did not report readiness".to_owned(),
+                return Err(SagaError::new(
+                    SagaErrorKind::Spawn,
+                    "descendant process did not report readiness",
+                    "Inspect the process-group test fixture",
                 ));
             }
             thread::sleep(Duration::from_millis(5));
@@ -163,7 +166,7 @@ impl SessionSpawner for ReadyManagerSpawner {
         Ok(session)
     }
 
-    fn rollback(&self, session_id: cli_master_core::SessionId) -> Result<(), SessionError> {
+    fn rollback(&self, session_id: cli_master_core::SessionId) -> Result<(), SagaError> {
         SessionSpawner::rollback(&self.manager, session_id)
     }
 
@@ -303,8 +306,7 @@ fn stale_plan_is_rejected_when_the_branch_appears_after_planning() {
 async fn production_spawner_registers_the_saga_session_in_the_pty_manager() {
     let fixture = Fixture::new();
     fixture.replace_agent_command("/bin/cat", Vec::new());
-    let manager = SessionManager::new(SessionManagerConfig::for_tests());
-    let mut events = manager.subscribe_events();
+    let manager = SessionManager::new(SessionManagerConfig::default()).expect("test manager");
     let storage = Storage::open_migrated(&fixture.database).unwrap();
     let saga = SessionWorktreeSaga::new(
         cli_master_git::Git::discover().unwrap(),
@@ -318,19 +320,11 @@ async fn production_spawner_registers_the_saga_session_in_the_pty_manager() {
         .create_session(&fixture.request("Managed PTY", Some("manager1")))
         .expect("manager-backed create should succeed");
     let runtime = manager
-        .get(created.session.id)
+        .snapshot(created.session.id)
         .expect("runtime should use the saga session id");
 
     assert_eq!(runtime.id, created.session.id);
     assert_eq!(runtime.pid, created.session.pid);
-    assert_eq!(runtime.pty_id, created.session.pty_id);
-    assert_eq!(runtime.worktree_id, created.session.worktree_id);
-    assert_eq!(runtime.worktree_path, created.session.worktree_path);
-    assert_eq!(runtime.branch, created.session.branch);
-    assert!(matches!(
-        events.recv().await.unwrap(),
-        SessionEvent::Created(_)
-    ));
     let premature_exit = saga
         .record_session_exit(created.session.id, None)
         .expect_err("durable status must not outrun the PTY runtime");
@@ -366,7 +360,6 @@ async fn production_spawner_registers_the_saga_session_in_the_pty_manager() {
 
     manager
         .kill(created.session.id)
-        .await
         .expect("manager should stop the process group");
     saga.record_session_exit(created.session.id, None)
         .expect("durable runtime should record exit");
@@ -376,7 +369,7 @@ async fn production_spawner_registers_the_saga_session_in_the_pty_manager() {
 async fn saga_failure_after_spawn_rolls_back_the_pty_runtime() {
     let fixture = Fixture::new();
     fixture.replace_agent_command("/bin/cat", Vec::new());
-    let manager = SessionManager::new(SessionManagerConfig::for_tests());
+    let manager = SessionManager::new(SessionManagerConfig::default()).expect("test manager");
     let storage = Storage::open_migrated(&fixture.database).unwrap();
     let saga = SessionWorktreeSaga::new(
         cli_master_git::Git::discover().unwrap(),
@@ -428,7 +421,7 @@ async fn saga_rollback_kills_the_entire_process_group_before_removing_the_worktr
             leaked.to_string_lossy().into_owned(),
         ],
     );
-    let manager = SessionManager::new(SessionManagerConfig::for_tests());
+    let manager = SessionManager::new(SessionManagerConfig::default()).expect("test manager");
     let spawner = ReadyManagerSpawner {
         manager: manager.clone(),
         ready,

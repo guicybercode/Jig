@@ -272,11 +272,9 @@ pub struct SagaError {
 }
 
 impl SagaError {
-    pub(crate) fn new(
-        kind: SagaErrorKind,
-        message: impl Into<String>,
-        action: impl Into<String>,
-    ) -> Self {
+    /// Creates an actionable saga failure with a stable category.
+    #[must_use]
+    pub fn new(kind: SagaErrorKind, message: impl Into<String>, action: impl Into<String>) -> Self {
         Self {
             kind,
             message: message.into(),
