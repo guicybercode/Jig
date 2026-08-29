@@ -23,6 +23,14 @@ pub enum SessionStatus {
     Unknown,
 }
 
+impl SessionStatus {
+    /// Returns whether a process is expected to exist for this status.
+    #[must_use]
+    pub const fn is_live(self) -> bool {
+        matches!(self, Self::Starting | Self::Running | Self::Idle)
+    }
+}
+
 /// Origin of an agent definition.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -177,6 +185,16 @@ mod tests {
         let status: SessionStatus =
             serde_json::from_str("\"waiting_for_vendor\"").expect("unknown status should decode");
         assert_eq!(status, SessionStatus::Unknown);
+    }
+
+    #[test]
+    fn live_statuses_match_process_ownership() {
+        assert!(SessionStatus::Starting.is_live());
+        assert!(SessionStatus::Running.is_live());
+        assert!(SessionStatus::Idle.is_live());
+        assert!(!SessionStatus::Exited.is_live());
+        assert!(!SessionStatus::Failed.is_live());
+        assert!(!SessionStatus::Unknown.is_live());
     }
 
     #[test]
