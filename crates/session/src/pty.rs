@@ -62,16 +62,7 @@ fn spawn_native(spec: &CommandSpec, size: PtySize) -> Result<SpawnedPty, Session
         })
         .map_err(|error| SessionError::Pty(error.to_string()))?;
 
-    let mut command = portable_pty::CommandBuilder::new(spec.executable());
-    for argument in spec.args() {
-        command.arg(argument);
-    }
-    command.cwd(spec.cwd());
-    command.env("TERM", "xterm-256color");
-    command.env("COLORTERM", "truecolor");
-    for (key, value) in spec.env() {
-        command.env(key, value);
-    }
+    let command = build_command(spec);
 
     let child = pair
         .slave
@@ -105,6 +96,23 @@ fn spawn_native(spec: &CommandSpec, size: PtySize) -> Result<SpawnedPty, Session
     })
 }
 
+fn build_command(spec: &CommandSpec) -> portable_pty::CommandBuilder {
+    let mut command = portable_pty::CommandBuilder::new(spec.executable());
+    for argument in spec.args() {
+        command.arg(argument);
+    }
+    command.cwd(spec.cwd());
+    command.env("TERM", "xterm-256color");
+    command.env("COLORTERM", "truecolor");
+    for (key, value) in spec.env() {
+        command.env(key, value);
+    }
+    for key in spec.env_removals() {
+        command.env_remove(key);
+    }
+    command
+}
+
 fn redact_spawn_error(message: &str) -> String {
     const KEEP: usize = 180;
     let bounded = if message.len() <= KEEP {
@@ -121,7 +129,31 @@ fn redact_spawn_error(message: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::redact_spawn_error;
+    use std::collections::BTreeMap;
+
+    use cli_master_core::CommandSpec;
+
+    use super::{build_command, redact_spawn_error};
+
+    #[test]
+    fn applies_environment_removals_after_additions() {
+        let spec = CommandSpec::try_from_parts(
+            "agent",
+            Vec::<String>::new(),
+            "/tmp/project",
+            BTreeMap::from([(
+                "CLI_MASTER_STALE_TOKEN".to_owned(),
+                "must-not-reach-child".to_owned(),
+            )]),
+        )
+        .expect("command fixture should be valid")
+        .with_env_removals(["CLI_MASTER_STALE_TOKEN"])
+        .expect("environment removal should be valid");
+
+        let command = build_command(&spec);
+
+        assert!(command.get_env("CLI_MASTER_STALE_TOKEN").is_none());
+    }
 
     #[test]
     fn redacts_long_spawn_errors_at_a_utf8_boundary() {

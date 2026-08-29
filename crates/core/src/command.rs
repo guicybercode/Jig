@@ -335,7 +335,7 @@ pub fn validate_structured_invocation(
         return validate_structured_invocation(nested, nested_args);
     }
 
-    let shell = executable_name(executable).and_then(classify_shell);
+    let shell = classify_shell_executable(executable);
     let uses_command_string = match shell {
         Some(ShellKind::Posix) => args.iter().any(|argument| {
             let argument = argument.to_ascii_lowercase();
@@ -382,13 +382,16 @@ fn classify_shell(name: &str) -> Option<ShellKind> {
     let name = name.to_ascii_lowercase();
     let name = name.strip_suffix(".exe").unwrap_or(&name);
     match name {
-        "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish" | "csh" | "tcsh" | "nu" | "xonsh" => {
-            Some(ShellKind::Posix)
-        }
+        "sh" | "ash" | "bash" | "zsh" | "dash" | "ksh" | "mksh" | "yash" | "posh" | "hush"
+        | "fish" | "csh" | "tcsh" | "nu" | "xonsh" | "elvish" => Some(ShellKind::Posix),
         "powershell" | "pwsh" => Some(ShellKind::PowerShell),
         "cmd" => Some(ShellKind::Cmd),
         _ => None,
     }
+}
+
+fn classify_shell_executable(executable: &str) -> Option<ShellKind> {
+    executable_name(executable).and_then(classify_shell)
 }
 
 fn executable_has_name(executable: &str, expected: &str) -> bool {
@@ -399,13 +402,13 @@ fn executable_has_name(executable: &str, expected: &str) -> bool {
 fn wrapped_shell<'a>(executable: &str, args: &'a [String]) -> Option<(&'a str, &'a [String])> {
     if executable_has_name(executable, "busybox") {
         let (nested, rest) = args.split_first()?;
-        return classify_shell(nested).map(|_| (nested.as_str(), rest));
+        return classify_shell_executable(nested).map(|_| (nested.as_str(), rest));
     }
     if !executable_has_name(executable, "env") {
         return None;
     }
     for (index, argument) in args.iter().enumerate() {
-        if classify_shell(argument).is_some() {
+        if classify_shell_executable(argument).is_some() {
             return Some((argument, &args[index + 1..]));
         }
     }
@@ -534,7 +537,9 @@ mod tests {
             ("pwsh.exe", vec!["-EncodedCommand", "ZQBjAGgAbwA="]),
             ("cmd.exe", vec!["/C", "echo unsafe"]),
             ("/usr/bin/env", vec!["bash", "-c", "echo unsafe"]),
+            ("/usr/bin/env", vec!["/bin/bash", "-c", "echo unsafe"]),
             ("busybox", vec!["sh", "-c", "echo unsafe"]),
+            ("busybox", vec!["/bin/ash", "-c", "echo unsafe"]),
             ("env", vec!["-S", "bash -c 'echo unsafe'"]),
         ] {
             let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();

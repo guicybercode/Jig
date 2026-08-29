@@ -260,13 +260,14 @@ fn read_usage<S: SessionSpawner>(
             in_use: false,
         });
     };
+    let runtime_live = saga.spawner.is_live(session_id);
     let Some(session) = saga.storage().get_session(session_id)? else {
         return Ok(WorktreeUse {
-            running: false,
-            in_use: false,
+            running: runtime_live,
+            in_use: runtime_live,
         });
     };
-    let live = is_live(session.status) || saga.spawner.is_live(session_id);
+    let live = is_live(session.status) || runtime_live;
     Ok(WorktreeUse {
         running: live,
         in_use: live,

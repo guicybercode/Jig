@@ -236,7 +236,9 @@ fn redact_assignment_token(token: &str) -> Option<RedactedAssignment> {
         text: format!("{raw_key}{separator}{REDACTED}"),
         value_was_empty: value.is_empty(),
         unclosed_quote: unclosed_quote(value),
-        redact_line_remainder: separator == ':' && is_sensitive_name(key),
+        redact_line_remainder: (separator == ':' && is_sensitive_name(key))
+            || (is_sensitive_name(key) && is_authorization_scheme(value))
+            || normalize_name(key).contains("COOKIE"),
     })
 }
 
@@ -409,6 +411,20 @@ mod tests {
         );
         let redacted = redact_text(text);
         for secret in ["dXNlcjpwYXNzd29yZA==", "first-secret", "second-secret"] {
+            assert!(!redacted.contains(secret), "leaked {secret}: {redacted}");
+        }
+        assert!(redacted.contains("safe line"));
+    }
+
+    #[test]
+    fn redacts_complete_equals_delimited_authorization_and_cookie_values() {
+        let text = concat!(
+            "AUTHORIZATION=Bearer equal-secret\n",
+            "COOKIE=session=first-secret preference=second-secret\n",
+            "safe line"
+        );
+        let redacted = redact_text(text);
+        for secret in ["equal-secret", "first-secret", "second-secret"] {
             assert!(!redacted.contains(secret), "leaked {secret}: {redacted}");
         }
         assert!(redacted.contains("safe line"));

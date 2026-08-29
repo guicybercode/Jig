@@ -552,6 +552,7 @@ dependencies = [
  "cli-master-core",
  "cli-master-git",
  "cli-master-storage",
+ "getrandom 0.4.3",
  "nix 0.30.1",
  "portable-pty",
  "tempfile",
