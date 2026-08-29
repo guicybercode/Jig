@@ -9,18 +9,18 @@
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("cli-master-daemon supports Linux and macOS only");
 
-mod client;
 mod config;
 mod diagnostics;
 mod error;
 mod events;
 mod git_inspection;
 mod lock;
+mod paths;
+mod preflight;
 mod projects;
 mod server;
 mod sessions;
 
-pub use cli_master_core::wire::{HelloResponse, StateSnapshotResponse};
 pub use config::DaemonConfig;
 pub use diagnostics::DiagnosticLog;
 pub use error::DaemonError;
@@ -28,7 +28,7 @@ pub use events::{
     ClientHandle, ClientId, EventBus, EventBusLimits, FanoutEvent, SubscribeError, SubscribeOutcome,
 };
 pub use preflight::{DependencyStatus, DirectoryStatus, PreflightReport, run as run_preflight};
-pub use server::{Daemon, MAX_FRAME_LENGTH};
+pub use server::{Daemon, HelloResponse, MAX_FRAME_LENGTH, StateSnapshot};
 
 const GIT_DIFF_ENVELOPE_HEADROOM: usize = 16 * 1024;
 const MAX_JSON_ESCAPE_EXPANSION: usize = 6;

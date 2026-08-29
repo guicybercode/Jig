@@ -6,31 +6,33 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cli_master_core::wire::{self, EmptyRequest, HelloResponse, StateSnapshotResponse};
 use cli_master_core::{
     ApiError, DaemonInstanceId, EnvelopeKind, EventEnvelope, PROTOCOL_V1, Project, RequestEnvelope,
     RequestId, ResponseEnvelope, Session, Worktree,
     wire::{
         AgentCustomCreateRequest, AgentDetectRequest, AgentRecord, DiagnosticsResponse,
-        EmptyResponse, OutputCursor, OutputSequence, ProjectAddRequest, ProjectRemoveRequest,
-        ProjectRenameRequest, PtyOutputBase64, SessionCreateRequest, SessionDeleteRequest,
-        SessionExitedEvent, SessionListRequest, SessionOutputEvent, SessionOutputGapEvent,
-        SessionRenameRequest, SessionReplayCompleteEvent, SessionResizeRequest,
-        SessionRestartRequest, SessionStartRequest, SessionStatusChangedEvent, SessionStopRequest,
+        EmptyResponse, GitDiffRequest, GitStatusRequest, OutputCursor, OutputSequence,
+        ProjectAddRequest, ProjectRemoveRequest, ProjectRenameRequest, PtyOutputBase64,
+        SessionCreateRequest, SessionDeleteRequest, SessionExitedEvent, SessionListRequest,
+        SessionOutputEvent, SessionOutputGapEvent, SessionRenameRequest,
+        SessionReplayCompleteEvent, SessionResizeRequest, SessionRestartRequest,
+        SessionStartRequest, SessionStatusChangedEvent, SessionStopRequest,
         SessionSubscribeRequest, SessionWriteRequest, event_name, method,
     },
 };
+use cli_master_git::Git;
 use cli_master_session::{SessionEvent, SessionSubscription, StatusChangeReason};
 use cli_master_storage::Storage;
 use futures_util::{SinkExt, StreamExt};
-use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::task::JoinSet;
+use tokio_util::codec::LengthDelimitedCodec;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
+use uuid::Uuid;
 
-use crate::client::serve_client;
 use crate::lock::InstanceLock;
 use crate::projects::ProjectRegistry;
 use crate::sessions::{SessionRegistry, encode_base64};
@@ -73,6 +75,8 @@ struct ServerState {
     diagnostics: DiagnosticsResponse,
     projects: ProjectRegistry,
     sessions: SessionRegistry,
+    git_storage: Storage,
+    git: Option<Git>,
     event_sequence: AtomicU64,
 }
 
@@ -103,22 +107,14 @@ impl Daemon {
         ensure_private_directory(&log_path)?;
 
         let instance_lock = InstanceLock::acquire(config.lock_path())?;
-        let instance_id = DaemonInstanceId::new();
-        let instance_id_text = instance_id.to_string();
-        let storage = Storage::open_migrated(config.database_path())?;
-        let reconciliation = storage.reconcile_sessions(&RecoveryContext {
-            current_daemon_instance_id: &instance_id_text,
-            live_session_ids: &[],
-            updated_at_ms: unix_epoch_ms()?,
-        })?;
-        let recovered_sessions = reconciliation
-            .iter()
-            .filter(|event| event.previous_status != event.new_status)
-            .count();
+        remove_stale_socket(config.socket_path())?;
+
+        let storage = Storage::open(config.database_path())?;
+        storage.migrate()?;
         let schema_version = storage.schema_version()?;
+        let git_storage = Storage::open(config.database_path())?;
         let git = crate::git_inspection::discover_git();
 
-        remove_stale_socket(config.socket_path())?;
         let listener = UnixListener::bind(config.socket_path())
             .map_err(|error| DaemonError::io("bind daemon socket", config.socket_path(), error))?;
         fs::set_permissions(config.socket_path(), fs::Permissions::from_mode(0o600)).map_err(
@@ -126,7 +122,7 @@ impl Daemon {
         )?;
         let socket_owner = SocketOwner::new(config.socket_path())?;
         let instance_id = Uuid::now_v7();
-        let diagnostics = DiagnosticsResponse {
+        let mut diagnostics = DiagnosticsResponse {
             daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
             protocol_version: PROTOCOL_V1,
             schema_version,
@@ -136,7 +132,9 @@ impl Daemon {
             log_path,
             effective_path: effective_executable_paths(),
             recent_issues: Vec::new(),
+            export_text: String::new(),
         };
+        diagnostics.refresh_export_text();
         let session_storage = Storage::open(config.database_path())?;
         let state = Arc::new(ServerState {
             hello: HelloResponse {
@@ -157,6 +155,8 @@ impl Daemon {
                     format!("{}: {}", error.code, error.message),
                 )
             })?,
+            git_storage,
+            git,
             event_sequence: AtomicU64::new(0),
         });
 
@@ -165,7 +165,6 @@ impl Daemon {
             socket = %config.socket_path().display(),
             database = %config.database_path().display(),
             schema_version,
-            recovered_sessions,
             "daemon bound"
         );
 
@@ -180,7 +179,7 @@ impl Daemon {
 
     /// Returns the daemon lifetime identifier clients receive in `system.hello`.
     #[must_use]
-    pub fn instance_id(&self) -> DaemonInstanceId {
+    pub fn instance_id(&self) -> Uuid {
         self.state.hello.instance_id
     }
 
@@ -188,12 +187,6 @@ impl Daemon {
     #[must_use]
     pub fn socket_path(&self) -> &Path {
         self.config.socket_path()
-    }
-
-    /// Session event bus used by `SessionManager` and tests.
-    #[must_use]
-    pub fn events(&self) -> &EventBus {
-        &self.state.events
     }
 
     /// Accepts clients until cancellation, then closes all connections and
@@ -237,15 +230,9 @@ impl Daemon {
         }
         self.state.sessions.shutdown();
         self.socket_owner.remove_if_owned();
-        self.state.storage.close()?;
         info!(instance_id = %self.state.hello.instance_id, "daemon stopped");
         Ok(())
     }
-}
-
-fn unix_epoch_ms() -> Result<i64, DaemonError> {
-    let elapsed = SystemTime::now().duration_since(UNIX_EPOCH)?;
-    i64::try_from(elapsed.as_millis()).map_err(|_| DaemonError::TimestampOverflow)
 }
 
 async fn serve_client(
@@ -286,7 +273,7 @@ async fn serve_client(
                     break;
                 };
                 let response: ResponseEnvelope<Value> =
-                    ResponseEnvelope::failure(request_id, failure.error);
+                    ResponseEnvelope::failure(request_id, *failure.error);
                 if !send_envelope(&mut framed, &response).await {
                     break;
                 }
@@ -318,7 +305,7 @@ async fn serve_client(
             continue;
         }
 
-        let response = dispatch(request, &state);
+        let response = dispatch(request, &state).await;
 
         if !send_envelope(&mut framed, &response).await {
             break;
@@ -344,6 +331,10 @@ async fn send_envelope(
     true
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the subscription handshake and terminal event variants form one ordered stream"
+)]
 async fn stream_session_events(
     framed: &mut tokio_util::codec::Framed<UnixStream, LengthDelimitedCodec>,
     state: &ServerState,
@@ -403,7 +394,6 @@ async fn stream_session_events(
             Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                 let latest = state.sessions.get(snapshot.session.id).ok();
-                let latest_sequence = latest_sequence;
                 let gap = SessionOutputGapEvent {
                     session_id: snapshot.session.id,
                     requested_cursor: OutputCursor::new(latest_sequence),
@@ -533,7 +523,11 @@ fn validate_peer(_stream: &UnixStream) -> Result<(), io::Error> {
     Ok(())
 }
 
-fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> ResponseEnvelope<Value> {
+#[allow(
+    clippy::too_many_lines,
+    reason = "the versioned IPC method table is intentionally kept in one auditable dispatcher"
+)]
+async fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> ResponseEnvelope<Value> {
     if request.kind != EnvelopeKind::Request {
         return ResponseEnvelope::failure(
             request.request_id,
@@ -597,7 +591,7 @@ fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> ResponseEnv
             .and_then(|payload: SessionListRequest| state.sessions.list_sessions(payload))
             .and_then(encode_response),
         method::SESSION_RENAME => decode_payload(request.payload)
-            .and_then(|payload: SessionRenameRequest| state.sessions.rename(payload))
+            .and_then(|payload: SessionRenameRequest| state.sessions.rename(&payload))
             .and_then(encode_response),
         method::SESSION_START => decode_payload(request.payload)
             .and_then(|payload: SessionStartRequest| state.sessions.start(payload))
@@ -612,13 +606,29 @@ fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> ResponseEnv
             .and_then(|payload: SessionDeleteRequest| state.sessions.delete(payload))
             .and_then(encode_response),
         method::SESSION_WRITE => decode_payload(request.payload)
-            .and_then(|payload: SessionWriteRequest| state.sessions.write(payload))
+            .and_then(|payload: SessionWriteRequest| state.sessions.write(&payload))
             .and_then(encode_response),
         method::SESSION_RESIZE => decode_payload(request.payload)
             .and_then(|payload: SessionResizeRequest| state.sessions.resize(payload))
             .and_then(encode_response),
         method::SESSION_UNSUBSCRIBE => encode_response(EmptyResponse::default()),
         method::DIAGNOSTICS_GET => encode_response(&state.diagnostics),
+        method::GIT_STATUS => match decode_payload::<GitStatusRequest>(request.payload) {
+            Ok(payload) => {
+                crate::git_inspection::status(&state.git_storage, state.git.as_ref(), payload)
+                    .await
+                    .and_then(encode_response)
+            }
+            Err(error) => Err(error),
+        },
+        method::GIT_DIFF => match decode_payload::<GitDiffRequest>(request.payload) {
+            Ok(payload) => {
+                crate::git_inspection::diff(&state.git_storage, state.git.as_ref(), payload)
+                    .await
+                    .and_then(encode_response)
+            }
+            Err(error) => Err(error),
+        },
         _ => {
             return ResponseEnvelope::failure(
                 request.request_id,
@@ -668,14 +678,16 @@ fn effective_executable_paths() -> Vec<PathBuf> {
 
 struct RequestFailure {
     request_id: Option<RequestId>,
-    error: ApiError,
+    error: Box<ApiError>,
 }
 
 fn decode_request(bytes: &[u8]) -> Result<RequestEnvelope<Value>, RequestFailure> {
     let value: Value = serde_json::from_slice(bytes).map_err(|error| RequestFailure {
         request_id: None,
-        error: ApiError::new("invalid_json", "Request frame is not valid JSON")
-            .with_detail("reason", error.to_string()),
+        error: Box::new(
+            ApiError::new("invalid_json", "Request frame is not valid JSON")
+                .with_detail("reason", error.to_string()),
+        ),
     })?;
     let request_id = value
         .get("requestId")
@@ -684,11 +696,13 @@ fn decode_request(bytes: &[u8]) -> Result<RequestEnvelope<Value>, RequestFailure
 
     serde_json::from_value(value).map_err(|error| RequestFailure {
         request_id,
-        error: ApiError::new(
-            "invalid_request",
-            "Request does not match the IPC envelope schema",
-        )
-        .with_detail("reason", error.to_string()),
+        error: Box::new(
+            ApiError::new(
+                "invalid_request",
+                "Request does not match the IPC envelope schema",
+            )
+            .with_detail("reason", error.to_string()),
+        ),
     })
 }
 
@@ -793,7 +807,8 @@ mod tests {
                 payload: json!({}),
             },
             &daemon.state,
-        );
+        )
+        .await;
 
         match response.payload {
             ResponsePayload::Error { error } => assert_eq!(error.code, "invalid_envelope_kind"),

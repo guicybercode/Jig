@@ -182,7 +182,7 @@ impl SessionRegistry {
         Ok(stored_session(session))
     }
 
-    pub(super) fn rename(&self, request: SessionRenameRequest) -> Result<Session, ApiError> {
+    pub(super) fn rename(&self, request: &SessionRenameRequest) -> Result<Session, ApiError> {
         let now = unix_timestamp_ms()?;
         let storage = self.storage()?;
         storage
@@ -237,7 +237,7 @@ impl SessionRegistry {
         Ok(EmptyResponse::default())
     }
 
-    pub(super) fn write(&self, request: SessionWriteRequest) -> Result<EmptyResponse, ApiError> {
+    pub(super) fn write(&self, request: &SessionWriteRequest) -> Result<EmptyResponse, ApiError> {
         let bytes = decode_base64(request.base64.as_str())?;
         self.manager
             .write(request.session_id, &bytes)
@@ -494,6 +494,10 @@ fn storage_error(error: StorageError) -> ApiError {
     }
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "owned signature is used directly as a Result::map_err adapter"
+)]
 fn session_error(error: SessionError) -> ApiError {
     let code = match error {
         SessionError::NotFound { .. } => "session_not_found",
