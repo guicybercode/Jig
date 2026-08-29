@@ -18,5 +18,11 @@ mod status;
 
 pub(crate) use client::DaemonBridge;
 
+/// File name of the session daemon sidecar after Tauri bundles it.
+pub(crate) const DAEMON_SIDECAR_NAME: &str = "cli-masterd";
+
+/// Relative path configured in `tauri.conf.json` as `bundle.externalBin`.
+pub(crate) const DAEMON_SIDECAR_EXTERNAL_BIN: &str = "binaries/cli-masterd";
+
 #[cfg(test)]
 mod test_support;

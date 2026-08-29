@@ -331,7 +331,7 @@ fn diagnostics_payload(state: &ServerState) -> DiagnosticsResponse {
         data_path: sanitize_diagnostic_path(state.config.data_directory(), home.as_deref()),
         runtime_path: sanitize_diagnostic_path(state.config.runtime_directory(), home.as_deref()),
         log_path: sanitize_diagnostic_path(
-            &state.config.data_directory().join("logs"),
+            state.config.log_directory(),
             home.as_deref(),
         ),
         effective_path: Vec::new(),
