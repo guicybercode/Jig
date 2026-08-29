@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.guicybercode.climaster",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "pnpm dev:tauri",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"

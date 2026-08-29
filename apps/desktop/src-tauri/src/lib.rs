@@ -1,8 +1,6 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {name}! You've been greeted from Rust!")
-}
+mod daemon_bridge;
+
+use daemon_bridge::{DaemonBridge, daemon_request};
 
 /// Starts the Tauri desktop process.
 ///
@@ -13,7 +11,8 @@ fn greet(name: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
+        .manage(DaemonBridge::default())
+        .invoke_handler(tauri::generate_handler![daemon_request])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
