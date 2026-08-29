@@ -22,6 +22,7 @@ workspace = true
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+cli-master-core = { path = "../../../crates/core" }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }

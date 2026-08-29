@@ -25,11 +25,11 @@ impl ReplayBuffer {
 
     /// Appends bytes and returns the assigned sequence number.
     pub fn push(&mut self, data: Vec<u8>) -> u64 {
+        if data.is_empty() {
+            return self.next_sequence;
+        }
         let sequence = self.next_sequence;
         self.next_sequence += 1;
-        if data.is_empty() {
-            return sequence;
-        }
 
         self.bytes = self.bytes.saturating_add(data.len());
         self.chunks.push_back(OutputChunk { sequence, data });
@@ -51,19 +51,12 @@ impl ReplayBuffer {
 
     fn evict(&mut self) {
         while self.bytes > self.max_bytes {
-            let overflow = self.bytes - self.max_bytes;
             let Some(front_len) = self.chunks.front().map(|chunk| chunk.data.len()) else {
                 self.bytes = 0;
                 break;
             };
-
-            if front_len <= overflow {
-                self.chunks.pop_front();
-                self.bytes -= front_len;
-            } else if let Some(front) = self.chunks.front_mut() {
-                front.data.drain(..overflow);
-                self.bytes -= overflow;
-            }
+            self.chunks.pop_front();
+            self.bytes -= front_len;
             self.dropped = true;
         }
     }
@@ -93,24 +86,24 @@ mod tests {
     }
 
     #[test]
-    fn empty_chunks_still_advance_sequence() {
+    fn empty_chunks_do_not_consume_an_output_sequence() {
         let mut buffer = ReplayBuffer::new(8);
         assert_eq!(buffer.push(Vec::new()), 0);
-        assert_eq!(buffer.push(b"x".to_vec()), 1);
-        assert_eq!(buffer.snapshot().next_sequence, 2);
+        assert_eq!(buffer.push(b"x".to_vec()), 0);
+        assert_eq!(buffer.snapshot().next_sequence, 1);
     }
 
     #[test]
-    fn keeps_the_tail_of_a_chunk_larger_than_capacity() {
+    fn drops_a_chunk_larger_than_capacity_without_splitting_its_sequence() {
         let mut buffer = ReplayBuffer::new(4);
         assert_eq!(buffer.push(b"oversized".to_vec()), 0);
 
         let snapshot = buffer.snapshot();
 
         assert!(snapshot.truncated);
-        assert_eq!(snapshot.first_sequence, 0);
+        assert_eq!(snapshot.first_sequence, 1);
         assert_eq!(snapshot.next_sequence, 1);
-        assert_eq!(snapshot.chunks.len(), 1);
-        assert_eq!(snapshot.concatenated(), b"ized");
+        assert!(snapshot.chunks.is_empty());
+        assert!(snapshot.concatenated().is_empty());
     }
 }

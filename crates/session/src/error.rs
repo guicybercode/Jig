@@ -27,6 +27,8 @@ pub enum SessionError {
     Io(String),
     /// The writer queue stayed full past the write timeout.
     WriteTimeout,
+    /// The process group was signaled through SIGKILL but did not exit in time.
+    StopTimeout(SessionId),
     /// Signaling the process group failed.
     Signal(String),
 }
@@ -51,6 +53,7 @@ impl SessionError {
             Self::Spawn(_) => "session_spawn_failed",
             Self::Io(_) => "session_io_failed",
             Self::WriteTimeout => "session_write_timeout",
+            Self::StopTimeout(_) => "session_stop_timeout",
             Self::Signal(_) => "session_signal_failed",
         }
     }
@@ -83,6 +86,12 @@ impl fmt::Display for SessionError {
             Self::Spawn(message) => write!(formatter, "failed to spawn process: {message}"),
             Self::Io(message) => write!(formatter, "session I/O error: {message}"),
             Self::WriteTimeout => formatter.write_str("timed out writing to the PTY"),
+            Self::StopTimeout(id) => {
+                write!(
+                    formatter,
+                    "session {id} did not exit after signal escalation"
+                )
+            }
             Self::Signal(message) => write!(formatter, "failed to signal process group: {message}"),
         }
     }
@@ -102,7 +111,8 @@ impl From<SessionError> for ApiError {
             SessionError::NotFound(id)
             | SessionError::AlreadyRunning(id)
             | SessionError::NotRunning(id)
-            | SessionError::StillRunning(id) => api.with_detail("sessionId", id.to_string()),
+            | SessionError::StillRunning(id)
+            | SessionError::StopTimeout(id) => api.with_detail("sessionId", id.to_string()),
             _ => api,
         }
     }

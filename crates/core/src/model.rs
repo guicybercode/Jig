@@ -14,8 +14,6 @@ pub enum SessionStatus {
     Running,
     /// The process is alive but has no recent activity.
     Idle,
-    /// A stop was requested and the process group is being signaled.
-    Stopping,
     /// The process exited successfully or was stopped.
     Exited,
     /// The process failed to start or exited unsuccessfully.
@@ -29,10 +27,7 @@ impl SessionStatus {
     /// Returns whether a process is expected to exist for this status.
     #[must_use]
     pub const fn is_live(self) -> bool {
-        matches!(
-            self,
-            Self::Starting | Self::Running | Self::Idle | Self::Stopping
-        )
+        matches!(self, Self::Starting | Self::Running | Self::Idle)
     }
 }
 
@@ -123,6 +118,26 @@ pub struct Session {
     pub created_at_ms: i64,
     /// Most recent metadata update as Unix epoch milliseconds.
     pub updated_at_ms: i64,
+    /// Most recent terminal input or output as Unix epoch milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_at_ms: Option<i64>,
+    /// Stable machine-readable failure code, when the session failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+}
+
+/// Durable orchestration state for a managed Git worktree.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeState {
+    /// Metadata is reserved while Git creates the branch and linked checkout.
+    Creating,
+    /// The worktree is available for its associated session.
+    Active,
+    /// A confirmed removal is in progress or awaiting completion.
+    RemovePending,
+    /// Metadata remains because creation, reconciliation, or removal failed.
+    Orphaned,
 }
 
 /// Serializable metadata for a managed Git worktree.
@@ -142,8 +157,12 @@ pub struct Worktree {
     pub branch: String,
     /// Whether the latest Git inspection found uncommitted changes.
     pub is_dirty: bool,
+    /// Current durable orchestration state.
+    pub state: WorktreeState,
     /// Creation time as Unix epoch milliseconds.
     pub created_at_ms: i64,
+    /// Most recent metadata update as Unix epoch milliseconds.
+    pub updated_at_ms: i64,
 }
 
 #[cfg(test)]
@@ -173,7 +192,6 @@ mod tests {
         assert!(SessionStatus::Starting.is_live());
         assert!(SessionStatus::Running.is_live());
         assert!(SessionStatus::Idle.is_live());
-        assert!(SessionStatus::Stopping.is_live());
         assert!(!SessionStatus::Exited.is_live());
         assert!(!SessionStatus::Failed.is_live());
         assert!(!SessionStatus::Unknown.is_live());
@@ -204,7 +222,6 @@ mod tests {
             (SessionStatus::Starting, "starting"),
             (SessionStatus::Running, "running"),
             (SessionStatus::Idle, "idle"),
-            (SessionStatus::Stopping, "stopping"),
             (SessionStatus::Exited, "exited"),
             (SessionStatus::Failed, "failed"),
             (SessionStatus::Unknown, "unknown"),
@@ -251,6 +268,8 @@ mod tests {
             exit_code: None,
             created_at_ms: 1,
             updated_at_ms: 2,
+            last_activity_at_ms: Some(2),
+            error_code: None,
         };
         let worktree = Worktree {
             id: worktree_id,
@@ -259,11 +278,43 @@ mod tests {
             path: PathBuf::from("/tmp/worktrees/auth"),
             branch: "agent/auth".to_owned(),
             is_dirty: true,
+            state: WorktreeState::Active,
             created_at_ms: 1,
+            updated_at_ms: 2,
         };
 
         assert_json_round_trip(&agent);
         assert_json_round_trip(&session);
         assert_json_round_trip(&worktree);
+    }
+
+    #[test]
+    fn worktree_state_and_timestamps_have_stable_wire_values() {
+        for (state, expected) in [
+            (WorktreeState::Creating, "creating"),
+            (WorktreeState::Active, "active"),
+            (WorktreeState::RemovePending, "remove_pending"),
+            (WorktreeState::Orphaned, "orphaned"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(state).expect("state should serialize"),
+                expected
+            );
+        }
+
+        let worktree = Worktree {
+            id: WorktreeId::new(),
+            project_id: ProjectId::new(),
+            session_id: None,
+            path: PathBuf::from("/tmp/worktree"),
+            branch: "agent/worktree".to_owned(),
+            is_dirty: false,
+            state: WorktreeState::RemovePending,
+            created_at_ms: 10,
+            updated_at_ms: 20,
+        };
+        let value = serde_json::to_value(worktree).expect("worktree should serialize");
+        assert_eq!(value["state"], "remove_pending");
+        assert_eq!(value["updatedAtMs"], 20);
     }
 }

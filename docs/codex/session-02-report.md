@@ -19,33 +19,34 @@ LiveSession
 ├── child / clone_killer
 ├── process group id
 ├── writer OS thread  ← bounded sync_channel
-├── reader OS thread  → Tokio mpsc → 8ms / 32KiB batcher
+├── reader OS thread  → Tokio mpsc → 8ms / 8KiB batcher
 ├── replay ring buffer (default 8 MiB)
 └── output broadcast (bounded, lag = resubscribe)
 ```
 
 `cli-master-session` is the daemon process layer. It does not open SQLite or
-speak the Unix socket protocol. The future `cli-masterd` binary should hold
-one `SessionManager`, persist status on `StatusChanged` / `Exited`, and
-encode `SessionEvent::Output` with `SessionOutputPayload`.
+speak the Unix socket protocol. `cli-masterd` should hold one `SessionManager`,
+persist status on `StatusChanged` / `Exited`, and adapt raw `SessionEvent`
+values to the authoritative types in `cli_master_core::wire`.
 
 Spawn uses `portable-pty` and a structured `CommandSpec`. There is no `sh -c`
-wrapper around agent commands. Tests may pass a constant `sh -c` script as an
-argv array.
+wrapper around agent commands; test shell commands are written through the PTY
+after a shell has been spawned directly.
 
 Stop sequence, Linux and macOS:
 
-1. Status becomes `stopping`.
+1. Record daemon-private stop intent; the public status remains process-bearing.
 2. `SIGINT` to the session process group, never the daemon's group, never pgid `<= 1`.
 3. Wait `interrupt_timeout`.
 4. `SIGTERM` if still live.
 5. Wait `terminate_timeout`.
-6. `SIGKILL` plus `ChildKiller::kill` if still live.
+6. `SIGKILL` plus `ChildKiller::kill` if still live, then fail noisily on timeout.
 
 `portable-pty` calls `setsid` in the child, so the child pid is the session
 and process-group leader. `killpg` then hits the foreground job and obvious
-grandchildren. Force-kill is `session.kill`. Drop of the last `SessionManager`
-clone SIGKILLs leftovers so tests do not leak.
+grandchildren. Immediate kill remains a daemon-internal shutdown primitive;
+there is no `session.kill` Beta method. Drop of the last `SessionManager` clone
+SIGKILLs leftovers so tests do not leak.
 
 Frontend disconnect is `subscribe` drop. The process keeps running. A later
 `subscribe` returns a snapshot plus live chunks after `snapshot.next_sequence`.
@@ -59,22 +60,19 @@ Status uses only process signals:
 | `starting` | metadata inserted, spawn in progress |
 | `running` | process exists, recent PTY I/O |
 | `idle` | process exists, no I/O for `idle_after` (10s default) |
-| `stopping` | stop/kill requested, signals in flight |
 | `exited` | `wait` completed, exit code stored when the OS reports one |
-| `failed` | validation or spawn failed |
+| `failed` | validation, spawn, wait, or an unrequested non-zero exit failed |
 | `unknown` | still a protocol value; this crate does not invent daemon-crash recovery |
 
-`idle` is PTY silence, not "agent thinking". `stopping` is new and additive.
+`idle` is PTY silence, not "agent thinking". Stop-in-progress is daemon-owned
+runtime policy and does not add a public or persisted status.
 
 ## Files changed
 
-- `ARCHITECTURE.md` — `stopping` in the state machine and schema CHECK
+- `ARCHITECTURE.md` — PTY batching aligned with the bounded wire payload
 - `Cargo.toml` — workspace member `crates/session`
-- `Cargo.lock` — `portable-pty`, `tokio`, `nix`, `tracing`, `base64`
-- `crates/core/Cargo.toml`, `crates/core/src/lib.rs`, `crates/core/src/model.rs`
-- `crates/core/src/session_ipc.rs` — method/event names and wire payloads
-- `crates/storage/migrations/0002_session_stopping.sql`
-- `crates/storage/src/lib.rs`
+- `Cargo.lock` — `portable-pty`, `tokio`, `nix`, and `tracing`
+- `crates/core/src/model.rs` — process-bearing status helper without changing wire values
 - `crates/session/` — manager, PTY backend, replay buffer, Unix signals
 - `crates/session/tests/pty_lifecycle.rs`
 - `docs/codex/session-02-report.md`
@@ -128,12 +126,13 @@ here. Linux/macOS CI should still compile the desktop member.
 
 ## Integration risks
 
-- The daemon crate does not exist yet. Someone still has to map IPC methods
-  (`session.create`, `session.write`, `session.resize`, `session.stop`,
-  `session.kill`, `session.restart`, `session.subscribe`) onto this API and
-  fan events out over the Unix socket with base64 payloads.
-- Persist `stopping` only after migration 0002. Older databases reject that
-  CHECK until migrated.
+- The daemon socket foundation exists, but it still has to compose this manager
+  with storage and map the existing `core::wire` session methods and events.
+- Output chunks are capped at the wire limit of 8 KiB. The daemon adapter must
+  encode them as `PtyOutputBase64`, apply subscription cursors, and emit explicit
+  replay-complete or output-gap events.
+- Stop intent is private runtime state. It must never be persisted or mirrored
+  as an extra wire status.
 - xterm.js must consume `session.output` imperatively. Putting PTY bytes in
   React state will miss the 10-session target even if the daemon is fine.
 - `session.unsubscribe` must not call `stop`. Unmount is reconnect, not

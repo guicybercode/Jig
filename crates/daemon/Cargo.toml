@@ -1,0 +1,32 @@
+[package]
+name = "cli-master-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "cli_master_daemon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cli-masterd"
+path = "src/main.rs"
+
+[dependencies]
+cli-master-core = { path = "../core" }
+cli-master-storage = { path = "../storage" }
+futures-util = { version = "0.3.31", features = ["sink"] }
+rustix = { version = "1.1.4", features = ["fs", "net", "process"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["codec", "rt"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "json"] }
+
+[dev-dependencies]
+tempfile = "3"

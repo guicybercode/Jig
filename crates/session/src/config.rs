@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use cli_master_core::wire::MAX_PTY_OUTPUT_BYTES;
+
 /// Tunables for PTY I/O, replay, and process-group shutdown.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionManagerConfig {
@@ -37,7 +39,7 @@ impl SessionManagerConfig {
         Self {
             replay_buffer_bytes: 1024 * 1024,
             output_batch_window: Duration::from_millis(8),
-            output_batch_bytes: 32 * 1024,
+            output_batch_bytes: MAX_PTY_OUTPUT_BYTES,
             subscriber_capacity: 64,
             event_capacity: 256,
             idle_after: Duration::from_millis(250),
@@ -56,7 +58,7 @@ impl Default for SessionManagerConfig {
         Self {
             replay_buffer_bytes: 8 * 1024 * 1024,
             output_batch_window: Duration::from_millis(8),
-            output_batch_bytes: 32 * 1024,
+            output_batch_bytes: MAX_PTY_OUTPUT_BYTES,
             subscriber_capacity: 64,
             event_capacity: 256,
             idle_after: Duration::from_secs(10),

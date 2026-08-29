@@ -1,4 +1,48 @@
-use cli_master_core::{Session, SessionId, SessionStatus, StatusReason};
+use cli_master_core::{Session, SessionId, SessionStatus};
+
+/// Stable process-level reason for an in-memory lifecycle transition.
+///
+/// The daemon adapter may expose [`Self::code`] as the optional wire
+/// `reasonCode`; this enum is not a second IPC contract.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StatusReason {
+    /// The child process was spawned in a PTY.
+    Spawned,
+    /// Validation or spawn failed before a process existed.
+    SpawnFailed,
+    /// Recent PTY input or output.
+    Activity,
+    /// The process exists but no PTY activity occurred for the idle interval.
+    IdleTimeout,
+    /// The daemon requested a graceful stop.
+    StopRequested,
+    /// Daemon shutdown requested immediate termination.
+    KillRequested,
+    /// The session is being started again with the same identity.
+    RestartRequested,
+    /// `wait` reported that the child ended normally.
+    ProcessExited,
+    /// `wait` failed or the child ended without a successful exit status.
+    ProcessFailed,
+}
+
+impl StatusReason {
+    /// Returns the stable safe code used by logs and wire adapters.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Spawned => "spawned",
+            Self::SpawnFailed => "spawn_failed",
+            Self::Activity => "activity",
+            Self::IdleTimeout => "idle_timeout",
+            Self::StopRequested => "stop_requested",
+            Self::KillRequested => "kill_requested",
+            Self::RestartRequested => "restart_requested",
+            Self::ProcessExited => "process_exited",
+            Self::ProcessFailed => "process_failed",
+        }
+    }
+}
 use tokio::sync::broadcast;
 
 /// One flushed output batch with a per-session sequence number.
@@ -72,6 +116,8 @@ pub enum SessionEvent {
         exit_code: Option<i32>,
         /// Final status.
         status: SessionStatus,
+        /// Exit observation time as Unix epoch milliseconds.
+        at_ms: i64,
     },
 }
 

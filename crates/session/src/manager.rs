@@ -3,16 +3,15 @@ use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use cli_master_core::{
-    AgentId, CommandSpec, ProjectId, Session, SessionId, SessionStatus, StatusReason,
-};
+use cli_master_core::wire::MAX_PTY_OUTPUT_BYTES;
+use cli_master_core::{AgentId, CommandSpec, ProjectId, Session, SessionId, SessionStatus};
 use portable_pty::{ChildKiller, ExitStatus};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::buffer::ReplayBuffer;
 use crate::config::SessionManagerConfig;
 use crate::error::SessionError;
-use crate::event::{OutputChunk, SessionEvent, SessionSubscription};
+use crate::event::{OutputChunk, SessionEvent, SessionSubscription, StatusReason};
 use crate::pty::{NativePtyBackend, PtyBackend, PtySize, SpawnedPty};
 
 /// Parameters for creating a managed session and spawning its process.
@@ -137,6 +136,8 @@ impl SessionManager {
             exit_code: None,
             created_at_ms: now,
             updated_at_ms: now,
+            last_activity_at_ms: None,
+            error_code: None,
         };
 
         tracing::info!(
@@ -193,6 +194,7 @@ impl SessionManager {
             state.stop_requested = false;
             state.kill_requested = false;
             state.record.exit_code = None;
+            state.record.error_code = None;
             state.transition(SessionStatus::Starting, StatusReason::RestartRequested)
         };
         publish(&live, event);
@@ -261,7 +263,7 @@ impl SessionManager {
             })?;
         let event = {
             let mut state = lock(&live.state);
-            state.last_activity = Instant::now();
+            state.mark_activity();
             if state.record.status == SessionStatus::Idle {
                 state.transition(SessionStatus::Running, StatusReason::Activity)
             } else {
@@ -428,19 +430,11 @@ impl SessionManager {
             let mut state = lock(&live.state);
             state.record.pid = state.pid;
             state.record.pty_id = Some(format!("{}:{generation}", live.id));
-            let next = if state.kill_requested || state.stop_requested {
-                SessionStatus::Stopping
+            let event = if state.kill_requested || state.stop_requested {
+                None
             } else {
-                SessionStatus::Running
+                state.transition(SessionStatus::Running, StatusReason::Spawned)
             };
-            let reason = if state.kill_requested {
-                StatusReason::KillRequested
-            } else if state.stop_requested {
-                StatusReason::StopRequested
-            } else {
-                StatusReason::Spawned
-            };
-            let event = state.transition(next, reason);
             (state.record.clone(), event)
         };
         publish(live, event);
@@ -449,21 +443,14 @@ impl SessionManager {
 
     async fn request_stop(&self, id: SessionId, force: bool) -> Result<Session, SessionError> {
         let live = self.lookup(id)?;
-        let event = {
+        {
             let mut state = lock(&live.state);
             if !state.record.status.is_live() {
                 return Ok(state.record.clone());
             }
             state.stop_requested = true;
             state.kill_requested = force || state.kill_requested;
-            let reason = if force {
-                StatusReason::KillRequested
-            } else {
-                StatusReason::StopRequested
-            };
-            state.transition(SessionStatus::Stopping, reason)
-        };
-        publish(&live, event);
+        }
 
         tracing::info!(
             event = "session.stop",
@@ -485,7 +472,9 @@ impl SessionManager {
             if let Some(killer) = killer.as_mut() {
                 let _ = killer.kill();
             }
-            wait_until_stopped(&live, self.inner.config.kill_timeout).await;
+            if !wait_until_stopped(&live, self.inner.config.kill_timeout).await {
+                return Err(SessionError::StopTimeout(id));
+            }
         } else {
             if let Some(pgid) = pgid {
                 crate::unix::signal_group(pgid, crate::unix::interrupt_signal())?;
@@ -502,7 +491,9 @@ impl SessionManager {
                 if let Some(killer) = killer.as_mut() {
                     let _ = killer.kill();
                 }
-                wait_until_stopped(&live, self.inner.config.kill_timeout).await;
+                if !wait_until_stopped(&live, self.inner.config.kill_timeout).await {
+                    return Err(SessionError::StopTimeout(id));
+                }
             }
         }
 
@@ -549,6 +540,11 @@ impl LiveSession {
 }
 
 impl LiveState {
+    fn mark_activity(&mut self) {
+        self.last_activity = Instant::now();
+        self.record.last_activity_at_ms = Some(unix_now_ms());
+    }
+
     fn transition(&mut self, next: SessionStatus, reason: StatusReason) -> Option<SessionEvent> {
         let previous = self.record.status;
         if previous == next {
@@ -667,17 +663,17 @@ fn writer_loop(rx: &std::sync::mpsc::Receiver<WriteOp>, mut writer: Box<dyn Writ
 
 async fn batch_loop(live: Arc<LiveSession>, mut rx: mpsc::Receiver<Vec<u8>>, generation: u64) {
     let window = live.config.output_batch_window;
-    let max_bytes = live.config.output_batch_bytes.max(1);
+    let max_bytes = live
+        .config
+        .output_batch_bytes
+        .clamp(1, MAX_PTY_OUTPUT_BYTES);
     let mut pending = Vec::new();
 
     loop {
         if pending.is_empty() {
             match rx.recv().await {
                 Some(bytes) => {
-                    pending = bytes;
-                    if pending.len() >= max_bytes {
-                        flush_output(&live, generation, std::mem::take(&mut pending));
-                    }
+                    queue_output(&live, generation, &mut pending, bytes, max_bytes);
                 }
                 None => break,
             }
@@ -687,10 +683,7 @@ async fn batch_loop(live: Arc<LiveSession>, mut rx: mpsc::Receiver<Vec<u8>>, gen
         tokio::select! {
             sample = rx.recv() => {
                 if let Some(bytes) = sample {
-                    pending.extend(bytes);
-                    if pending.len() >= max_bytes {
-                        flush_output(&live, generation, std::mem::take(&mut pending));
-                    }
+                    queue_output(&live, generation, &mut pending, bytes, max_bytes);
                 } else {
                     flush_output(&live, generation, std::mem::take(&mut pending));
                     break;
@@ -700,6 +693,21 @@ async fn batch_loop(live: Arc<LiveSession>, mut rx: mpsc::Receiver<Vec<u8>>, gen
                 flush_output(&live, generation, std::mem::take(&mut pending));
             }
         }
+    }
+}
+
+fn queue_output(
+    live: &LiveSession,
+    generation: u64,
+    pending: &mut Vec<u8>,
+    bytes: Vec<u8>,
+    max_bytes: usize,
+) {
+    pending.extend(bytes);
+    while pending.len() >= max_bytes {
+        let remainder = pending.split_off(max_bytes);
+        let chunk = std::mem::replace(pending, remainder);
+        flush_output(live, generation, chunk);
     }
 }
 
@@ -714,7 +722,7 @@ fn flush_output(live: &LiveSession, generation: u64, bytes: Vec<u8>) {
             return;
         }
         let sequence = state.buffer.push(bytes.clone());
-        state.last_activity = Instant::now();
+        state.mark_activity();
         let event = if state.record.status == SessionStatus::Idle {
             state.transition(SessionStatus::Running, StatusReason::Activity)
         } else {
@@ -742,8 +750,8 @@ fn on_child_exit(
     generation: u64,
     wait_result: Result<Result<ExitStatus, std::io::Error>, tokio::task::JoinError>,
 ) {
-    let exit_code = match wait_result {
-        Ok(Ok(status)) => i32::try_from(status.exit_code()).ok(),
+    let (exit_code, wait_failed) = match wait_result {
+        Ok(Ok(status)) => (i32::try_from(status.exit_code()).ok(), false),
         Ok(Err(error)) => {
             tracing::warn!(
                 event = "session.wait_failed",
@@ -751,7 +759,7 @@ fn on_child_exit(
                 error = %error,
                 "wait on child failed"
             );
-            None
+            (None, true)
         }
         Err(error) => {
             tracing::warn!(
@@ -760,11 +768,11 @@ fn on_child_exit(
                 error = %error,
                 "wait task join failed"
             );
-            None
+            (None, true)
         }
     };
 
-    let (master, record, status_event) = {
+    let (master, record, status_event, exited_at_ms) = {
         let mut state = lock(&live.state);
         if state.generation != generation {
             return;
@@ -776,8 +784,25 @@ fn on_child_exit(
         state.record.pid = None;
         state.record.pty_id = None;
         state.record.exit_code = exit_code;
-        let status_event = state.transition(SessionStatus::Exited, StatusReason::ProcessExited);
-        (master, state.record.clone(), status_event)
+        let requested_stop = state.stop_requested || state.kill_requested;
+        let successful_exit = exit_code == Some(0);
+        let (status, reason) = if state.kill_requested {
+            (SessionStatus::Exited, StatusReason::KillRequested)
+        } else if state.stop_requested {
+            (SessionStatus::Exited, StatusReason::StopRequested)
+        } else if !wait_failed && successful_exit {
+            (SessionStatus::Exited, StatusReason::ProcessExited)
+        } else {
+            (SessionStatus::Failed, StatusReason::ProcessFailed)
+        };
+        state.record.error_code = if requested_stop || successful_exit {
+            None
+        } else {
+            Some("session_process_failed".to_owned())
+        };
+        let status_event = state.transition(status, reason);
+        let exited_at_ms = state.record.updated_at_ms;
+        (master, state.record.clone(), status_event, exited_at_ms)
     };
     drop(master);
     if let Some(sender) = lock(&live.writer_tx).take() {
@@ -796,6 +821,7 @@ fn on_child_exit(
         session_id: live.id,
         exit_code,
         status: record.status,
+        at_ms: exited_at_ms,
     });
     tracing::info!(
         event = "session.cleanup",
@@ -818,6 +844,7 @@ fn fail_session(live: &LiveSession, generation: u64, reason: StatusReason) {
         }
         state.record.pid = None;
         state.record.pty_id = None;
+        state.record.error_code = Some(format!("session_{}", reason.code()));
         state.transition(SessionStatus::Failed, reason)
     };
     publish(live, event);
@@ -964,6 +991,8 @@ mod tests {
             exit_code: None,
             created_at_ms: 0,
             updated_at_ms: 0,
+            last_activity_at_ms: None,
+            error_code: None,
         };
         let (output, _) = broadcast::channel(1);
         let (events, _) = broadcast::channel(1);

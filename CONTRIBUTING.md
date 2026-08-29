@@ -9,7 +9,8 @@ Read these files:
 
 1. [README.md](README.md) for setup and validation commands.
 2. [ARCHITECTURE.md](ARCHITECTURE.md) for accepted system boundaries.
-3. [design-system/cli-master/MASTER.md](design-system/cli-master/MASTER.md) for
+3. [AGENTS.md](AGENTS.md) for crate ownership and the IPC catalog.
+4. [design-system/cli-master/MASTER.md](design-system/cli-master/MASTER.md) for
    interface and accessibility rules.
 
 Windows support and the future features listed as out of scope in the

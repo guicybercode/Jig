@@ -19,6 +19,8 @@ mod unix;
 
 pub use config::SessionManagerConfig;
 pub use error::SessionError;
-pub use event::{OutputChunk, OutputSnapshot, SessionEvent, SessionSubscription, SubscribeError};
+pub use event::{
+    OutputChunk, OutputSnapshot, SessionEvent, SessionSubscription, StatusReason, SubscribeError,
+};
 pub use manager::{CreateSession, SessionManager};
 pub use pty::PtySize;

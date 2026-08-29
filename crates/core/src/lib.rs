@@ -10,17 +10,14 @@ mod error;
 mod ids;
 mod model;
 mod protocol;
-mod session_ipc;
+pub mod wire;
 
 pub use command::{CommandSpec, CommandSpecError};
 pub use error::ApiError;
-pub use ids::{AgentId, ProjectId, RequestId, SessionId, WorktreeId};
-pub use model::{AgentDefinition, AgentSource, Project, Session, SessionStatus, Worktree};
+pub use ids::{AgentId, DaemonInstanceId, ProjectId, RequestId, SessionId, WorktreeId};
+pub use model::{
+    AgentDefinition, AgentSource, Project, Session, SessionStatus, Worktree, WorktreeState,
+};
 pub use protocol::{
     EnvelopeKind, EventEnvelope, PROTOCOL_V1, RequestEnvelope, ResponseEnvelope, ResponsePayload,
-};
-pub use session_ipc::{
-    SessionExitedPayload, SessionOutputGapPayload, SessionOutputPayload, SessionRecordPayload,
-    SessionStatusChangedPayload, StatusReason, events as session_events,
-    methods as session_methods,
 };

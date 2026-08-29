@@ -6,9 +6,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use cli_master_core::wire::MAX_PTY_OUTPUT_BYTES;
 use cli_master_core::{AgentId, CommandSpec, ProjectId, Session, SessionId, SessionStatus};
 use cli_master_session::{
-    CreateSession, SessionError, SessionManager, SessionManagerConfig, SessionSubscription,
+    CreateSession, SessionError, SessionEvent, SessionManager, SessionManagerConfig,
+    SessionSubscription,
 };
 use tempfile::TempDir;
 
@@ -31,6 +33,14 @@ async fn starts_a_shell_and_exchanges_input_output() {
     let mut output = Vec::new();
     wait_for_bytes(&mut subscription, &mut output, b"hello-shell").await;
     wait_for_bytes(&mut subscription, &mut output, "π".as_bytes()).await;
+    assert!(
+        fixture
+            .manager
+            .get(session.id)
+            .expect("session should remain available")
+            .last_activity_at_ms
+            .is_some()
+    );
     fixture.manager.shutdown().await;
 }
 
@@ -73,8 +83,12 @@ async fn captures_zero_and_nonzero_exit_codes() {
     let nonzero = fixture
         .create(command(&fixture, "false", &[]))
         .expect("false should spawn");
-    let nonzero = wait_status(&fixture.manager, nonzero.id, SessionStatus::Exited).await;
+    let nonzero = wait_status(&fixture.manager, nonzero.id, SessionStatus::Failed).await;
     assert_eq!(nonzero.exit_code, Some(1));
+    assert_eq!(
+        nonzero.error_code.as_deref(),
+        Some("session_process_failed")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -89,21 +103,28 @@ async fn interrupts_a_process_with_ctrl_c() {
         .manager
         .write(session.id, b"\x03")
         .expect("Ctrl+C should write");
-    let exited = wait_status(&fixture.manager, session.id, SessionStatus::Exited).await;
-    assert_ne!(exited.exit_code, Some(0));
+    let failed = wait_status(&fixture.manager, session.id, SessionStatus::Failed).await;
+    assert_ne!(failed.exit_code, Some(0));
+    assert_eq!(failed.error_code.as_deref(), Some("session_process_failed"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resizes_the_pty() {
     let fixture = Fixture::new();
-    let script = "printf 'READY\\n'; while true; do stty size; sleep 1; done";
     let session = fixture
-        .create(command(&fixture, "sh", &["-c", script]))
+        .create(command(&fixture, "sh", &[]))
         .expect("resize helper should start");
     let mut subscription = fixture
         .manager
         .subscribe(session.id)
         .expect("subscribe should succeed");
+    fixture
+        .manager
+        .write(
+            session.id,
+            b"printf 'READY\\n'; while true; do stty size; sleep 1; done\n",
+        )
+        .expect("resize script should write");
     let mut output = Vec::new();
     wait_for_bytes(&mut subscription, &mut output, b"READY").await;
 
@@ -176,6 +197,10 @@ async fn spawn_failure_marks_the_session_failed() {
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].status, SessionStatus::Failed);
     assert_eq!(sessions[0].pid, None);
+    assert_eq!(
+        sessions[0].error_code.as_deref(),
+        Some("session_spawn_failed")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -183,15 +208,18 @@ async fn reconnects_to_bounded_output_without_killing_the_session() {
     let mut config = SessionManagerConfig::for_tests();
     config.replay_buffer_bytes = 2048;
     let fixture = Fixture::with_config(config);
-    let script = "printf 'FIRST-LINE\\n'; exec sleep 30";
     let session = fixture
-        .create(command(&fixture, "sh", &["-c", script]))
+        .create(command(&fixture, "sh", &[]))
         .expect("session should start");
 
     let mut first = fixture
         .manager
         .subscribe(session.id)
         .expect("first subscribe should succeed");
+    fixture
+        .manager
+        .write(session.id, b"printf 'FIRST-LINE\\n'; exec sleep 30\n")
+        .expect("reconnect fixture command should write");
     let mut output = Vec::new();
     wait_for_bytes(&mut first, &mut output, b"FIRST-LINE").await;
     drop(first);
@@ -229,6 +257,7 @@ async fn replay_buffer_does_not_grow_without_bound() {
     let mut config = SessionManagerConfig::for_tests();
     config.replay_buffer_bytes = 4096;
     let fixture = Fixture::with_config(config);
+    let mut events = fixture.manager.subscribe_events();
     let session = fixture
         .create(command(
             &fixture,
@@ -238,13 +267,31 @@ async fn replay_buffer_does_not_grow_without_bound() {
         .expect("dd should start");
     wait_status(&fixture.manager, session.id, SessionStatus::Exited).await;
 
+    let mut output_events = 0;
+    while let Ok(event) = events.try_recv() {
+        if let SessionEvent::Output { chunk, .. } = event {
+            output_events += 1;
+            assert!(chunk.data.len() <= MAX_PTY_OUTPUT_BYTES);
+        }
+    }
+    assert!(
+        output_events > 0,
+        "dd should produce at least one output event"
+    );
+
     let snapshot = fixture
         .manager
         .subscribe(session.id)
         .expect("subscribe after exit")
         .snapshot;
     assert!(snapshot.truncated);
-    assert!(snapshot.concatenated().len() <= 4096 + 8192);
+    assert!(snapshot.concatenated().len() <= 4096);
+    assert!(
+        snapshot
+            .chunks
+            .iter()
+            .all(|chunk| chunk.data.len() <= MAX_PTY_OUTPUT_BYTES)
+    );
 
     fixture
         .manager

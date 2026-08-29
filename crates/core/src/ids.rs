@@ -77,6 +77,10 @@ typed_id!(AgentId, "Unique identifier for an agent definition.");
 typed_id!(SessionId, "Unique identifier for an agent session.");
 typed_id!(WorktreeId, "Unique identifier for a managed Git worktree.");
 typed_id!(RequestId, "Correlation identifier for an IPC request.");
+typed_id!(
+    DaemonInstanceId,
+    "Unique identifier for one daemon process lifetime."
+);
 
 #[cfg(test)]
 mod tests {
