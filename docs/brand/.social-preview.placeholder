@@ -1,0 +1,12 @@
+PLACEHOLDER: Add social-preview.png here
+
+Expected: GitHub Open Graph / social preview lockup
+- Cluster LEFT
+- "Jig" in open grotesk coral
+- Tagline "terminals on a canvas"
+- Light paper background
+- Full width, do not crop tagline
+
+This file should also be set as the repository's Social preview in Settings → Social preview.
+
+Optimize PNG before committing (~1MB source should be reduced).
