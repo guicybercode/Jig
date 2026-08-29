@@ -1,4 +1,9 @@
-import type { CanvasConnection, CanvasNode, CanvasPoint } from "./canvas-state";
+import {
+  getCanvasNodeSize,
+  type CanvasConnection,
+  type CanvasNode,
+  type CanvasPoint,
+} from "./canvas-state";
 
 interface CanvasConnectionsProps {
   readonly connections: readonly CanvasConnection[];
@@ -6,11 +11,6 @@ interface CanvasConnectionsProps {
   readonly selectedNodeId: string | null;
   readonly connectionSourceId: string | null;
 }
-
-const NODE_SIZE = {
-  terminal: { width: 432, height: 256 },
-  note: { width: 288, height: 288 },
-} as const;
 
 /** Draws the persisted relationships underneath canvas cards. */
 export function CanvasConnections({
@@ -77,8 +77,8 @@ function createConnectionGeometry(
   const deltaX = targetCenter.x - sourceCenter.x;
   const deltaY = targetCenter.y - sourceCenter.y;
   const horizontal = Math.abs(deltaX) >= Math.abs(deltaY);
-  const sourceSize = NODE_SIZE[sourceNode.kind];
-  const targetSize = NODE_SIZE[targetNode.kind];
+  const sourceSize = getCanvasNodeSize(sourceNode);
+  const targetSize = getCanvasNodeSize(targetNode);
 
   if (horizontal) {
     const direction = deltaX >= 0 ? 1 : -1;
@@ -116,7 +116,7 @@ function createConnectionGeometry(
 }
 
 function nodeCenter(node: CanvasNode): CanvasPoint {
-  const size = NODE_SIZE[node.kind];
+  const size = getCanvasNodeSize(node);
   return {
     x: node.x + size.width / 2,
     y: node.y + size.height / 2,

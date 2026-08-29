@@ -467,6 +467,49 @@
   background: transparent;
 }
 
+.canvas-node__resize-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+  width: 2rem;
+  height: 2rem;
+  border: 0;
+  border-radius: 0.5rem 0 0.5rem 0;
+  background: rgb(255 255 255 / 8%);
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
+.canvas-node__resize-handle span,
+.canvas-node__resize-handle::before,
+.canvas-node__resize-handle::after {
+  position: absolute;
+  right: 0.35rem;
+  bottom: 0.35rem;
+  width: 0.75rem;
+  height: 1px;
+  content: "";
+  background: #aeb7c5;
+  transform: rotate(-45deg);
+  transform-origin: right center;
+}
+
+.canvas-node__resize-handle::before {
+  width: 0.5rem;
+  transform: translate(-0.05rem, -0.3rem) rotate(-45deg);
+}
+
+.canvas-node__resize-handle::after {
+  width: 0.25rem;
+  transform: translate(-0.1rem, -0.6rem) rotate(-45deg);
+}
+
+.canvas-node__resize-handle:focus-visible {
+  outline: 3px solid var(--canvas-focus);
+  outline-offset: -3px;
+}
+
 .canvas-terminal {
   min-height: 0;
   display: flex;

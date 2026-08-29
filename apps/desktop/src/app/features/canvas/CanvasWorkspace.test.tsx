@@ -146,6 +146,51 @@ describe("CanvasWorkspace", () => {
     expect(container.querySelector(".canvas-node--selected")).toBe(terminal);
   });
 
+  it("resizes a terminal by keyboard and pointer", async () => {
+    const user = userEvent.setup();
+    renderCanvas();
+    const terminal = screen.getByRole("article", {
+      name: "Terminal 1, terminal canvas item",
+    });
+    await user.click(terminal);
+    const handle = within(terminal).getByRole("button", {
+      name: "Resize Terminal 1",
+    });
+
+    handle.focus();
+    await user.keyboard("{ArrowRight}{Alt>}{ArrowDown}{/Alt}");
+    await waitFor(() => {
+      expect(readTerminalSize("terminal-primary")).toEqual({
+        width: 448,
+        height: 257,
+      });
+    });
+
+    fireEvent.pointerDown(handle, {
+      pointerId: 11,
+      clientX: 100,
+      clientY: 100,
+    });
+    fireEvent.pointerMove(handle, {
+      pointerId: 11,
+      clientX: 164,
+      clientY: 132,
+    });
+    fireEvent.pointerUp(handle, {
+      pointerId: 11,
+      clientX: 164,
+      clientY: 132,
+    });
+
+    await waitFor(() => {
+      expect(readTerminalSize("terminal-primary")).toEqual({
+        width: 512,
+        height: 289,
+      });
+    });
+    expect(terminal).toHaveStyle({ width: "512px", height: "289px" });
+  });
+
   it("shows canvas items and fits them from the reference controls", async () => {
     const user = userEvent.setup();
     const { container } = renderCanvas();
@@ -217,4 +262,18 @@ function readNodePosition(nodeId: string) {
   };
   const node = persisted.nodes?.find((candidate) => candidate.id === nodeId);
   return { x: node?.x, y: node?.y };
+}
+
+function readTerminalSize(nodeId: string) {
+  const persisted = JSON.parse(
+    localStorage.getItem(CANVAS_STORAGE_KEY) ?? "{}",
+  ) as {
+    nodes?: readonly {
+      readonly id?: string;
+      readonly width?: number;
+      readonly height?: number;
+    }[];
+  };
+  const node = persisted.nodes?.find((candidate) => candidate.id === nodeId);
+  return { width: node?.width, height: node?.height };
 }

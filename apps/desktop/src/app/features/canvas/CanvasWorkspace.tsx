@@ -7,6 +7,7 @@ import {
   createCanvasNode,
   createInitialCanvasDocument,
   createTerminalCanvasNode,
+  getCanvasNodeSize,
   type CanvasTerminalConfiguration,
   type CanvasNode,
   type NoteCanvasNode,
@@ -27,10 +28,6 @@ interface CanvasWorkspaceProps {
 }
 
 const ZOOM_STEP = 0.1;
-const NODE_SIZE = {
-  terminal: { width: 432, height: 256 },
-  note: { width: 288, height: 288 },
-} as const;
 
 /** Spatial terminal and notes workspace inspired by the supplied references. */
 export function CanvasWorkspace({
@@ -102,7 +99,7 @@ export function CanvasWorkspace({
       return;
     }
 
-    const size = NODE_SIZE[node.kind];
+    const size = getCanvasNodeSize(node);
     viewport.scrollTo({
       left: Math.max(
         0,
@@ -125,10 +122,10 @@ export function CanvasWorkspace({
     const minimumX = Math.min(...state.nodes.map((node) => node.x));
     const minimumY = Math.min(...state.nodes.map((node) => node.y));
     const maximumX = Math.max(
-      ...state.nodes.map((node) => node.x + NODE_SIZE[node.kind].width),
+      ...state.nodes.map((node) => node.x + getCanvasNodeSize(node).width),
     );
     const maximumY = Math.max(
-      ...state.nodes.map((node) => node.y + NODE_SIZE[node.kind].height),
+      ...state.nodes.map((node) => node.y + getCanvasNodeSize(node).height),
     );
     const contentWidth = maximumX - minimumX;
     const contentHeight = maximumY - minimumY;
@@ -359,6 +356,9 @@ export function CanvasWorkspace({
                 onMove={(position) =>
                   dispatch({ type: "node/move", nodeId: node.id, position })
                 }
+                onResize={(size) =>
+                  dispatch({ type: "terminal/resize", nodeId: node.id, size })
+                }
                 onNoteChange={(text) =>
                   dispatch({ type: "note/update", nodeId: node.id, text })
                 }
@@ -505,6 +505,10 @@ interface CanvasNodeCardProps {
   readonly onCancelConnection: () => void;
   readonly onDelete: () => void;
   readonly onMove: (position: { readonly x: number; readonly y: number }) => void;
+  readonly onResize: (size: {
+    readonly width: number;
+    readonly height: number;
+  }) => void;
   readonly onNoteChange: (text: string) => void;
   readonly onOpenSession: () => void;
 }
@@ -521,6 +525,7 @@ function CanvasNodeCard({
   onCancelConnection,
   onDelete,
   onMove,
+  onResize,
   onNoteChange,
   onOpenSession,
 }: CanvasNodeCardProps) {
@@ -530,6 +535,13 @@ function CanvasNodeCard({
     readonly clientY: number;
     readonly nodeX: number;
     readonly nodeY: number;
+  } | null>(null);
+  const resizeRef = useRef<{
+    readonly pointerId: number;
+    readonly clientX: number;
+    readonly clientY: number;
+    readonly width: number;
+    readonly height: number;
   } | null>(null);
   const isConnectionTarget =
     connectionSource !== null && connectionSource !== node.id;
@@ -545,7 +557,12 @@ function CanvasNodeCard({
   return (
     <article
       className={classes}
-      style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
+      style={{
+        transform: `translate(${node.x}px, ${node.y}px)`,
+        ...(node.kind === "terminal"
+          ? { width: `${node.width}px`, height: `${node.height}px` }
+          : {}),
+      }}
       tabIndex={0}
       aria-label={`${node.title}, ${node.kind} canvas item`}
       data-canvas-node-id={node.id}
@@ -663,11 +680,65 @@ function CanvasNodeCard({
         </div>
       </header>
       {node.kind === "terminal" ? (
-        <TerminalNodeBody
-          node={node}
-          session={session}
-          onOpenSession={onOpenSession}
-        />
+        <>
+          <TerminalNodeBody
+            node={node}
+            session={session}
+            onOpenSession={onOpenSession}
+          />
+          {selected ? (
+            <button
+              className="canvas-node__resize-handle"
+              type="button"
+              aria-label={`Resize ${node.title}`}
+              aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
+              title="Drag to resize. Arrow keys resize; hold Alt for 1 px."
+              onKeyDown={(event) => {
+                const step = event.altKey ? 1 : 16;
+                const size = keyboardResize(event.key, node, step);
+                if (size) {
+                  event.preventDefault();
+                  onResize(size);
+                }
+              }}
+              onPointerDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                resizeRef.current = {
+                  pointerId: event.pointerId,
+                  clientX: event.clientX,
+                  clientY: event.clientY,
+                  width: node.width,
+                  height: node.height,
+                };
+                event.currentTarget.setPointerCapture?.(event.pointerId);
+              }}
+              onPointerMove={(event) => {
+                const resize = resizeRef.current;
+                if (!resize || resize.pointerId !== event.pointerId) {
+                  return;
+                }
+                onResize({
+                  width:
+                    resize.width + (event.clientX - resize.clientX) / zoom,
+                  height:
+                    resize.height + (event.clientY - resize.clientY) / zoom,
+                });
+              }}
+              onPointerUp={(event) => {
+                if (resizeRef.current?.pointerId === event.pointerId) {
+                  resizeRef.current = null;
+                  event.currentTarget.releasePointerCapture?.(event.pointerId);
+                }
+              }}
+              onPointerCancel={() => {
+                resizeRef.current = null;
+              }}
+            >
+              <span aria-hidden="true" />
+            </button>
+          ) : null}
+        </>
       ) : (
         <NoteNodeBody node={node} onChange={onNoteChange} />
       )}
@@ -688,6 +759,25 @@ function keyboardMovement(
       return { x: -step, y: 0 };
     case "ArrowRight":
       return { x: step, y: 0 };
+    default:
+      return null;
+  }
+}
+
+function keyboardResize(
+  key: string,
+  node: TerminalCanvasNode,
+  step: number,
+): { readonly width: number; readonly height: number } | null {
+  switch (key) {
+    case "ArrowUp":
+      return { width: node.width, height: node.height - step };
+    case "ArrowDown":
+      return { width: node.width, height: node.height + step };
+    case "ArrowLeft":
+      return { width: node.width - step, height: node.height };
+    case "ArrowRight":
+      return { width: node.width + step, height: node.height };
     default:
       return null;
   }
