@@ -107,10 +107,43 @@ impl Error for GitError {
 
 pub(crate) fn truncate_stderr(stderr: &[u8]) -> String {
     const LIMIT: usize = 2_048;
-    let text = String::from_utf8_lossy(stderr);
-    if text.len() <= LIMIT {
-        text.into_owned()
-    } else {
-        format!("{}…", &text[..LIMIT])
+    let mut text = String::from_utf8_lossy(stderr).into_owned();
+    if truncate_utf8(&mut text, LIMIT) {
+        text.push('…');
+    }
+    text
+}
+
+pub(crate) fn truncate_utf8(text: &mut String, limit: usize) -> bool {
+    if text.len() <= limit {
+        return false;
+    }
+
+    let mut boundary = limit;
+    while !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    text.truncate(boundary);
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_stderr;
+
+    #[test]
+    fn stderr_truncation_preserves_a_utf8_boundary() {
+        let stderr = format!("{}é followed by diagnostics", "x".repeat(2_047));
+        let truncated = truncate_stderr(stderr.as_bytes());
+
+        assert!(truncated.ends_with('…'));
+        assert!(!truncated.contains('é'));
+        assert_eq!(
+            truncated
+                .chars()
+                .filter(|character| *character == 'x')
+                .count(),
+            2_047
+        );
     }
 }

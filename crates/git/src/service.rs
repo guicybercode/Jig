@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use crate::GitError;
-use crate::error::truncate_stderr;
+use crate::error::{truncate_stderr, truncate_utf8};
 use crate::status::{GitDiff, GitStatus, parse_porcelain_v2};
 use crate::worktree::{RemovalPlan, WorktreeCreate, WorktreeInfo, slugify};
 
@@ -117,10 +117,7 @@ impl GitService {
         )?;
         let mut text =
             String::from_utf8(output.stdout).map_err(|_| GitError::InvalidUtf8("diff"))?;
-        let truncated = text.len() > DIFF_LIMIT;
-        if truncated {
-            text.truncate(DIFF_LIMIT);
-        }
+        let truncated = truncate_utf8(&mut text, DIFF_LIMIT);
         Ok(GitDiff { text, truncated })
     }
 
@@ -175,6 +172,7 @@ impl GitService {
                 path.to_str().ok_or(GitError::InvalidUtf8("worktree add"))?,
             ],
         )?;
+        let path = path.canonicalize().map_err(GitError::Spawn)?;
         Ok(WorktreeInfo {
             path,
             branch,
@@ -386,9 +384,14 @@ fn removal_token(path: &Path, is_dirty: bool) -> String {
 }
 
 fn short_suffix() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static NEXT_SUFFIX: AtomicU64 = AtomicU64::new(0);
+
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.subsec_nanos());
-    format!("{nanos:x}")
+        .map_or(0, |duration| duration.as_nanos());
+    let sequence = NEXT_SUFFIX.fetch_add(1, Ordering::Relaxed);
+    format!("{:x}-{nanos:x}-{sequence:x}", std::process::id())
 }

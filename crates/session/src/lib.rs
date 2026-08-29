@@ -1,6 +1,6 @@
 //! PTY session manager that owns child process groups and output buffers.
 //!
-//! The manager is the in-memory authority for live sessions. SQLite metadata
+//! The manager is the in-memory authority for live sessions. `SQLite` metadata
 //! remains the caller's responsibility.
 
 #![warn(missing_docs)]

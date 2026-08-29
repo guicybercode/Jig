@@ -48,6 +48,7 @@ Documented in the README and implemented in root `package.json` plus
 - `pnpm build:frontend`
 - `pnpm fmt:rust` (`cargo fmt --all -- --check`)
 - `pnpm clippy`
+- `pnpm doc:rust`
 - `pnpm test:rust`
 - `pnpm test:integration`
 - `pnpm tauri:build`

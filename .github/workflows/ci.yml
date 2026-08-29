@@ -106,9 +106,7 @@ jobs:
         run: pnpm test:rust
 
       - name: Build Rust documentation
-        env:
-          RUSTDOCFLAGS: "-Dwarnings"
-        run: cargo doc --workspace --no-deps --locked
+        run: pnpm doc:rust
 
   tauri-smoke:
     name: Tauri smoke (${{ matrix.os }})

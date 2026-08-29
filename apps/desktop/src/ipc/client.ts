@@ -17,9 +17,11 @@ export interface IpcClient {
 
 export class RecordingIpcClient implements IpcClient {
   readonly calls: string[] = [];
+  readonly createdSessions: CreateSessionInput[] = [];
 
   async createSession(input: CreateSessionInput): Promise<SessionView> {
     this.calls.push(`createSession:${input.name}`);
+    this.createdSessions.push({ ...input });
     return {
       id: "session-created",
       projectId: input.projectId,

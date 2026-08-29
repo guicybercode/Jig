@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -10,6 +12,9 @@ use nix::unistd::Pid;
 use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 
 use crate::SessionError;
+
+#[cfg(test)]
+static SIGNAL_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 
 /// PTY dimensions applied at spawn and resize.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -127,6 +132,11 @@ impl SessionManager {
             return Err(SessionError::InvalidWorkingDirectory(spec.cwd().clone()));
         }
 
+        let mut sessions = self.lock()?;
+        if sessions.contains_key(&session_id) {
+            return Err(SessionError::DuplicateSession(session_id));
+        }
+
         let system = NativePtySystem::default();
         let pair = system
             .openpty(size.to_pty())
@@ -141,26 +151,35 @@ impl SessionManager {
             command.env(key, value);
         }
 
-        let child = pair
+        let mut child = pair
             .slave
             .spawn_command(command)
             .map_err(|error| SessionError::Pty(error.to_string()))?;
         drop(pair.slave);
 
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|error| SessionError::Pty(error.to_string()))?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|error| SessionError::Pty(error.to_string()))?;
+        let mut reader = match pair.master.try_clone_reader() {
+            Ok(reader) => reader,
+            Err(error) => {
+                let _ = child.kill();
+                return Err(SessionError::Pty(error.to_string()));
+            }
+        };
+        let writer = match pair.master.take_writer() {
+            Ok(writer) => writer,
+            Err(error) => {
+                let _ = child.kill();
+                return Err(SessionError::Pty(error.to_string()));
+            }
+        };
         let buffer = Arc::new(Mutex::new(OutputBuffer::new(self.config.max_buffer_bytes)));
         let reader_buffer = Arc::clone(&buffer);
-        thread::Builder::new()
+        if let Err(error) = thread::Builder::new()
             .name(format!("pty-reader-{session_id}"))
             .spawn(move || read_output(&mut *reader, &reader_buffer))
-            .map_err(|error| SessionError::Pty(error.to_string()))?;
+        {
+            let _ = child.kill();
+            return Err(SessionError::Pty(error.to_string()));
+        }
 
         let pid = child.process_id();
         let live = LiveSession {
@@ -175,7 +194,7 @@ impl SessionManager {
             state: SessionStatus::Running,
         };
 
-        self.lock()?.insert(session_id, live);
+        sessions.insert(session_id, live);
         Ok(())
     }
 
@@ -355,6 +374,10 @@ impl SessionManager {
             let live = sessions
                 .get_mut(&session_id)
                 .ok_or(SessionError::UnknownSession(session_id))?;
+            refresh_child(live);
+            if matches!(live.state, SessionStatus::Exited | SessionStatus::Failed) {
+                return Ok(live.exit_code);
+            }
             let _ = live.writer.write_all(&[0x03]);
             let _ = live.writer.flush();
             if let Some(pid) = live.pid {
@@ -446,7 +469,55 @@ fn refresh_child(live: &mut LiveSession) {
 }
 
 fn send_signal(pid: u32, signal: Signal) {
+    #[cfg(test)]
+    SIGNAL_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
     if let Ok(raw) = i32::try_from(pid) {
         let _ = kill(Pid::from_raw(raw), signal);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn stop_does_not_signal_a_process_that_already_exited() {
+        let temp = TempDir::new().expect("temporary directory");
+        let executable = std::env::current_exe().expect("current test executable");
+        let spec = CommandSpec::try_from_parts(
+            executable.to_string_lossy(),
+            ["--list"],
+            temp.path(),
+            BTreeMap::new(),
+        )
+        .expect("test command");
+        let manager = SessionManager::with_config(SessionManagerConfig {
+            max_buffer_bytes: 64 * 1024,
+            stop_grace: Duration::from_secs(30),
+        });
+        let session_id = SessionId::new();
+        manager
+            .start(session_id, spec, TerminalSize::default())
+            .expect("session should start");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if manager.status(session_id).expect("session status") == SessionStatus::Exited {
+                break;
+            }
+            assert!(Instant::now() < deadline, "test child did not exit");
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        SIGNAL_ATTEMPTS.store(0, Ordering::Relaxed);
+        assert_eq!(
+            manager.stop(session_id).expect("stop completed session"),
+            Some(0)
+        );
+        assert_eq!(SIGNAL_ATTEMPTS.load(Ordering::Relaxed), 0);
     }
 }

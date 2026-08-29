@@ -105,6 +105,7 @@ executable or the fake agent when developing without vendor CLIs.
 | Frontend build | `pnpm build:frontend` |
 | Rust format check | `pnpm fmt:rust` |
 | Rust clippy | `pnpm clippy` |
+| Rust documentation | `pnpm doc:rust` |
 | Rust tests | `pnpm test:rust` |
 | Integration / acceptance | `pnpm test:integration` |
 | Tauri package build | `pnpm tauri:build` |
@@ -112,7 +113,8 @@ executable or the fake agent when developing without vendor CLIs.
 
 `pnpm check` runs `scripts/check.sh`: frontend lint, typecheck, tests, and
 production build, then `cargo fmt --check`, clippy with warnings denied, a
-locked fake-agent build, and `cargo test --workspace --locked`.
+locked fake-agent build, `cargo test --workspace --locked`, and rustdoc with
+warnings denied.
 
 ## Tests
 

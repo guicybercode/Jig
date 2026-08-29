@@ -32,8 +32,8 @@ pnpm check
 ```
 
 `pnpm check` is the aggregator. It runs frontend lint, typecheck, tests, and
-build, then Rust format, clippy, the fake-agent build, and the workspace tests.
-Individual commands are listed in the README.
+build, then Rust format, clippy, the fake-agent build, workspace tests, and
+rustdoc with warnings denied. Individual commands are listed in the README.
 
 Use commit titles such as:
 

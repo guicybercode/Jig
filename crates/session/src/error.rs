@@ -10,6 +10,8 @@ use cli_master_core::SessionId;
 pub enum SessionError {
     /// No live session exists for the supplied identifier.
     UnknownSession(SessionId),
+    /// A live or completed session already uses the supplied identifier.
+    DuplicateSession(SessionId),
     /// The PTY layer rejected a spawn, resize, or IO operation.
     Pty(String),
     /// Writing to the PTY master failed.
@@ -29,6 +31,7 @@ impl Display for SessionError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownSession(id) => write!(formatter, "unknown session {id}"),
+            Self::DuplicateSession(id) => write!(formatter, "session {id} already exists"),
             Self::Pty(message) => write!(formatter, "PTY error: {message}"),
             Self::Write(error) => write!(formatter, "failed to write to PTY: {error}"),
             Self::Timeout {

@@ -96,10 +96,17 @@ describe("AppShell", () => {
     expect(dialog).toBeVisible();
     await user.clear(screen.getByLabelText("Session name"));
     await user.type(screen.getByLabelText("Session name"), "Fix parser");
-    await user.selectOptions(screen.getByLabelText("Agent"), "fake");
+    await user.selectOptions(screen.getByLabelText("Agent"), "custom");
     await user.click(screen.getByRole("button", { name: "Create session" }));
 
-    expect(ipc.calls).toContain("createSession:Fix parser");
+    expect(ipc.createdSessions).toEqual([
+      {
+        projectId: "project-1",
+        name: "Fix parser",
+        agentId: "custom",
+        isolateWorktree: true,
+      },
+    ]);
     expect(screen.queryByRole("dialog", { name: "Create session" })).toBeNull();
   });
 
