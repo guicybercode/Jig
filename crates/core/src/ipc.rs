@@ -218,4 +218,24 @@ mod tests {
         assert_eq!(names.len(), IpcMethod::ALL.len());
         assert_eq!(IpcMethod::ALL.len(), 25);
     }
+
+    #[test]
+    fn rust_catalog_matches_shared_protocol_file() {
+        let catalog: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../protocol/catalog.json"
+        ))
+        .expect("catalog fixture should parse");
+        assert_eq!(catalog["protocolVersion"], 1);
+
+        let mut methods: Vec<_> = IpcMethod::ALL
+            .iter()
+            .map(|method| method.as_str())
+            .collect();
+        methods.sort_unstable();
+        assert_eq!(catalog["methods"], serde_json::json!(methods));
+
+        let mut events: Vec<_> = IpcEvent::ALL.iter().map(|event| event.as_str()).collect();
+        events.sort_unstable();
+        assert_eq!(catalog["events"], serde_json::json!(events));
+    }
 }

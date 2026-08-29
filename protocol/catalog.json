@@ -1,0 +1,38 @@
+{
+  "protocolVersion": 1,
+  "methods": [
+    "agent.create_custom",
+    "agent.delete_custom",
+    "agent.detect",
+    "agent.list",
+    "agent.update_custom",
+    "diagnostics.get",
+    "git.diff",
+    "git.status",
+    "project.add",
+    "project.list",
+    "project.remove",
+    "project.rename",
+    "session.create",
+    "session.delete",
+    "session.list",
+    "session.resize",
+    "session.restart",
+    "session.start",
+    "session.stop",
+    "session.write",
+    "state.snapshot",
+    "system.hello",
+    "worktree.create",
+    "worktree.list",
+    "worktree.remove"
+  ],
+  "events": [
+    "daemon.status_changed",
+    "git.status_changed",
+    "project.changed",
+    "session.exited",
+    "session.output",
+    "session.status_changed"
+  ]
+}
