@@ -69,7 +69,7 @@ pub(crate) fn generate_branch_name(
     ))
 }
 
-fn validate_branch(git: &Git, root: &Path, branch: &str) -> Result<(), GitError> {
+pub(crate) fn validate_branch(git: &Git, root: &Path, branch: &str) -> Result<(), GitError> {
     let output = git.execute(
         Some(root),
         [os("check-ref-format"), os("--branch"), os(branch)],
@@ -86,7 +86,7 @@ fn validate_branch(git: &Git, root: &Path, branch: &str) -> Result<(), GitError>
     }
 }
 
-fn branch_exists(git: &Git, root: &Path, branch: &str) -> Result<bool, GitError> {
+pub(crate) fn branch_exists(git: &Git, root: &Path, branch: &str) -> Result<bool, GitError> {
     let reference = format!("refs/heads/{branch}");
     let output = git.execute(
         Some(root),

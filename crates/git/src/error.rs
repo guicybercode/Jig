@@ -23,6 +23,8 @@ pub enum GitErrorKind {
     WorktreeInUse,
     /// A path escaped its configured managed worktree root.
     UnsafePath,
+    /// Git created a worktree, but cleanup after a failed confirmation could not be proven.
+    PartialWorktree,
 }
 
 /// An actionable failure from the Git integration.
