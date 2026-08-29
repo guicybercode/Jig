@@ -466,6 +466,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cli-master-agents"
+version = "0.1.0"
+dependencies = [
+ "cli-master-core",
+ "serde",
+ "tempfile",
+]
+
+[[package]]
 name = "cli-master-core"
 version = "0.1.0"
 dependencies = [
@@ -478,11 +487,35 @@ dependencies = [
 name = "cli-master-desktop"
 version = "0.1.0"
 dependencies = [
+ "cli-master-core",
+ "cli-master-safety",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",
+]
+
+[[package]]
+name = "cli-master-git"
+version = "0.1.0"
+dependencies = [
+ "cli-master-core",
+ "cli-master-safety",
+ "tempfile",
+]
+
+[[package]]
+name = "cli-master-safety"
+version = "0.1.0"
+dependencies = [
+ "cli-master-agents",
+ "cli-master-core",
+ "cli-master-storage",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]

@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 interface IconProps {
   readonly name:
     | "branch"
+    | "copy"
     | "folder"
     | "plus"
     | "repository"
@@ -39,6 +40,13 @@ function getIconPaths(name: IconProps["name"]): ReactNode {
           <circle cx="18" cy="6" r="2" />
           <circle cx="6" cy="19" r="2" />
           <path d="M6 7v10M8 8c2 0 3.5 0 5-1l3-1" />
+        </>
+      );
+    case "copy":
+      return (
+        <>
+          <rect x="8" y="8" width="12" height="12" rx="2" />
+          <path d="M4 16V6a2 2 0 0 1 2-2h10" />
         </>
       );
     case "folder":
