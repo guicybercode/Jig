@@ -20,9 +20,7 @@ describe("AppShell", () => {
   it("explains why session and project actions are unavailable", () => {
     render(<AppShell />);
 
-    expect(
-      screen.getByRole("button", { name: "New Session" }),
-    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "New Session" })).toBeDisabled();
     expect(
       screen.getByRole("button", { name: "New Session" }),
     ).toHaveAccessibleDescription("Add a project first");
@@ -91,5 +89,18 @@ describe("AppShell", () => {
       screen.queryByRole("dialog", { name: "New session" }),
     ).not.toBeInTheDocument();
     expect(opener).toHaveFocus();
+  });
+
+  it("opens the agents catalog from the header", async () => {
+    const user = userEvent.setup();
+    render(<AppShell />);
+
+    await user.click(screen.getByRole("button", { name: "Agents" }));
+
+    expect(screen.getByRole("heading", { name: "Agents", level: 1 })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Codex" })).toBeVisible();
+    expect(screen.getByText("Claude Code")).toBeVisible();
+    expect(screen.getByText("Gemini CLI")).toBeVisible();
+    expect(screen.getByText("OpenCode")).toBeVisible();
   });
 });

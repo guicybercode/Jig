@@ -4,6 +4,7 @@ import {
   useRef,
   type KeyboardEvent,
   type ReactNode,
+  type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
 
@@ -24,12 +25,21 @@ interface DialogProps {
   readonly open: boolean;
   readonly onClose: () => void;
   readonly children: ReactNode;
+  readonly describedBy?: string;
+  readonly initialFocusRef?: RefObject<HTMLElement | null>;
 }
 
 /**
  * Modal dialog with a focus trap, Escape to dismiss, and focus restoration.
  */
-export function Dialog({ title, open, onClose, children }: DialogProps) {
+export function Dialog({
+  title,
+  open,
+  onClose,
+  children,
+  describedBy,
+  initialFocusRef,
+}: DialogProps) {
   const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   const previouslyFocused = useRef<HTMLElement | null>(null);
@@ -42,15 +52,15 @@ export function Dialog({ title, open, onClose, children }: DialogProps) {
     previouslyFocused.current =
       active instanceof HTMLElement ? active : null;
     const dialog = dialogRef.current;
-    const initial = dialog
-      ? (focusableElements(dialog)[0] ?? dialog)
-      : null;
+    const initial =
+      initialFocusRef?.current ??
+      (dialog ? (focusableElements(dialog)[0] ?? dialog) : null);
     initial?.focus();
 
     return () => {
       previouslyFocused.current?.focus();
     };
-  }, [open]);
+  }, [initialFocusRef, open]);
 
   if (!open || typeof document === "undefined") {
     return null;
@@ -96,6 +106,7 @@ export function Dialog({ title, open, onClose, children }: DialogProps) {
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        aria-describedby={describedBy}
         tabIndex={-1}
         onKeyDown={onKeyDown}
       >

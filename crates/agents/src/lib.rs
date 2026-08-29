@@ -9,6 +9,7 @@
 
 mod adapter;
 mod builtins;
+mod catalog;
 mod custom;
 mod environment;
 mod error;
@@ -22,6 +23,7 @@ pub use adapter::{
     LaunchContext,
 };
 pub use builtins::{ClaudeCodeAdapter, CodexAdapter, GeminiCliAdapter, OpenCodeAdapter};
+pub use catalog::{AgentCatalog, CatalogError};
 pub use cli_master_core::{AgentSource, CommandSpec};
 pub use custom::{CustomAgentAdapter, CustomAgentDefinition};
 pub use environment::{
