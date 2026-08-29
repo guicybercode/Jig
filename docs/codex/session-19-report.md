@@ -12,23 +12,34 @@ on `main`. The React shell was not. It still renders an empty workspace.
 A Playwright suite that clicked a grid would have been testing fiction, or
 it would have needed a test-only UI.
 
-`Daemon::bind` also skipped the recovery step ADR 0003 already described.
-Live rows from a previous instance would have stayed `running` with a stale
-PID.
+During reconciliation, `main` already owned daemon startup recovery through
+`Storage::reconcile_sessions` and its current `EventBus` composition. The old
+parallel recovery helper from this PR was discarded.
 
 ## Decisions
 
-- Put the real acceptance tests in `crates/e2e` and drive production crates.
-  Two subscriptions are the grid. Dropping them is closing the window.
-  Resubscribe plus snapshot is reopen.
+- Put runtime acceptance in `crates/e2e` and create both isolated sessions
+  through the production `SessionWorktreeSaga<SessionManager>`. Two
+  subscriptions model independent consumers; dropping and recreating them
+  validates replay, not a literal window lifecycle.
 - Ship `cli-master-fake-agent` as an interactive stand-in. Fragmented
   writes, Ctrl+C, exit codes, and `--hold` are protocol features, not
   production knobs.
-- Run Playwright against the empty shell that users actually see. Skip the
-  Tauri grid spec until `CLI_MASTER_TAURI_E2E=1` can point at a real window.
-- Call `recover_stale_sessions_for_daemon` during `Daemon::bind`. That is
-  product behavior, not a test hook.
+- Run Playwright against the disconnected shell users actually see. Do not
+  count empty or unconditionally skipped Tauri cases as acceptance coverage.
+- Keep daemon recovery, event fanout, and Git inspection exactly as composed
+  on `main`; test restart through `Daemon::bind` without adding a second path.
+- Resolve the fake-agent binary from explicit Cargo/target locations without
+  `PATH` or build polling. Bound protocol reads and reap every child with RAII.
 - Linux and macOS share the same tests. CI already has both runners.
+
+## Integration provenance
+
+The dedicated worktree already contained two uncommitted frontend config
+edits before reconciliation: Vitest exclusion for `e2e/**` and an import-only
+reorder in `vite.config.ts`. Both were preserved. The Vitest exclusion is a
+required fix and is validated by `pnpm check`; the import reorder is behavior
+neutral and is reported separately rather than attributed to the E2E work.
 
 ## Files
 
