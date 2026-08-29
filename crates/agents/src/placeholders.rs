@@ -84,7 +84,6 @@ pub enum PlaceholderError {
     /// `${}` did not contain a name.
     EmptyName,
     /// The name is not in the allow-list.
-    /// The name is not in the allow-list.
     Unknown {
         /// Placeholder name extracted from `${NAME}`.
         name: String,

@@ -7,6 +7,8 @@ use crate::placeholders::PlaceholderError;
 /// Failure while detecting an agent or building its launch specification.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AgentError {
+    /// No session working directory or custom-agent default was provided.
+    MissingWorkingDirectory,
     /// The requested working directory does not exist or is not a directory.
     InvalidWorkingDirectory(PathBuf),
     /// No executable with the requested name was found in the explicit search path.
@@ -30,6 +32,13 @@ impl AgentError {
     #[must_use]
     pub fn api_error(&self) -> ApiError {
         match self {
+            Self::MissingWorkingDirectory => ApiError::new(
+                "AGENT_MISSING_WORKING_DIRECTORY",
+                "No working directory was provided for the agent launch.",
+            )
+            .with_action(
+                "Choose a project or worktree directory, or configure a default working directory.",
+            ),
             Self::InvalidWorkingDirectory(path) => ApiError::new(
                 "AGENT_INVALID_WORKING_DIRECTORY",
                 format!("Working directory is not a directory: {}", path.display()),
@@ -82,6 +91,9 @@ impl AgentError {
 impl fmt::Display for AgentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::MissingWorkingDirectory => formatter.write_str(
+                "working directory is required; provide a session directory or configure default_cwd",
+            ),
             Self::InvalidWorkingDirectory(path) => {
                 write!(
                     formatter,
@@ -219,7 +231,6 @@ pub enum PathImportError {
     SpawnFailed,
     /// The shell did not exit before the timeout.
     Timeout,
-    /// The shell exited unsuccessfully.
     /// The shell exited unsuccessfully.
     Unsuccessful {
         /// Process exit code, if the shell exited rather than being signaled.

@@ -3,7 +3,8 @@ mod common;
 use std::collections::BTreeMap;
 
 use cli_master_agents::{
-    AgentRegistry, AgentSource, CustomAgentDefinition, PlaceholderContext, RegistryError,
+    AgentError, AgentRegistry, AgentSource, CustomAgentDefinition, PlaceholderContext,
+    RegistryError,
 };
 use tempfile::TempDir;
 
@@ -77,6 +78,22 @@ fn custom_definition_rejects_invalid_env_keys_and_tilde_user() {
     let tilde = CustomAgentDefinition::new("ok", "Name", "~other/bin/agent")
         .expect_err("~user should fail");
     assert_eq!(tilde.field(), "executable");
+}
+
+#[test]
+fn resolving_cwd_without_session_or_default_reports_a_specific_error() {
+    let definition = CustomAgentDefinition::new("internal", "Internal", "internal").expect("valid");
+
+    let error = definition
+        .resolve_cwd(None, &PlaceholderContext::new())
+        .expect_err("missing cwd should fail explicitly");
+
+    assert_eq!(error, AgentError::MissingWorkingDirectory);
+    assert!(error.to_string().contains("working directory is required"));
+    let api_error = error.api_error();
+    assert_eq!(api_error.code, "AGENT_MISSING_WORKING_DIRECTORY");
+    assert!(api_error.message.contains("No working directory"));
+    assert!(api_error.action.is_some());
 }
 
 #[test]

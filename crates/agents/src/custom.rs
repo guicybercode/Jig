@@ -258,7 +258,7 @@ impl CustomAgentDefinition {
     ///
     /// # Errors
     ///
-    /// Returns an error if neither directory is usable or placeholders fail.
+    /// Returns an error if neither directory was provided or placeholders fail.
     pub fn resolve_cwd(
         &self,
         session_cwd: Option<&Path>,
@@ -268,7 +268,7 @@ impl CustomAgentDefinition {
             return Ok(path.to_path_buf());
         }
         let Some(template) = &self.default_cwd else {
-            return Err(AgentError::InvalidWorkingDirectory(PathBuf::new()));
+            return Err(AgentError::MissingWorkingDirectory);
         };
         let expanded = placeholders::expand(template, placeholders)?;
         let expanded = crate::expand_leading_tilde(&expanded)?;
