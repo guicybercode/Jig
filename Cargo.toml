@@ -5,6 +5,7 @@ members = [
     "crates/core",
     "crates/git",
     "crates/session",
+    "crates/daemon",
     "crates/storage",
 ]
 resolver = "2"

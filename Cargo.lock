@@ -496,6 +496,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "cli-master-daemon"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "cli-master-agents",
+ "cli-master-core",
+ "cli-master-git",
+ "cli-master-session",
+ "cli-master-storage",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "cli-master-desktop"
 version = "0.1.0"
 dependencies = [
