@@ -1,6 +1,6 @@
 mod support;
 
-use std::{fs, path::Path};
+use std::fs;
 
 use cli_master_git::{Git, GitErrorKind};
 use support::{RepositoryFixture, branch_exists, command, configure_identity};
