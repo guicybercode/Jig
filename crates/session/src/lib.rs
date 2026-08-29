@@ -260,6 +260,21 @@ impl SessionManager {
         self.signal(session_id, Signal::SIGKILL)
     }
 
+    /// Returns buffered output without creating a live subscriber.
+    #[must_use]
+    pub fn replay(&self, session_id: SessionId) -> Option<ReplaySnapshot> {
+        let live = self.sessions();
+        let session = live.get(&session_id)?;
+        let mut bytes = Vec::with_capacity(session.replay_bytes);
+        for (_, chunk) in &session.replay {
+            bytes.extend_from_slice(chunk);
+        }
+        Some(ReplaySnapshot {
+            last_sequence: session.sequence,
+            bytes,
+        })
+    }
+
     /// Subscribes to replay bytes plus live events.
     ///
     /// # Errors

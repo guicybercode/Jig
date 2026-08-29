@@ -489,22 +489,18 @@ impl Daemon {
 
     fn session_subscribe(&self, request: SessionIdRequest) -> Result<Value, ApiError> {
         let session = self.session_dto(request.session_id)?;
-        if !self.sessions.is_live(request.session_id) {
+        if let Some(snapshot) = self.sessions.replay(request.session_id) {
             return serde_json::to_value(SessionSubscribeResponse {
                 session,
-                last_sequence: 0,
-                replay_base64: String::new(),
+                last_sequence: snapshot.last_sequence,
+                replay_base64: BASE64.encode(snapshot.bytes),
             })
             .map_err(json_error);
         }
-        let (snapshot, _receiver) = self
-            .sessions
-            .subscribe(request.session_id)
-            .map_err(session_error)?;
         serde_json::to_value(SessionSubscribeResponse {
             session,
-            last_sequence: snapshot.last_sequence,
-            replay_base64: BASE64.encode(snapshot.bytes),
+            last_sequence: 0,
+            replay_base64: String::new(),
         })
         .map_err(json_error)
     }
