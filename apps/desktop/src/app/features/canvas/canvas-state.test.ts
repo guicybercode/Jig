@@ -5,6 +5,7 @@ import {
   createCanvasNode,
   createInitialCanvasDocument,
   createInitialCanvasState,
+  createTerminalCanvasNode,
   parseCanvasDocument,
   serializeCanvasDocument,
 } from "./canvas-state";
@@ -20,6 +21,51 @@ describe("canvas state", () => {
     ]);
     expect(document.connections).toHaveLength(2);
     expect(document.zoom).toBe(1);
+    expect(document.nodes[0]).toMatchObject({
+      preset: "shell",
+      width: 432,
+      height: 256,
+    });
+  });
+
+  it("persists terminal presets and clamps terminal resizing", () => {
+    const terminal = createTerminalCanvasNode(
+      { x: 40, y: 50 },
+      { title: "Pairing", preset: "codex", workingDirectory: "~/project" },
+      "terminal-codex",
+    );
+    const initial = createInitialCanvasState({
+      version: 1,
+      nodes: [terminal],
+      connections: [],
+      zoom: 1,
+    });
+    const resized = canvasReducer(initial, {
+      type: "terminal/resize",
+      nodeId: terminal.id,
+      size: { width: 2_000, height: 100 },
+    });
+    const configured = canvasReducer(resized, {
+      type: "terminal/configure",
+      nodeId: terminal.id,
+      configuration: {
+        title: "Review",
+        preset: "claude",
+        workingDirectory: "~/review",
+      },
+    });
+
+    expect(configured.nodes[0]).toMatchObject({
+      title: "Review",
+      preset: "claude",
+      executable: "claude",
+      workingDirectory: "~/review",
+      width: 960,
+      height: 192,
+    });
+    expect(parseCanvasDocument(serializeCanvasDocument(configured))).toEqual(
+      expect.objectContaining({ nodes: configured.nodes }),
+    );
   });
 
   it("moves, renames, and updates notes without changing other nodes", () => {

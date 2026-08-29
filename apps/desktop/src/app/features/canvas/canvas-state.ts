@@ -2,6 +2,10 @@ export const CANVAS_STORAGE_KEY = "cli-master.canvas.v1";
 export const CANVAS_DOCUMENT_VERSION = 1;
 
 export type CanvasNodeKind = "terminal" | "note";
+export type TerminalPreset = "shell" | "codex" | "claude" | "opencode" | "custom";
+
+export const DEFAULT_TERMINAL_SIZE = { width: 432, height: 256 } as const;
+export const NOTE_SIZE = { width: 288, height: 288 } as const;
 
 export interface CanvasPoint {
   readonly x: number;
@@ -17,6 +21,11 @@ interface CanvasNodeBase extends CanvasPoint {
 export interface TerminalCanvasNode extends CanvasNodeBase {
   readonly kind: "terminal";
   readonly sessionId?: string;
+  readonly preset: TerminalPreset;
+  readonly executable?: string;
+  readonly workingDirectory?: string;
+  readonly width: number;
+  readonly height: number;
 }
 
 export interface NoteCanvasNode extends CanvasNodeBase {
@@ -25,6 +34,13 @@ export interface NoteCanvasNode extends CanvasNodeBase {
 }
 
 export type CanvasNode = TerminalCanvasNode | NoteCanvasNode;
+
+export interface CanvasTerminalConfiguration {
+  readonly title: string;
+  readonly preset: TerminalPreset;
+  readonly executable?: string;
+  readonly workingDirectory?: string;
+}
 
 export interface CanvasConnection {
   readonly id: string;
@@ -62,6 +78,16 @@ export type CanvasAction =
       readonly nodeId: string;
       readonly text: string;
     }
+  | {
+      readonly type: "terminal/configure";
+      readonly nodeId: string;
+      readonly configuration: CanvasTerminalConfiguration;
+    }
+  | {
+      readonly type: "terminal/resize";
+      readonly nodeId: string;
+      readonly size: { readonly width: number; readonly height: number };
+    }
   | { readonly type: "node/delete"; readonly nodeId: string }
   | { readonly type: "node/select"; readonly nodeId: string | null }
   | { readonly type: "connection/start"; readonly nodeId: string }
@@ -76,24 +102,26 @@ const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 1.5;
 const MAX_TITLE_LENGTH = 80;
 const MAX_NOTE_LENGTH = 50_000;
+const MIN_TERMINAL_WIDTH = 320;
+const MAX_TERMINAL_WIDTH = 960;
+const MIN_TERMINAL_HEIGHT = 192;
+const MAX_TERMINAL_HEIGHT = 720;
+const MAX_EXECUTABLE_LENGTH = 256;
+const MAX_WORKING_DIRECTORY_LENGTH = 1_024;
 
 /** Creates the first-launch composition shown before project sessions exist. */
 export function createInitialCanvasDocument(): CanvasDocument {
   const nodes: readonly CanvasNode[] = [
-    {
-      id: "terminal-primary",
-      kind: "terminal",
-      title: "Terminal 1",
-      x: 170,
-      y: 210,
-    },
-    {
-      id: "terminal-secondary",
-      kind: "terminal",
-      title: "Terminal 2",
-      x: 560,
-      y: 90,
-    },
+    createTerminalCanvasNode(
+      { x: 170, y: 210 },
+      { title: "Terminal 1", preset: "shell" },
+      "terminal-primary",
+    ),
+    createTerminalCanvasNode(
+      { x: 560, y: 90 },
+      { title: "Terminal 2", preset: "shell" },
+      "terminal-secondary",
+    ),
     {
       id: "note-first",
       kind: "note",
@@ -155,6 +183,32 @@ export function canvasReducer(
       return updateNode(state, action.nodeId, (node) =>
         node.kind === "note"
           ? { ...node, text: action.text.slice(0, MAX_NOTE_LENGTH) }
+          : node,
+      );
+    case "terminal/configure":
+      return updateNode(state, action.nodeId, (node) =>
+        node.kind === "terminal"
+          ? configureTerminalNode(node, action.configuration)
+          : node,
+      );
+    case "terminal/resize":
+      return updateNode(state, action.nodeId, (node) =>
+        node.kind === "terminal"
+          ? {
+              ...node,
+              width: normalizeNumber(
+                action.size.width,
+                node.width,
+                MIN_TERMINAL_WIDTH,
+                MAX_TERMINAL_WIDTH,
+              ),
+              height: normalizeNumber(
+                action.size.height,
+                node.height,
+                MIN_TERMINAL_HEIGHT,
+                MAX_TERMINAL_HEIGHT,
+              ),
+            }
           : node,
       );
     case "node/delete":
@@ -248,12 +302,41 @@ export function createCanvasNode(
       ...normalizedPosition,
     };
   }
+  return createTerminalCanvasNode(normalizedPosition, {}, id);
+}
+
+export function createTerminalCanvasNode(
+  position: CanvasPoint,
+  configuration: Partial<CanvasTerminalConfiguration> = {},
+  id = createId("terminal"),
+): TerminalCanvasNode {
+  const preset = normalizeTerminalPreset(configuration.preset);
+  const executable = normalizeOptionalText(
+    configuration.executable ?? executableForPreset(preset),
+    MAX_EXECUTABLE_LENGTH,
+  );
   return {
     id,
-    kind,
-    title: "New terminal",
-    ...normalizedPosition,
+    kind: "terminal",
+    title: normalizeTitle(configuration.title, titleForPreset(preset)),
+    preset,
+    executable,
+    workingDirectory: normalizeOptionalText(
+      configuration.workingDirectory,
+      MAX_WORKING_DIRECTORY_LENGTH,
+    ),
+    x: clamp(position.x, MIN_POSITION, MAX_POSITION),
+    y: clamp(position.y, MIN_POSITION, MAX_POSITION),
+    ...DEFAULT_TERMINAL_SIZE,
   };
+}
+
+export function getCanvasNodeSize(
+  node: CanvasNode,
+): { readonly width: number; readonly height: number } {
+  return node.kind === "terminal"
+    ? { width: node.width, height: node.height }
+    : NOTE_SIZE;
 }
 
 function completeConnection(
@@ -372,9 +455,101 @@ function parseNode(value: unknown): CanvasNode | null {
   return {
     ...base,
     kind: "terminal",
+    preset: normalizeTerminalPreset(value.preset),
+    executable: normalizeOptionalText(
+      typeof value.executable === "string"
+        ? value.executable
+        : executableForPreset(normalizeTerminalPreset(value.preset)),
+      MAX_EXECUTABLE_LENGTH,
+    ),
+    workingDirectory: normalizeOptionalText(
+      value.workingDirectory,
+      MAX_WORKING_DIRECTORY_LENGTH,
+    ),
+    width: normalizeNumber(
+      value.width,
+      DEFAULT_TERMINAL_SIZE.width,
+      MIN_TERMINAL_WIDTH,
+      MAX_TERMINAL_WIDTH,
+    ),
+    height: normalizeNumber(
+      value.height,
+      DEFAULT_TERMINAL_SIZE.height,
+      MIN_TERMINAL_HEIGHT,
+      MAX_TERMINAL_HEIGHT,
+    ),
     sessionId:
       typeof value.sessionId === "string" ? value.sessionId : undefined,
   };
+}
+
+function configureTerminalNode(
+  node: TerminalCanvasNode,
+  configuration: CanvasTerminalConfiguration,
+): TerminalCanvasNode {
+  const preset = normalizeTerminalPreset(configuration.preset);
+  return {
+    ...node,
+    title: normalizeTitle(configuration.title, titleForPreset(preset)),
+    preset,
+    executable: normalizeOptionalText(
+      configuration.executable ?? executableForPreset(preset),
+      MAX_EXECUTABLE_LENGTH,
+    ),
+    workingDirectory: normalizeOptionalText(
+      configuration.workingDirectory,
+      MAX_WORKING_DIRECTORY_LENGTH,
+    ),
+  };
+}
+
+function normalizeTerminalPreset(value: unknown): TerminalPreset {
+  return value === "codex" ||
+    value === "claude" ||
+    value === "opencode" ||
+    value === "custom"
+    ? value
+    : "shell";
+}
+
+function executableForPreset(preset: TerminalPreset): string | undefined {
+  switch (preset) {
+    case "codex":
+      return "codex";
+    case "claude":
+      return "claude";
+    case "opencode":
+      return "opencode";
+    case "shell":
+    case "custom":
+      return undefined;
+  }
+}
+
+function titleForPreset(preset: TerminalPreset): string {
+  switch (preset) {
+    case "codex":
+      return "Codex";
+    case "claude":
+      return "Claude";
+    case "opencode":
+      return "OpenCode";
+    case "shell":
+      return "New terminal";
+    case "custom":
+      return "Custom terminal";
+  }
+}
+
+function normalizeOptionalText(
+  value: unknown,
+  maximumLength: number,
+): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim().slice(0, maximumLength);
+  return normalized || undefined;
 }
 
 function parseConnection(
