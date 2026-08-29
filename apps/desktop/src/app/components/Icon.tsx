@@ -3,12 +3,18 @@ import type { ReactNode } from "react";
 interface IconProps {
   readonly name:
     | "branch"
+    | "check"
+    | "close"
     | "copy"
     | "folder"
     | "plus"
+    | "refresh"
     | "repository"
     | "session"
-    | "terminal";
+    | "settings"
+    | "terminal"
+    | "trash"
+    | "warning";
 }
 
 /** Renders the shared, outline-style application icon set. */
@@ -42,11 +48,15 @@ function getIconPaths(name: IconProps["name"]): ReactNode {
           <path d="M6 7v10M8 8c2 0 3.5 0 5-1l3-1" />
         </>
       );
+    case "check":
+      return <path d="M5 12.5 9.5 17 19 7" />;
+    case "close":
+      return <path d="M6 6l12 12M18 6 6 18" />;
     case "copy":
       return (
         <>
-          <rect x="8" y="8" width="12" height="12" rx="2" />
-          <path d="M4 16V6a2 2 0 0 1 2-2h10" />
+          <rect x="8" y="8" width="11" height="13" rx="1.5" />
+          <path d="M5 16V5.5A1.5 1.5 0 0 1 6.5 4H15" />
         </>
       );
     case "folder":
@@ -55,6 +65,13 @@ function getIconPaths(name: IconProps["name"]): ReactNode {
       );
     case "plus":
       return <path d="M12 5v14M5 12h14" />;
+    case "refresh":
+      return (
+        <>
+          <path d="M20 12a8 8 0 1 1-2.2-5.5" />
+          <path d="M20 5v5h-5" />
+        </>
+      );
     case "repository":
       return (
         <>
@@ -68,6 +85,26 @@ function getIconPaths(name: IconProps["name"]): ReactNode {
         <>
           <rect x="3" y="4" width="18" height="16" rx="2" />
           <path d="m7 9 3 3-3 3M13 15h4" />
+        </>
+      );
+    case "settings":
+      return (
+        <>
+          <circle cx="12" cy="12" r="3" />
+          <path d="M12 3v2M12 19v2M4.9 6.5l1.7 1M17.4 16.5l1.7 1M3 12h2M19 12h2M4.9 17.5l1.7-1M17.4 7.5l1.7-1" />
+        </>
+      );
+    case "trash":
+      return (
+        <>
+          <path d="M5 7h14M10 7V5h4v2M8 7l1 12h6l1-12" />
+        </>
+      );
+    case "warning":
+      return (
+        <>
+          <path d="M12 4 3 19h18L12 4Z" />
+          <path d="M12 9v5M12 16.5v.5" />
         </>
       );
   }

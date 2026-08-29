@@ -1,7 +1,13 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
+import { AgentApiProvider } from "../ipc/AgentApiProvider";
+import { createMemoryAgentApi } from "../ipc/memoryAgentApi";
+import type { IpcClient } from "../ipc";
 import { AppHeader } from "./components/AppHeader";
-import { DiagnosticsDialog } from "./features/diagnostics/DiagnosticsDialog";
+import { AgentsView } from "./features/agents/AgentsView";
+import {
+  DiagnosticsDialog as ApplicationDiagnosticsDialog,
+} from "./features/diagnostics/DiagnosticsDialog";
 import { ProjectSidebar } from "./features/navigation/ProjectSidebar";
 import { LocalStatusBar } from "./features/status/LocalStatusBar";
 import { CustomAgentDialog } from "./features/workspace/CustomAgentDialog";
@@ -14,7 +20,6 @@ import {
   useSelectedProject,
   useWorkspaceActions,
 } from "./workspace";
-import type { IpcClient } from "../ipc";
 
 interface AppShellProps {
   readonly client?: IpcClient;
@@ -22,9 +27,12 @@ interface AppShellProps {
 
 /** Composes the persistent desktop application regions. */
 export function AppShell({ client }: AppShellProps) {
+  const agentApi = useMemo(() => createMemoryAgentApi(), []);
   return (
     <WorkspaceProvider client={client}>
-      <AppShellLayout />
+      <AgentApiProvider api={agentApi}>
+        <AppShellLayout />
+      </AgentApiProvider>
     </WorkspaceProvider>
   );
 }
@@ -38,16 +46,28 @@ function AppShellLayout() {
     () => actions.getDiagnostics(),
     [actions],
   );
+  const [view, setView] = useState<"workspace" | "agents">("workspace");
 
   return (
     <div className="app-shell">
       <a className="skip-link" href="#workspace">
         Skip to workspace
       </a>
-      <AppHeader />
+      <AppHeader
+        agentsActive={view === "agents"}
+        onOpenAgents={() =>
+          setView((current) => (current === "agents" ? "workspace" : "agents"))
+        }
+      />
       <div className="app-shell__body">
         <ProjectSidebar />
-        {project ? <WorkspaceMain project={project} /> : <WorkspaceEmptyState />}
+        {view === "agents" ? (
+          <AgentsView hasProject={project !== null} />
+        ) : project ? (
+          <WorkspaceMain project={project} />
+        ) : (
+          <WorkspaceEmptyState />
+        )}
       </div>
       <LocalStatusBar
         onOpenDiagnostics={() => {
@@ -79,7 +99,7 @@ function AppShellLayout() {
       ) : null}
       <NewSessionDialog />
       <CustomAgentDialog />
-      <DiagnosticsDialog
+      <ApplicationDiagnosticsDialog
         open={diagnosticsOpen}
         load={loadDiagnostics}
         onClose={() => {
