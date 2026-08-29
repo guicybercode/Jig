@@ -489,7 +489,11 @@ dependencies = [
 name = "cli-master-storage"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "cli-master-core",
  "rusqlite",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 
