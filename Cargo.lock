@@ -535,6 +535,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "cli-master-e2e"
+version = "0.1.0"
+dependencies = [
+ "cli-master-core",
+ "cli-master-daemon",
+ "cli-master-fake-agent",
+ "cli-master-git",
+ "cli-master-session",
+ "cli-master-storage",
+ "rustix",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "cli-master-fake-agent"
+version = "0.1.0"
+dependencies = [
+ "rustix",
+ "signal-hook",
+]
+
+[[package]]
 name = "cli-master-git"
 version = "0.1.0"
 dependencies = [
@@ -3436,6 +3459,16 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
+
+[[package]]
+name = "signal-hook"
+version = "0.3.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d881a16cf4426aa584979d30bd82cb33429027e42122b169753d6ef1085ed6e2"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
 
 [[package]]
 name = "signal-hook-registry"

@@ -4,6 +4,8 @@ members = [
   "crates/agents",
   "crates/core",
   "crates/daemon",
+  "crates/e2e",
+  "crates/fake-agent",
   "crates/git",
   "crates/session",
   "crates/storage",
