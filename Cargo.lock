@@ -501,7 +501,9 @@ dependencies = [
 name = "cli-master-daemon"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "cli-master-core",
+ "cli-master-git",
  "cli-master-storage",
  "futures-util",
  "rustix",
@@ -513,6 +515,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -520,11 +523,18 @@ name = "cli-master-desktop"
 version = "0.1.0"
 dependencies = [
  "cli-master-core",
+ "cli-master-daemon",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -554,6 +564,7 @@ name = "cli-master-git"
 version = "0.1.0"
 dependencies = [
  "tempfile",
+ "unicode-normalization",
 ]
 
 [[package]]
@@ -561,6 +572,8 @@ name = "cli-master-session"
 version = "0.1.0"
 dependencies = [
  "cli-master-core",
+ "cli-master-git",
+ "cli-master-storage",
  "nix 0.30.1",
  "portable-pty",
  "tempfile",
@@ -2199,6 +2212,15 @@ dependencies = [
  "log",
  "tendril",
  "web_atoms",
+]
+
+[[package]]
+name = "matchers"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
+dependencies = [
+ "regex-automata",
 ]
 
 [[package]]
@@ -4341,12 +4363,16 @@ version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
 dependencies = [
+ "matchers",
  "nu-ansi-term",
+ "once_cell",
+ "regex-automata",
  "serde",
  "serde_json",
  "sharded-slab",
  "smallvec",
  "thread_local",
+ "tracing",
  "tracing-core",
  "tracing-log",
  "tracing-serde",
@@ -4449,6 +4475,15 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
+dependencies = [
+ "tinyvec",
+]
 
 [[package]]
 name = "unicode-segmentation"

@@ -13,6 +13,10 @@ pub enum ChangeKind {
     Deleted,
     /// A path is not tracked by Git.
     Untracked,
+    /// A tracked path was renamed or copied from another path.
+    Renamed,
+    /// A path matches an ignore rule.
+    Ignored,
 }
 
 /// One changed repository-relative path.
@@ -35,12 +39,16 @@ pub struct ChangedFile {
 pub struct StatusCounts {
     /// Modified tracked paths.
     pub modified: usize,
-    /// Added, copied, or renamed paths.
+    /// Added paths that are not renames.
     pub added: usize,
     /// Deleted tracked paths.
     pub deleted: usize,
     /// Untracked paths.
     pub untracked: usize,
+    /// Renamed or copied paths.
+    pub renamed: usize,
+    /// Ignored paths reported by porcelain.
+    pub ignored: usize,
 }
 
 /// Branch and changed-file state parsed from porcelain v2.
@@ -78,6 +86,7 @@ pub(crate) fn read(git: &Git, path: &Path) -> Result<RepositoryStatus, GitError>
             os("--branch"),
             os("-z"),
             os("--untracked-files=all"),
+            os("--ignored=matching"),
         ],
         "read repository status",
     )?;
@@ -141,7 +150,17 @@ fn parse_with_ignored(bytes: &[u8]) -> Result<(RepositoryStatus, Vec<PathBuf>), 
                 staged: false,
                 unstaged: false,
             }),
-            b'!' => ignored.push(parse_path(field_after_prefix(record, b"! ")?)),
+            b'!' => {
+                let path = parse_path(field_after_prefix(record, b"! ")?);
+                ignored.push(path.clone());
+                files.push(ChangedFile {
+                    path,
+                    original_path: None,
+                    kind: ChangeKind::Ignored,
+                    staged: false,
+                    unstaged: false,
+                });
+            }
             _ if record.starts_with(b"# ") => {}
             _ => return Err(invalid_porcelain()),
         }
@@ -157,6 +176,8 @@ fn parse_with_ignored(bytes: &[u8]) -> Result<(RepositoryStatus, Vec<PathBuf>), 
             ChangeKind::Added => counts.added += 1,
             ChangeKind::Deleted => counts.deleted += 1,
             ChangeKind::Untracked => counts.untracked += 1,
+            ChangeKind::Renamed => counts.renamed += 1,
+            ChangeKind::Ignored => counts.ignored += 1,
         }
         has_staged |= file.staged;
         has_tracked_changes |= file.unstaged;
@@ -219,7 +240,11 @@ fn changed_file(
     }
     let index = xy[0];
     let worktree = xy[1];
-    let kind = classify(index, worktree);
+    let kind = if original_path.is_some() {
+        ChangeKind::Renamed
+    } else {
+        classify(index, worktree)
+    };
     Ok(ChangedFile {
         path: parse_path(path),
         original_path,
@@ -288,9 +313,11 @@ mod tests {
         let status = parse(input).expect("porcelain fixture should parse");
         assert_eq!(status.branch.as_deref(), Some("main"));
         assert_eq!(status.counts.modified, 1);
-        assert_eq!(status.counts.added, 2);
+        assert_eq!(status.counts.added, 1);
         assert_eq!(status.counts.deleted, 1);
         assert_eq!(status.counts.untracked, 1);
+        assert_eq!(status.counts.renamed, 1);
+        assert_eq!(status.files[3].kind, ChangeKind::Renamed);
         assert_eq!(
             status.files[3].original_path,
             Some(PathBuf::from("old.txt"))
@@ -306,6 +333,7 @@ mod tests {
         let (status, ignored) =
             parse_with_ignored(input).expect("removal porcelain fixture should parse");
         assert!(!status.is_dirty());
+        assert_eq!(status.counts.ignored, 2);
         assert_eq!(
             ignored,
             [PathBuf::from("target/"), PathBuf::from("local secret.txt")]

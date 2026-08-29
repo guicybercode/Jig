@@ -3,32 +3,32 @@ use std::io;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use cli_master_core::wire::{self, EmptyRequest, HelloResponse, StateSnapshotResponse};
-use cli_master_core::{
-    ApiError, DaemonInstanceId, EnvelopeKind, PROTOCOL_V1, RequestEnvelope, RequestId,
-    ResponseEnvelope,
-};
-use cli_master_storage::Storage;
-use futures_util::{SinkExt, StreamExt};
-use serde::de::DeserializeOwned;
-use serde_json::Value;
-use tokio::net::{UnixListener, UnixStream};
+use cli_master_core::wire::HelloResponse;
+use cli_master_core::{DaemonInstanceId, PROTOCOL_V1};
+use cli_master_git::Git;
+use cli_master_storage::{RecoveryContext, Storage};
+use tokio::net::UnixListener;
 use tokio::task::JoinSet;
-use tokio_util::codec::LengthDelimitedCodec;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
+use crate::client::serve_client;
 use crate::lock::InstanceLock;
-use crate::{DaemonConfig, DaemonError};
+use crate::{DaemonConfig, DaemonError, EventBus};
 
 /// Largest accepted JSON frame, excluding the four-byte length prefix.
 pub const MAX_FRAME_LENGTH: usize = 1024 * 1024;
 
 #[derive(Debug)]
-struct ServerState {
-    hello: HelloResponse,
-    schema_version: u32,
+pub(crate) struct ServerState {
+    pub(crate) hello: HelloResponse,
+    pub(crate) schema_version: u32,
+    pub(crate) config: DaemonConfig,
+    pub(crate) events: EventBus,
+    pub(crate) storage: Storage,
+    pub(crate) git: Option<Git>,
 }
 
 /// Bound, single-instance local daemon.
@@ -41,7 +41,6 @@ pub struct Daemon {
     listener: UnixListener,
     socket_owner: SocketOwner,
     _instance_lock: InstanceLock,
-    _storage: Storage,
     state: Arc<ServerState>,
 }
 
@@ -57,22 +56,22 @@ impl Daemon {
         ensure_private_directory(config.runtime_directory())?;
 
         let instance_lock = InstanceLock::acquire(config.lock_path())?;
-        remove_stale_socket(config.socket_path())?;
-
-        let mut storage = Storage::open(config.database_path())?;
-        storage.migrate()?;
         let instance_id = DaemonInstanceId::new();
-        let recovered =
-            storage.recover_stale_sessions_for_daemon(&instance_id.to_string(), unix_now_ms())?;
-        if recovered > 0 {
-            info!(
-                %instance_id,
-                recovered,
-                "reconciled live sessions from a prior daemon lifetime to unknown"
-            );
-        }
+        let instance_id_text = instance_id.to_string();
+        let storage = Storage::open_migrated(config.database_path())?;
+        let reconciliation = storage.reconcile_sessions(&RecoveryContext {
+            current_daemon_instance_id: &instance_id_text,
+            live_session_ids: &[],
+            updated_at_ms: unix_epoch_ms()?,
+        })?;
+        let recovered_sessions = reconciliation
+            .iter()
+            .filter(|event| event.previous_status != event.new_status)
+            .count();
         let schema_version = storage.schema_version()?;
+        let git = crate::git_inspection::discover_git();
 
+        remove_stale_socket(config.socket_path())?;
         let listener = UnixListener::bind(config.socket_path())
             .map_err(|error| DaemonError::io("bind daemon socket", config.socket_path(), error))?;
         fs::set_permissions(config.socket_path(), fs::Permissions::from_mode(0o600)).map_err(
@@ -86,6 +85,10 @@ impl Daemon {
                 instance_id,
             },
             schema_version,
+            config: config.clone(),
+            events: EventBus::new(crate::DiagnosticLog::default()),
+            storage,
+            git,
         });
 
         info!(
@@ -93,6 +96,7 @@ impl Daemon {
             socket = %config.socket_path().display(),
             database = %config.database_path().display(),
             schema_version,
+            recovered_sessions,
             "daemon bound"
         );
 
@@ -101,7 +105,6 @@ impl Daemon {
             listener,
             socket_owner,
             _instance_lock: instance_lock,
-            _storage: storage,
             state,
         })
     }
@@ -116,6 +119,12 @@ impl Daemon {
     #[must_use]
     pub fn socket_path(&self) -> &Path {
         self.config.socket_path()
+    }
+
+    /// Session event bus used by `SessionManager` and tests.
+    #[must_use]
+    pub fn events(&self) -> &EventBus {
+        &self.state.events
     }
 
     /// Accepts clients until cancellation, then closes all connections and
@@ -158,203 +167,15 @@ impl Daemon {
             }
         }
         self.socket_owner.remove_if_owned();
+        self.state.storage.close()?;
         info!(instance_id = %self.state.hello.instance_id, "daemon stopped");
         Ok(())
     }
 }
 
-async fn serve_client(
-    stream: UnixStream,
-    state: Arc<ServerState>,
-    cancellation: CancellationToken,
-) {
-    if let Err(error) = validate_peer(&stream) {
-        warn!(%error, "rejecting daemon client with invalid peer credentials");
-        return;
-    }
-    let mut framed = LengthDelimitedCodec::builder()
-        .max_frame_length(MAX_FRAME_LENGTH)
-        .new_framed(stream);
-
-    loop {
-        let frame = tokio::select! {
-            () = cancellation.cancelled() => break,
-            frame = framed.next() => frame,
-        };
-
-        let Some(frame) = frame else {
-            break;
-        };
-        let bytes = match frame {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                warn!(%error, max_frame_length = MAX_FRAME_LENGTH, "closing client with invalid frame");
-                break;
-            }
-        };
-
-        let response = match decode_request(&bytes) {
-            Ok(request) => dispatch(request, &state),
-            Err(failure) => {
-                let Some(request_id) = failure.request_id else {
-                    warn!(error_code = %failure.error.code, "closing uncorrelatable invalid request");
-                    break;
-                };
-                ResponseEnvelope::failure(request_id, failure.error)
-            }
-        };
-
-        let encoded = match serde_json::to_vec(&response) {
-            Ok(encoded) => encoded,
-            Err(error) => {
-                warn!(%error, "could not encode daemon response");
-                break;
-            }
-        };
-        if let Err(error) = framed.send(encoded.into()).await {
-            debug!(%error, "client disconnected before response completed");
-            break;
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn validate_peer(stream: &UnixStream) -> Result<(), io::Error> {
-    let credentials = rustix::net::sockopt::socket_peercred(stream).map_err(io::Error::from)?;
-    if credentials.uid != rustix::process::geteuid() {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "peer effective user does not own the daemon",
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "keeps the security check call site identical across supported targets"
-)]
-fn validate_peer(_stream: &UnixStream) -> Result<(), io::Error> {
-    // rustix exposes safe SO_PEERCRED access on Linux, but no safe getpeereid
-    // wrapper on macOS. There the 0700 runtime directory and 0600 socket are
-    // the explicit access-control boundary while workspace unsafe code remains
-    // forbidden.
-    Ok(())
-}
-
-fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> ResponseEnvelope<Value> {
-    if request.kind != EnvelopeKind::Request {
-        return ResponseEnvelope::failure(
-            request.request_id,
-            ApiError::new(
-                "invalid_envelope_kind",
-                "Daemon commands must use the request envelope kind",
-            )
-            .with_detail("receivedKind", format!("{:?}", request.kind).to_lowercase())
-            .with_detail("expectedKind", "request"),
-        );
-    }
-    if request.version != PROTOCOL_V1 {
-        return ResponseEnvelope::failure(
-            request.request_id,
-            ApiError::new(
-                "unsupported_protocol_version",
-                "The requested IPC protocol version is not supported",
-            )
-            .with_action("Update CLI Master so the desktop and daemon versions match")
-            .with_detail("receivedVersion", request.version)
-            .with_detail("supportedVersion", PROTOCOL_V1),
-        );
-    }
-
-    let result = match request.method.as_str() {
-        wire::method::SYSTEM_HELLO => {
-            if let Err(error) = decode_payload::<EmptyRequest>(request.payload) {
-                return invalid_payload(request.request_id, &error);
-            }
-            serde_json::to_value(&state.hello)
-        }
-        wire::method::STATE_SNAPSHOT => {
-            if let Err(error) = decode_payload::<EmptyRequest>(request.payload) {
-                return invalid_payload(request.request_id, &error);
-            }
-            serde_json::to_value(StateSnapshotResponse {
-                schema_version: state.schema_version,
-                projects: Vec::new(),
-                agents: Vec::new(),
-                sessions: Vec::new(),
-                worktrees: Vec::new(),
-            })
-        }
-        method if wire::method::is_supported(method) => {
-            return ResponseEnvelope::failure(
-                request.request_id,
-                ApiError::new(
-                    "method_not_implemented",
-                    "The requested daemon method is part of the Beta contract but is not implemented",
-                )
-                .with_detail("method", method),
-            );
-        }
-        _ => {
-            return ResponseEnvelope::failure(
-                request.request_id,
-                ApiError::new("method_not_found", "The requested daemon method is unknown")
-                    .with_detail("method", request.method),
-            );
-        }
-    };
-
-    match result {
-        Ok(value) => ResponseEnvelope::success(request.request_id, value),
-        Err(error) => ResponseEnvelope::failure(
-            request.request_id,
-            ApiError::new("internal_error", "The daemon could not encode its response")
-                .with_detail("reason", error.to_string()),
-        ),
-    }
-}
-
-fn decode_payload<T: DeserializeOwned>(payload: Value) -> Result<T, serde_json::Error> {
-    serde_json::from_value(payload)
-}
-
-fn invalid_payload(request_id: RequestId, error: &serde_json::Error) -> ResponseEnvelope<Value> {
-    ResponseEnvelope::failure(
-        request_id,
-        ApiError::new(
-            "invalid_payload",
-            "Request payload does not match the method contract",
-        )
-        .with_detail("reason", error.to_string()),
-    )
-}
-
-struct RequestFailure {
-    request_id: Option<RequestId>,
-    error: ApiError,
-}
-
-fn decode_request(bytes: &[u8]) -> Result<RequestEnvelope<Value>, RequestFailure> {
-    let value: Value = serde_json::from_slice(bytes).map_err(|error| RequestFailure {
-        request_id: None,
-        error: ApiError::new("invalid_json", "Request frame is not valid JSON")
-            .with_detail("reason", error.to_string()),
-    })?;
-    let request_id = value
-        .get("requestId")
-        .and_then(Value::as_str)
-        .and_then(|raw| raw.parse().ok());
-
-    serde_json::from_value(value).map_err(|error| RequestFailure {
-        request_id,
-        error: ApiError::new(
-            "invalid_request",
-            "Request does not match the IPC envelope schema",
-        )
-        .with_detail("reason", error.to_string()),
-    })
+fn unix_epoch_ms() -> Result<i64, DaemonError> {
+    let elapsed = SystemTime::now().duration_since(UNIX_EPOCH)?;
+    i64::try_from(elapsed.as_millis()).map_err(|_| DaemonError::TimestampOverflow)
 }
 
 fn ensure_private_directory(path: &Path) -> Result<(), DaemonError> {
@@ -437,40 +258,5 @@ impl SocketOwner {
 impl Drop for SocketOwner {
     fn drop(&mut self) {
         self.remove_if_owned();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use cli_master_core::ResponsePayload;
-    use serde_json::json;
-
-    use super::*;
-
-    #[test]
-    fn dispatch_rejects_non_request_kind() {
-        let request_id = RequestId::new();
-        let response = dispatch(
-            RequestEnvelope {
-                kind: EnvelopeKind::Event,
-                version: PROTOCOL_V1,
-                request_id,
-                method: "system.hello".to_owned(),
-                payload: json!({}),
-            },
-            &ServerState {
-                hello: HelloResponse {
-                    protocol_version: PROTOCOL_V1,
-                    daemon_version: "test".to_owned(),
-                    instance_id: DaemonInstanceId::new(),
-                },
-                schema_version: 1,
-            },
-        );
-
-        match response.payload {
-            ResponsePayload::Error { error } => assert_eq!(error.code, "invalid_envelope_kind"),
-            ResponsePayload::Success { .. } => panic!("wrong kind must fail"),
-        }
     }
 }

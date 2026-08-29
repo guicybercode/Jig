@@ -55,6 +55,10 @@ ignore unknown events. Do not invent behavior for a name you do not know.
 - write status transitions
 - signal a process group
 
+`SessionWorktreeSaga` coordinates Git and SQLite effects for isolated session
+creation, recovery, and two-step worktree removal. It delegates every process
+spawn and rollback to `SessionManager`; it must not open PTYs or signal PIDs.
+
 React may call `session.start` / `session.stop` / `session.write`. Unmounting a
 terminal view must not stop the session. Do not store PTY bytes in React
 state. Do not kill a PID from the UI. Although the local public session DTO
@@ -99,9 +103,11 @@ Backend tests use real temp dirs, real SQLite, the real `git` binary, and
 short-lived child programs. Frontend tests mock the project-owned IPC client,
 not scattered Tauri APIs. Do not unit-test xterm.js.
 
-## What this session did not build
+## Desktop bridge
 
-The PTY/session crate now owns live process mechanics, but `cli-masterd` does
-not compose it with storage or expose session methods on the private socket
-yet. Do not pretend the desktop `protocol_info` command is a daemon handshake;
-the Tauri bridge is not connected to the daemon socket yet.
+The Tauri process forwards versioned wire envelopes through generic commands
+(`daemon_invoke`, `daemon_status`, `daemon_reconnect`, `app_quit`). Do not add
+domain Tauri commands for `project.*`, `agent.*`, `session.*`, or `git.*`.
+`protocol_info` remains a local catalog snapshot and is not `system.hello`.
+Closing the window disconnects the socket client and does not stop daemon-owned
+sessions. See `docs/desktop/daemon-sidecar.md` for binary discovery.
