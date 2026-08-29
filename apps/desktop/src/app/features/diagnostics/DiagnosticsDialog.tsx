@@ -1,30 +1,35 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useState } from "react";
 
+import { Dialog } from "../../components/Dialog";
 import { Icon } from "../../components/Icon";
-import { exportNativeDiagnostics } from "./loadDiagnostics";
-import type { DiagnosticsLoader, DiagnosticsReport } from "./types";
+import type { DiagnosticsLoader, DiagnosticsResponse } from "./types";
 
 interface DiagnosticsDialogProps {
+  readonly open: boolean;
   readonly onClose: () => void;
   readonly load: DiagnosticsLoader;
-  readonly exportReport?: () => Promise<string>;
 }
 
-/** Shows a sanitized diagnostics snapshot that is safe to share. */
+/** Shows daemon-generated diagnostics and copies only its sanitized export. */
 export function DiagnosticsDialog({
+  open,
   onClose,
   load,
-  exportReport = exportNativeDiagnostics,
 }: DiagnosticsDialogProps) {
-  const titleId = useId();
-  const [report, setReport] = useState<DiagnosticsReport | null>(null);
+  const [report, setReport] = useState<DiagnosticsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
     "idle",
   );
 
   useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
     let cancelled = false;
+    setReport(null);
+    setError(null);
+    setCopyState("idle");
     void load()
       .then((next) => {
         if (!cancelled) {
@@ -39,15 +44,14 @@ export function DiagnosticsDialog({
     return () => {
       cancelled = true;
     };
-  }, [load]);
+  }, [load, open]);
 
   async function copyReport() {
-    if (!report) {
+    if (!report?.exportText) {
       return;
     }
     try {
-      const text = await exportReport();
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(report.exportText);
       setCopyState("copied");
     } catch {
       setCopyState("failed");
@@ -55,112 +59,81 @@ export function DiagnosticsDialog({
   }
 
   return (
-    <div className="dialog-backdrop">
-      <div
-        className="dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-      >
-        <header className="dialog__header">
-          <div>
-            <p className="dialog__eyebrow">Support</p>
-            <h2 id={titleId}>Diagnostics</h2>
-          </div>
-          <button
-            className="button button--secondary"
-            type="button"
-            onClick={onClose}
-          >
-            Close
-          </button>
-        </header>
-        <p className="dialog__lede">
-          The Copy action exports a sanitized snapshot without tokens, cookies,
-          environment variables, prompts, terminal output, or your home path.
+    <Dialog title="Diagnostics" open={open} onClose={onClose}>
+      <p className="dialog__lede">
+        This snapshot omits environment values, command arguments, prompts, and
+        terminal output. Home-directory prefixes are replaced before the daemon
+        creates the clipboard export.
+      </p>
+      {error ? (
+        <p className="dialog__error" role="alert">
+          {error}
         </p>
-        {error ? (
-          <p className="dialog__error" role="alert">
-            {error} Open the packaged desktop app if you need local paths and
-            Git status.
-          </p>
-        ) : null}
-        {report ? <DiagnosticsSummary report={report} /> : null}
-        {!report && !error ? (
-          <p className="dialog__loading">Collecting sanitized diagnostics…</p>
-        ) : null}
-        <footer className="dialog__footer">
-          <button
-            className="button button--primary"
-            type="button"
-            onClick={() => {
-              void copyReport();
-            }}
-            disabled={!report}
-          >
-            <Icon name="copy" />
-            <span>Copy sanitized diagnostics</span>
-          </button>
-          <span className="dialog__copy-status" role="status">
-            {copyState === "copied"
-              ? "Copied. Environment variables were not included."
-              : copyState === "failed"
-                ? "Diagnostics export failed. Retry; do not copy the on-screen paths."
-                : null}
-          </span>
-        </footer>
+      ) : null}
+      {report ? <DiagnosticsSummary report={report} /> : null}
+      {!report && !error ? (
+        <p className="dialog__loading">Collecting sanitized diagnostics…</p>
+      ) : null}
+      <div className="dialog__actions">
+        <button
+          className="button button--primary"
+          type="button"
+          onClick={() => {
+            void copyReport();
+          }}
+          disabled={!report?.exportText}
+        >
+          <Icon name="copy" />
+          <span>Copy sanitized diagnostics</span>
+        </button>
+        <button
+          className="button button--secondary"
+          type="button"
+          onClick={onClose}
+        >
+          Close
+        </button>
       </div>
-    </div>
+      <p className="dialog__copy-status" role="status" aria-live="polite">
+        {copyState === "copied"
+          ? "Copied. Sensitive runtime values were not included."
+          : copyState === "failed"
+            ? "Diagnostics copy failed. The raw on-screen response was not copied."
+            : null}
+      </p>
+    </Dialog>
   );
 }
 
-function DiagnosticsSummary({ report }: { readonly report: DiagnosticsReport }) {
+function DiagnosticsSummary({
+  report,
+}: {
+  readonly report: DiagnosticsResponse;
+}) {
   return (
     <dl className="diagnostics-grid">
-      <DiagnosticItem label="App version" value={report.appVersion} />
-      <DiagnosticItem label="OS" value={`${report.os}/${report.arch}`} />
-      <DiagnosticItem label="Data directory" value={report.dataDir} />
-      <DiagnosticItem label="Config directory" value={report.configDir} />
-      <DiagnosticItem label="Database" value={report.databasePath} />
+      <DiagnosticItem label="Daemon version" value={report.daemonVersion} />
       <DiagnosticItem
-        label="Git"
-        value={
-          report.gitAvailable
-            ? (report.gitVersion ?? "available")
-            : "not found"
-        }
-      />
-      <DiagnosticItem label="Daemon" value={report.daemon.status} />
-      <DiagnosticItem label="SQLite" value={report.sqlite.status} />
-      <DiagnosticItem
-        label="Sessions / worktrees"
-        value={`${report.sessionCount} / ${report.worktreeCount}`}
+        label="Protocol / schema"
+        value={`${report.protocolVersion} / ${report.schemaVersion}`}
       />
       <DiagnosticItem
-        label="Detected agents"
-        value={
-          report.agents
-            .filter((agent) => agent.detected)
-            .map((agent) => agent.key)
-            .join(", ") || "none"
-        }
+        label="Daemon instance"
+        value={report.daemonInstanceId}
+      />
+      <DiagnosticItem label="Data directory" value={report.dataPath} />
+      <DiagnosticItem label="Runtime directory" value={report.runtimePath} />
+      <DiagnosticItem label="Log directory" value={report.logPath} />
+      <DiagnosticItem
+        label="Executable search"
+        value={report.effectivePath.join(" · ") || "not reported"}
       />
       <DiagnosticItem
-        label="Resolved executables"
+        label="Recent issues"
         value={
-          report.executables
-            .map((item) =>
-              item.path ? `${item.name}: ${item.path}` : `${item.name}: missing`,
-            )
-            .join(" · ") || "none"
-        }
-      />
-      <DiagnosticItem
-        label="Recent errors"
-        value={
-          report.recentErrors
+          report.recentIssues
             .slice(-3)
-            .map((item) => `${item.code}: ${item.message}`)
+            .map((issue) => `${issue.code}: ${issue.message}`)
             .join(" · ") || "none"
         }
       />

@@ -1,60 +1,33 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
+import { parseDaemonInstanceId, type DiagnosticsResponse } from "../../../ipc";
 import { DiagnosticsDialog } from "./DiagnosticsDialog";
-import type { DiagnosticsReport } from "./types";
 
-const report: DiagnosticsReport = {
-  appVersion: "0.1.0",
-  os: "linux",
-  arch: "x86_64",
-  dataDir: "/tmp/cli-master/data",
-  configDir: "/tmp/cli-master/config",
-  runtimeDir: "/tmp/cli-master/runtime",
-  databasePath: "/tmp/cli-master/data/cli-master.db",
-  logDir: "/tmp/cli-master/logs",
-  gitVersion: "2.43.0",
-  gitAvailable: true,
-  daemon: {
-    connected: false,
-    status: "No daemon is running. Session processes are not attached.",
-  },
-  sqlite: {
-    fileExists: false,
-    available: false,
-    status: "Database file has not been created yet.",
-  },
-  agents: [
+const report: DiagnosticsResponse = {
+  daemonVersion: "0.1.0",
+  protocolVersion: 1,
+  schemaVersion: 3,
+  daemonInstanceId: parseDaemonInstanceId(
+    "01900000-0000-7000-8000-0000000000aa",
+  ),
+  dataPath: "~/.local/share/cli-master",
+  runtimePath: "/tmp/cli-master",
+  logPath: "~/.local/share/cli-master/logs",
+  effectivePath: ["~/.local/bin", "/usr/bin"],
+  recentIssues: [
     {
-      key: "codex",
-      displayName: "Codex",
-      detected: false,
-    },
-  ],
-  executables: [{ name: "git", path: "/usr/bin/git" }],
-  sessionCount: 0,
-  worktreeCount: 0,
-  recentLogs: [
-    {
-      timestamp: "2026-08-29T00:00:00.000Z",
-      level: "info",
-      target: "diagnostics",
-      operation: "diagnostics.get",
+      code: "probe_failed",
       message: "TOKEN=[redacted]",
+      action: "Check the executable path.",
     },
   ],
-  recentErrors: [
-    {
-      code: "WORKTREE_DIRTY",
-      message: "Worktree has uncommitted changes.",
-      action: "Commit or move the changes, or confirm dirty removal explicitly.",
-    },
-  ],
+  exportText: '{"daemonVersion":"0.1.0","dataPath":"~/.local/share/cli-master"}',
 };
 
 describe("DiagnosticsDialog", () => {
-  it("renders a sanitized snapshot and copies it", async () => {
+  it("loads the typed snapshot and copies only the backend export", async () => {
     const user = userEvent.setup();
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
@@ -64,71 +37,64 @@ describe("DiagnosticsDialog", () => {
 
     render(
       <DiagnosticsDialog
-        exportReport={async () => JSON.stringify(report)}
+        open
         load={async () => report}
         onClose={() => undefined}
       />,
     );
 
-    expect(
-      await screen.findByRole("heading", { name: "Diagnostics" }),
-    ).toBeVisible();
-    expect(screen.getByText("0.1.0")).toBeVisible();
-    expect(
-      screen.getByText("No daemon is running. Session processes are not attached."),
-    ).toBeVisible();
-    expect(screen.queryByText("super-secret")).not.toBeInTheDocument();
-    expect(screen.queryByText(/PWD=/)).not.toBeInTheDocument();
+    const dialog = await screen.findByRole("dialog", { name: "Diagnostics" });
+    expect(within(dialog).getByText("0.1.0")).toBeVisible();
+    expect(within(dialog).getByText("~/.local/share/cli-master")).toBeVisible();
 
     await user.click(
-      screen.getByRole("button", { name: "Copy sanitized diagnostics" }),
+      within(dialog).getByRole("button", {
+        name: "Copy sanitized diagnostics",
+      }),
     );
-    expect(writeText).toHaveBeenCalled();
-    const copied = String(writeText.mock.calls[0]?.[0] ?? "");
-    expect(copied).toContain("0.1.0");
-    expect(copied).not.toContain("super-secret");
-    expect(
-      screen.getByRole("status").textContent,
-    ).toMatch(/Copied/);
+
+    expect(writeText).toHaveBeenCalledWith(report.exportText);
+    expect(within(dialog).getByRole("status")).toHaveTextContent("Copied");
   });
 
-  it("never falls back to copying the raw diagnostics response", async () => {
+  it("never derives a clipboard fallback from raw on-screen paths", async () => {
     const user = userEvent.setup();
-    const writeText = vi.fn().mockResolvedValue(undefined);
+    const writeText = vi.fn().mockRejectedValue(new Error("clipboard denied"));
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText },
     });
+    const rawPath = "/Users/private-user/.local/share/cli-master";
     render(
       <DiagnosticsDialog
-        exportReport={async () => {
-          throw new Error("native export failed");
-        }}
+        open
         load={async () => ({
           ...report,
-          dataDir: "/Users/private-user/.local/share/cli-master",
+          dataPath: rawPath,
+          exportText: '{"dataPath":"~/.local/share/cli-master"}',
         })}
         onClose={() => undefined}
       />,
     );
-    await screen.findByText("0.1.0");
+    const dialog = await screen.findByRole("dialog", { name: "Diagnostics" });
 
     await user.click(
-      screen.getByRole("button", { name: "Copy sanitized diagnostics" }),
+      within(dialog).getByRole("button", {
+        name: "Copy sanitized diagnostics",
+      }),
     );
 
-    expect(writeText).not.toHaveBeenCalled();
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "Diagnostics export failed",
-    );
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "do not copy the on-screen paths",
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(String(writeText.mock.calls[0]?.[0])).not.toContain(rawPath);
+    expect(within(dialog).getByRole("status")).toHaveTextContent(
+      "raw on-screen response was not copied",
     );
   });
 
-  it("does not render native error details that may contain secrets", async () => {
+  it("does not render loader error details that may contain secrets", async () => {
     render(
       <DiagnosticsDialog
+        open
         load={async () => {
           throw new Error("TOKEN=loader-secret");
         }}

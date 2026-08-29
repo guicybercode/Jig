@@ -1,559 +1,397 @@
-//! Git operations that always use a structured executable and argument array.
+//! Safe, bounded access to the system Git executable.
 //!
-//! The backend never runs `git reset --hard`, never force-removes a dirty
-//! worktree without an explicit confirmation, and never deletes a repository
-//! root.
+//! This crate invokes Git directly with structured argument lists. It never
+//! starts a shell and deliberately exposes no reset, branch deletion, or forced
+//! worktree removal operation.
 
 #![warn(missing_docs)]
 
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+mod command;
+mod diff;
+mod error;
+mod naming;
+mod path_safety;
+mod repository;
+mod status;
+mod worktree;
+mod worktree_creation;
+mod worktree_reconcile;
+mod worktree_removal;
 
-use cli_master_core::{
-    ApplicationError, DIFF_MAX_BYTES, ErrorCode, GIT_COMMAND_TIMEOUT, VERSION_DETECT_TIMEOUT,
+pub use diff::Diff;
+pub use error::{GitError, GitErrorKind};
+pub use naming::slugify;
+pub use repository::RepositoryInspection;
+pub use status::{ChangeKind, ChangedFile, RepositoryStatus, StatusCounts};
+pub use worktree::{WorktreeInfo, WorktreeUse};
+pub use worktree_creation::WorktreePlan;
+pub use worktree_removal::{RemovalBlocker, RemovalPreparation};
+
+use std::{
+    env,
+    ffi::{OsStr, OsString},
+    path::{Path, PathBuf},
+    time::Duration,
 };
-use cli_master_safety::{
-    Logger, ManagedRoots, SpawnRequest, StructuredLog, WorktreeRemovalState,
-    assert_managed_worktree, canonicalize_existing, run_command_unchecked,
-};
 
-/// Outcome of inspecting a Git worktree.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WorktreeStatus {
-    /// Canonical worktree root.
-    pub root: PathBuf,
-    /// Checked-out branch, when Git reports one.
-    pub branch: Option<String>,
-    /// Whether porcelain status reported any changes.
-    pub dirty: bool,
-}
+use command::{CommandOutput, run};
 
-/// Bounded textual diff.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DiffOutput {
-    /// Diff text, possibly truncated.
-    pub text: String,
-    /// Whether the diff exceeded [`DIFF_MAX_BYTES`].
-    pub truncated: bool,
-}
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 
-/// Git service backed by the system `git` executable.
+/// A validated system Git executable with bounded command execution.
 #[derive(Clone, Debug)]
-pub struct GitService {
-    git: PathBuf,
+pub struct Git {
+    executable: PathBuf,
+    timeout: Duration,
 }
 
-impl GitService {
-    /// Resolves `git` from PATH.
+impl Git {
+    /// Locates Git on `PATH` and verifies that it can execute.
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorCode::GitCommandFailed`] when Git is not installed.
-    pub fn from_path() -> Result<Self, ApplicationError> {
-        let output = run_command_unchecked(
-            &SpawnRequest::new("git")
-                .arg("--exec-path")
-                .timeout(VERSION_DETECT_TIMEOUT)
-                .env("GIT_TERMINAL_PROMPT", "0"),
-        )?;
-        if !output.success() {
-            return Err(missing_git());
-        }
-        Ok(Self {
-            git: PathBuf::from("git"),
-        })
+    /// Returns an actionable error when `PATH` is missing, no executable Git is
+    /// found, or the discovered executable cannot report its version.
+    pub fn discover() -> Result<Self, GitError> {
+        let executable = find_on_path(OsStr::new("git")).ok_or_else(|| {
+            GitError::new(
+                GitErrorKind::NotFound,
+                "Git was not found on PATH",
+                "Install Git and restart CLI Master so the desktop process inherits the updated PATH",
+            )
+        })?;
+        Self::with_executable(executable)
     }
 
-    /// Creates a service that uses an explicit Git executable.
+    /// Validates an explicit Git executable path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the path is not a file or does not successfully
+    /// execute `git --version` within the default timeout.
+    pub fn with_executable(executable: impl Into<PathBuf>) -> Result<Self, GitError> {
+        let executable = executable.into();
+        if !executable.is_file() {
+            return Err(GitError::new(
+                GitErrorKind::NotFound,
+                format!("Git executable does not exist: {}", executable.display()),
+                "Choose an existing Git executable",
+            ));
+        }
+        let git = Self {
+            executable,
+            timeout: DEFAULT_TIMEOUT,
+        };
+        let output = git.execute(None, [OsStr::new("--version")], 16 * 1024)?;
+        if !output.success() {
+            return Err(git.command_error("validate Git", &output));
+        }
+        if output.stdout_truncated {
+            return Err(GitError::new(
+                GitErrorKind::InvalidOutput,
+                "The selected executable returned an unexpectedly large version response",
+                "Choose the system Git executable",
+            ));
+        }
+        if !String::from_utf8_lossy(&output.stdout).starts_with("git version ") {
+            return Err(GitError::new(
+                GitErrorKind::InvalidOutput,
+                "The selected executable did not identify itself as Git",
+                "Choose the system Git executable",
+            ));
+        }
+        Ok(git)
+    }
+
+    /// Overrides the command timeout for this handle.
+    ///
+    /// A zero timeout is rejected because it would make every invocation race
+    /// process startup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `timeout` is zero.
+    pub fn with_timeout(mut self, timeout: Duration) -> Result<Self, GitError> {
+        if timeout.is_zero() {
+            return Err(GitError::new(
+                GitErrorKind::InvalidInput,
+                "Git command timeout must be greater than zero",
+                "Use a positive timeout",
+            ));
+        }
+        self.timeout = timeout;
+        Ok(self)
+    }
+
+    /// Returns the validated executable path.
     #[must_use]
-    pub fn new(git: impl Into<PathBuf>) -> Self {
-        Self { git: git.into() }
+    pub fn executable(&self) -> &Path {
+        &self.executable
     }
 
-    /// Confirms that `path` is inside a Git repository and returns the toplevel.
+    /// Inspects a directory without requiring it to be a Git repository.
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorCode::NotAGitRepository`] when Git cannot find a toplevel.
-    pub fn repository_root(&self, path: &Path) -> Result<PathBuf, ApplicationError> {
-        let path = existing_directory(path)?;
-        let output = self.git_at(
-            &path,
-            ["rev-parse", "--show-toplevel"],
-            GIT_COMMAND_TIMEOUT,
-            16 * 1024,
-        )?;
-        if !output.success() {
-            return Err(ApplicationError::new(
-                ErrorCode::NotAGitRepository,
-                format!("{} is not a Git repository.", path.display()),
-            )
-            .with_action("Select a directory that contains a `.git` folder.")
-            .with_context("path", path.display().to_string()));
-        }
-        let root = PathBuf::from(output.stdout_text());
-        canonicalize_existing(&root)
-    }
-
-    /// Confirms that `path` is the root of a worktree, not a subdirectory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ErrorCode::InvalidPath`] when the path is not the worktree root.
-    pub fn confirm_worktree_root(&self, path: &Path) -> Result<PathBuf, ApplicationError> {
-        let root = self.repository_root(path)?;
-        let requested = canonicalize_existing(path)?;
-        if root != requested {
-            return Err(ApplicationError::new(
-                ErrorCode::InvalidPath,
-                "The selected path is not the worktree root.",
-            )
-            .with_action("Select the worktree root, not a nested directory.")
-            .with_context("path", requested.display().to_string())
-            .with_context("worktreeRoot", root.display().to_string()));
-        }
-        Ok(root)
-    }
-
-    /// Detects when a stored project path no longer matches Git's toplevel.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ErrorCode::RepositoryMoved`] when the roots differ.
-    pub fn confirm_stored_root(
+    /// Returns an error if the path does not exist, is not a directory, cannot
+    /// be canonicalized, or Git cannot inspect it for a reason other than it not
+    /// being a repository.
+    pub fn inspect_repository(
         &self,
-        stored: &Path,
-        observed: &Path,
-    ) -> Result<PathBuf, ApplicationError> {
-        let stored_root = self.repository_root(stored)?;
-        let observed_root = self.repository_root(observed)?;
-        if stored_root != observed_root {
-            return Err(ApplicationError::new(
-                ErrorCode::RepositoryMoved,
-                "The repository was moved or is no longer at the stored path.",
-            )
-            .with_action("Remove the project from CLI Master and add it again.")
-            .with_context("storedPath", stored_root.display().to_string())
-            .with_context("observedPath", observed_root.display().to_string()));
-        }
-        Ok(stored_root)
+        path: impl AsRef<Path>,
+    ) -> Result<RepositoryInspection, GitError> {
+        repository::inspect(self, path.as_ref())
     }
 
-    /// Inspects porcelain status, including untracked files.
+    /// Generates an ASCII `agent/<slug>-<shortid>` branch name.
+    ///
+    /// Existing local branches are avoided with deterministic numeric suffixes.
     ///
     /// # Errors
     ///
-    /// Returns a Git error when status cannot be read.
-    pub fn worktree_status(&self, path: &Path) -> Result<WorktreeStatus, ApplicationError> {
-        let root = self.repository_root(path)?;
-        let branch = self.current_branch(&root)?;
-        let output = self.git_at(
-            &root,
-            [
-                "--no-optional-locks",
-                "status",
-                "--porcelain=v2",
-                "-z",
-                "--untracked-files=all",
-            ],
-            GIT_COMMAND_TIMEOUT,
-            DIFF_MAX_BYTES,
-        )?;
-        if !output.success() {
-            return Err(git_failed(&root, "Could not read Git status."));
-        }
-        let dirty = output.stdout.iter().any(|byte| *byte != 0);
-        Ok(WorktreeStatus {
-            root,
-            branch,
-            dirty,
-        })
-    }
-
-    /// Returns a size-capped textual diff.
-    ///
-    /// # Errors
-    ///
-    /// Returns a Git error when diff cannot be read.
-    pub fn diff(&self, path: &Path) -> Result<DiffOutput, ApplicationError> {
-        let root = self.repository_root(path)?;
-        let output = self.git_at(
-            &root,
-            ["--no-optional-locks", "diff", "--no-ext-diff", "--text"],
-            GIT_COMMAND_TIMEOUT,
-            DIFF_MAX_BYTES,
-        )?;
-        if output.timed_out {
-            return Err(ApplicationError::new(
-                ErrorCode::CommandTimeout,
-                "Git diff did not finish before the timeout.",
-            )
-            .with_action("Narrow the changes or retry. Large diffs are capped at 2 MiB."));
-        }
-        if !output.success() {
-            return Err(git_failed(&root, "Could not read the Git diff."));
-        }
-        Ok(DiffOutput {
-            truncated: output.truncated,
-            text: String::from_utf8_lossy(&output.stdout).into_owned(),
-        })
-    }
-
-    /// Removes a managed worktree after consuming a confirmed removal state.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ErrorCode::WorktreeDirty`] or [`ErrorCode::UnmanagedPath`] when
-    /// removal is unsafe.
-    pub fn remove_worktree(
+    /// Returns an error if `repository` is not a repository or Git cannot query
+    /// its refs.
+    pub fn generate_branch_name(
         &self,
-        repo: &Path,
-        roots: &ManagedRoots,
-        confirmation: WorktreeRemovalState,
-    ) -> Result<(), ApplicationError> {
-        let repo = self.repository_root(repo)?;
-        let worktree = assert_managed_worktree(confirmation.path(), roots)?;
-        confirmation.revalidate_path(&worktree)?;
-        if confirmation.in_use() {
-            return Err(ApplicationError::new(
-                ErrorCode::WorktreeInUse,
-                "The confirmed worktree is still used by a running session.",
-            )
-            .with_action("Stop the session and prepare removal again."));
-        }
-        let status = self.worktree_status(&worktree)?;
-        if status.branch.as_deref().unwrap_or_default() != confirmation.branch()
-            || status.dirty != confirmation.dirty()
-        {
-            return Err(ApplicationError::new(
-                ErrorCode::ConfirmationMismatch,
-                "The worktree branch or dirty state changed after confirmation.",
-            )
-            .with_action("Review the current worktree state and confirm removal again."));
-        }
-        let allow_force = confirmation.allows_force();
-        if status.dirty && !allow_force {
-            return Err(ApplicationError::new(
-                ErrorCode::WorktreeDirty,
-                format!(
-                    "Worktree {} on branch {} has uncommitted changes.",
-                    worktree.display(),
-                    status.branch.as_deref().unwrap_or("(detached)")
-                ),
-            )
-            .with_action("Commit or move the changes, or confirm dirty removal explicitly.")
-            .with_context("path", worktree.display().to_string())
-            .with_context("branch", status.branch.clone().unwrap_or_default()));
-        }
-
-        Logger::global().write(&StructuredLog::new(
-            cli_master_safety::LogLevel::Info,
-            "git",
-            "worktree.remove",
-            format!(
-                "removing worktree {} force={}",
-                worktree.display(),
-                allow_force
-            ),
-        ));
-
-        confirmation.revalidate_path(&worktree)?;
-        // The confirmation is a single-use capability. Consume it before the
-        // mutating Git command so callers cannot replay the same approval.
-        drop(confirmation);
-
-        let mut args = vec![
-            "-C".to_owned(),
-            repo.display().to_string(),
-            "worktree".to_owned(),
-            "remove".to_owned(),
-        ];
-        if allow_force {
-            args.push("--force".to_owned());
-        }
-        args.push(worktree.display().to_string());
-
-        let output = run_command_unchecked(
-            &SpawnRequest::new(&self.git)
-                .args(args)
-                .timeout(GIT_COMMAND_TIMEOUT)
-                .env("GIT_TERMINAL_PROMPT", "0")
-                .env("GIT_OPTIONAL_LOCKS", "0")
-                .env("GIT_PAGER", "cat"),
-        )?;
-        if !output.success() {
-            if status.dirty {
-                return Err(ApplicationError::new(
-                    ErrorCode::WorktreeDirty,
-                    "Git refused to remove a dirty worktree.",
-                )
-                .with_action(
-                    "Confirm dirty removal explicitly. CLI Master will not force this silently.",
-                ));
-            }
-            return Err(git_failed(&worktree, "Git could not remove the worktree."));
-        }
-        Ok(())
+        repository: impl AsRef<Path>,
+        task_name: &str,
+        short_id: &str,
+    ) -> Result<String, GitError> {
+        naming::generate_branch_name(self, repository.as_ref(), task_name, short_id)
     }
 
-    fn current_branch(&self, root: &Path) -> Result<Option<String>, ApplicationError> {
-        let output = self.git_at(
-            root,
-            ["branch", "--show-current"],
-            GIT_COMMAND_TIMEOUT,
-            4096,
-        )?;
-        if !output.success() {
-            return Ok(None);
-        }
-        let name = output.stdout_text();
-        if name.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(name))
-        }
+    /// Reads branch metadata and changed paths using porcelain v2 `-z` output.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `path` is not in a repository, Git times out, or
+    /// the porcelain response is malformed.
+    pub fn status(&self, path: impl AsRef<Path>) -> Result<RepositoryStatus, GitError> {
+        status::read(self, path.as_ref())
     }
 
-    fn git_at<I, S>(
+    /// Returns the combined staged and unstaged tracked-file diff against `HEAD`.
+    ///
+    /// Output is always generated without color or external diff drivers and is
+    /// capped at `max_bytes`. The returned [`Diff::truncated`] flag reports when
+    /// bytes were omitted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a zero limit, invalid repository, timeout, or failed
+    /// Git invocation.
+    pub fn diff(&self, path: impl AsRef<Path>, max_bytes: usize) -> Result<Diff, GitError> {
+        diff::read(self, path.as_ref(), max_bytes)
+    }
+
+    /// Lists all worktrees registered by a repository.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Git cannot list or parse worktree metadata.
+    pub fn list_worktrees(
         &self,
-        cwd: &Path,
+        repository: impl AsRef<Path>,
+    ) -> Result<Vec<WorktreeInfo>, GitError> {
+        worktree::list(self, repository.as_ref())
+    }
+
+    /// Plans a branch and linked worktree without changing Git or the filesystem.
+    ///
+    /// The returned paths are absolute and resolved through every existing
+    /// ancestor. A missing managed root is represented safely but is not created
+    /// until [`Self::create_worktree_from_plan`] executes the plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid repository/root, an unsafe path, or when
+    /// Git cannot allocate collision-free branch and directory names.
+    pub fn plan_worktree(
+        &self,
+        repository: impl AsRef<Path>,
+        managed_root: impl AsRef<Path>,
+        task_name: &str,
+        short_id: &str,
+    ) -> Result<WorktreePlan, GitError> {
+        worktree_creation::plan(
+            self,
+            repository.as_ref(),
+            managed_root.as_ref(),
+            task_name,
+            short_id,
+        )
+    }
+
+    /// Executes a previously generated worktree plan after revalidating it.
+    ///
+    /// Repository identity, branch availability, path containment, symlink
+    /// resolution, filesystem collisions, and Git's worktree registry are
+    /// checked immediately before creation. If post-create confirmation fails,
+    /// a clean exact-identity worktree is removed without `--force`; otherwise
+    /// the path and branch are preserved and a partial-creation error is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the plan is stale, Git creation fails, confirmation
+    /// fails, or conservative compensation cannot prove cleanup.
+    pub fn create_worktree_from_plan(&self, plan: &WorktreePlan) -> Result<WorktreeInfo, GitError> {
+        worktree_creation::create_from_plan(self, plan)
+    }
+
+    /// Creates a branch and linked worktree below a managed root.
+    ///
+    /// Both branch and directory names use collision-safe ASCII names. The
+    /// destination is validated to remain below `managed_root`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid repository/root, unsafe destination,
+    /// stale generated plan, failed Git worktree creation, or unproven cleanup.
+    pub fn create_worktree(
+        &self,
+        repository: impl AsRef<Path>,
+        managed_root: impl AsRef<Path>,
+        task_name: &str,
+        short_id: &str,
+    ) -> Result<WorktreeInfo, GitError> {
+        worktree_creation::create(
+            self,
+            repository.as_ref(),
+            managed_root.as_ref(),
+            task_name,
+            short_id,
+        )
+    }
+
+    /// Checks whether a managed worktree can be removed safely.
+    ///
+    /// The result distinguishes staged, tracked, and untracked dirtiness and
+    /// combines that state with caller-supplied runtime usage information.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if paths are invalid, the target is outside the managed
+    /// root, or Git cannot inspect the target.
+    pub fn prepare_remove(
+        &self,
+        repository: impl AsRef<Path>,
+        managed_root: impl AsRef<Path>,
+        worktree_path: impl AsRef<Path>,
+        usage: WorktreeUse,
+    ) -> Result<RemovalPreparation, GitError> {
+        worktree_removal::prepare_remove(
+            self,
+            repository.as_ref(),
+            managed_root.as_ref(),
+            worktree_path.as_ref(),
+            usage,
+        )
+    }
+
+    /// Removes a clean, unused managed worktree without using `--force`.
+    ///
+    /// This method never deletes a branch. Dirty, running, or otherwise in-use
+    /// worktrees are rejected. `read_usage` is retained for the entire operation
+    /// and called for each safety snapshot; callers should capture their session
+    /// exclusion guard in that closure. Git state is also rechecked immediately
+    /// before removal, and `--force` is never passed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if safety checks fail or `git worktree remove` fails.
+    pub fn remove_worktree<F>(
+        &self,
+        repository: impl AsRef<Path>,
+        managed_root: impl AsRef<Path>,
+        worktree_path: impl AsRef<Path>,
+        read_usage: F,
+    ) -> Result<(), GitError>
+    where
+        F: FnMut() -> WorktreeUse,
+    {
+        worktree_removal::remove(
+            self,
+            repository.as_ref(),
+            managed_root.as_ref(),
+            worktree_path.as_ref(),
+            read_usage,
+        )
+    }
+
+    pub(crate) fn execute<I, S>(
+        &self,
+        cwd: Option<&Path>,
         args: I,
-        timeout: Duration,
-        max_output: usize,
-    ) -> Result<cli_master_safety::ProcessOutput, ApplicationError>
+        max_stdout: usize,
+    ) -> Result<CommandOutput, GitError>
     where
         I: IntoIterator<Item = S>,
-        S: Into<String>,
+        S: AsRef<OsStr>,
     {
-        run_command_unchecked(
-            &SpawnRequest::new(&self.git)
-                .arg("-C")
-                .arg(cwd.display().to_string())
-                .args(args)
-                .timeout(timeout)
-                .max_output(max_output)
-                .env("GIT_TERMINAL_PROMPT", "0")
-                .env("GIT_OPTIONAL_LOCKS", "0")
-                .env("GIT_PAGER", "cat")
-                .env("PAGER", "cat")
-                .env("LC_ALL", "C"),
-        )
-    }
-}
-
-fn existing_directory(path: &Path) -> Result<PathBuf, ApplicationError> {
-    let resolved = canonicalize_existing(path)?;
-    if resolved.is_dir() {
-        Ok(resolved)
-    } else {
-        Err(ApplicationError::new(
-            ErrorCode::InvalidPath,
-            format!("{} is not a directory.", resolved.display()),
-        )
-        .with_action("Select a Git repository directory.")
-        .with_context("path", resolved.display().to_string()))
-    }
-}
-
-fn missing_git() -> ApplicationError {
-    ApplicationError::new(ErrorCode::GitCommandFailed, "Git was not found on PATH.")
-        .with_action("Install Git and make sure the CLI Master PATH includes it.")
-}
-
-fn git_failed(path: &Path, message: &str) -> ApplicationError {
-    ApplicationError::new(ErrorCode::GitCommandFailed, message.to_owned())
-        .with_action("Check that the repository is readable and Git is installed.")
-        .with_context("path", path.display().to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-    use std::process::Command;
-
-    use tempfile::TempDir;
-
-    use super::*;
-    use cli_master_core::{ProjectId, WorktreeId};
-    use cli_master_safety::{
-        ConfirmationStore, DestructiveKind, DestructiveRequest, ManagedRoots, WorktreeRemovalState,
-    };
-
-    fn git(args: &[&str], cwd: &Path) {
-        let status = Command::new("git")
-            .args(args)
-            .current_dir(cwd)
-            .env("GIT_AUTHOR_NAME", "CLI Master")
-            .env("GIT_AUTHOR_EMAIL", "test@example.com")
-            .env("GIT_COMMITTER_NAME", "CLI Master")
-            .env("GIT_COMMITTER_EMAIL", "test@example.com")
-            .status()
-            .expect("git should spawn");
-        assert!(status.success(), "git {args:?} failed");
+        let args = args
+            .into_iter()
+            .map(|arg| arg.as_ref().to_os_string())
+            .collect();
+        run(&self.executable, cwd, args, self.timeout, max_stdout)
     }
 
-    fn repo() -> (TempDir, PathBuf, GitService) {
-        let temp = TempDir::new().expect("temp");
-        let root = temp.path().join("repo");
-        fs::create_dir_all(&root).expect("repo");
-        git(&["init", "-b", "main"], &root);
-        git(&["config", "user.email", "test@example.com"], &root);
-        git(&["config", "user.name", "CLI Master"], &root);
-        git(&["commit", "--allow-empty", "-m", "init"], &root);
-        let service = GitService::from_path().expect("git");
-        (temp, root, service)
+    pub(crate) fn checked<I, S>(
+        &self,
+        cwd: Option<&Path>,
+        args: I,
+        operation: &'static str,
+    ) -> Result<CommandOutput, GitError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let output = self.execute(cwd, args, DEFAULT_OUTPUT_LIMIT)?;
+        if !output.success() {
+            return Err(self.command_error(operation, &output));
+        }
+        if output.stdout_truncated {
+            return Err(GitError::new(
+                GitErrorKind::InvalidOutput,
+                format!("Git returned too much data while attempting to {operation}"),
+                "Reduce the repository's changed-file count or stale worktree entries and try again",
+            ));
+        }
+        Ok(output)
     }
 
-    fn confirm_removal(
-        status: &WorktreeStatus,
-        roots: &ManagedRoots,
-        allow_dirty: bool,
-    ) -> Result<WorktreeRemovalState, ApplicationError> {
-        let mut request = DestructiveRequest {
-            kind: DestructiveKind::RemoveWorktree,
-            path: Some(status.root.clone()),
-            branch: status.branch.clone(),
-            session_id: None,
-            project_id: Some(ProjectId::new()),
-            worktree_id: Some(WorktreeId::new()),
-            agent_id: None,
-            dirty: status.dirty,
-            in_use: false,
-            allow_dirty: false,
-            force: false,
+    pub(crate) fn command_error(
+        &self,
+        operation: &'static str,
+        output: &CommandOutput,
+    ) -> GitError {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let message = if stderr.is_empty() {
+            format!("Git could not {operation} (exit status {})", output.status)
+        } else {
+            format!("Git could not {operation}: {stderr}")
         };
-        let mut store = ConfirmationStore::new();
-        let plan = store.prepare(&request, roots)?;
-        request.allow_dirty = allow_dirty;
-        store
-            .confirm(&plan.token, &request, roots)?
-            .into_worktree_removal()
+        GitError::new(
+            GitErrorKind::CommandFailed,
+            message,
+            "Resolve the Git error and try again",
+        )
+        .with_path(&self.executable)
+        .with_exit_status(output.status.code())
     }
+}
 
-    #[test]
-    fn detects_repository_root_and_rejects_plain_directories() {
-        let (_temp, root, service) = repo();
-        assert_eq!(
-            service.repository_root(&root).expect("root"),
-            fs::canonicalize(&root).expect("canon")
-        );
-        let nested = root.join("nested");
-        fs::create_dir_all(&nested).expect("nested");
-        assert_eq!(
-            service.repository_root(&nested).expect("nested"),
-            fs::canonicalize(&root).expect("canon")
-        );
-        let outside = TempDir::new().expect("outside");
-        let error = service
-            .repository_root(outside.path())
-            .expect_err("plain dir");
-        assert_eq!(error.code(), ErrorCode::NotAGitRepository);
-        assert!(error.suggested_action().is_some());
+fn find_on_path(name: &OsStr) -> Option<PathBuf> {
+    let candidate = Path::new(name);
+    if candidate.components().count() > 1 {
+        return candidate.is_file().then(|| candidate.to_path_buf());
     }
+    let path = env::var_os("PATH")?;
+    env::split_paths(&path)
+        .map(|directory| directory.join(name))
+        .find(|candidate| candidate.is_file())
+}
 
-    #[test]
-    fn dirty_worktree_is_not_confirmed_without_explicit_force() {
-        let (temp, root, service) = repo();
-        let data = temp.path().join("data");
-        let worktree = data.join("worktrees/project/topic");
-        fs::create_dir_all(worktree.parent().expect("parent")).expect("parent");
-        git(
-            &[
-                "worktree",
-                "add",
-                "-b",
-                "agent/topic",
-                worktree.to_str().expect("utf8"),
-            ],
-            &root,
-        );
-        fs::write(worktree.join("dirty.txt"), "changes").expect("dirty");
-        let roots = ManagedRoots::new(&data);
-        let status = service.worktree_status(&worktree).expect("status");
-        assert!(status.dirty);
-        assert_eq!(status.branch.as_deref(), Some("agent/topic"));
-
-        let error = confirm_removal(&status, &roots, false).expect_err("dirty");
-        assert_eq!(error.code(), ErrorCode::WorktreeDirty);
-        assert!(worktree.exists());
-    }
-
-    #[test]
-    fn stale_clean_confirmation_cannot_remove_a_newly_dirty_worktree() {
-        let (temp, root, service) = repo();
-        let data = temp.path().join("data");
-        let worktree = data.join("worktrees/project/topic");
-        fs::create_dir_all(worktree.parent().expect("parent")).expect("parent");
-        git(
-            &[
-                "worktree",
-                "add",
-                "-b",
-                "agent/topic",
-                worktree.to_str().expect("utf8"),
-            ],
-            &root,
-        );
-        let roots = ManagedRoots::new(&data);
-        let clean = service.worktree_status(&worktree).expect("clean status");
-        let confirmation = confirm_removal(&clean, &roots, false).expect("confirmation");
-        fs::write(worktree.join("late-change.txt"), "must survive").expect("late change");
-
-        let error = service
-            .remove_worktree(&root, &roots, confirmation)
-            .expect_err("state changed");
-        assert_eq!(error.code(), ErrorCode::ConfirmationMismatch);
-        assert!(worktree.join("late-change.txt").exists());
-    }
-
-    #[test]
-    fn confirmed_clean_worktree_is_removed() {
-        let (temp, root, service) = repo();
-        let data = temp.path().join("data");
-        let worktree = data.join("worktrees/project/topic");
-        fs::create_dir_all(worktree.parent().expect("parent")).expect("parent");
-        git(
-            &[
-                "worktree",
-                "add",
-                "-b",
-                "agent/topic",
-                worktree.to_str().expect("utf8"),
-            ],
-            &root,
-        );
-        let roots = ManagedRoots::new(&data);
-        let clean = service.worktree_status(&worktree).expect("clean status");
-        let confirmation = confirm_removal(&clean, &roots, false).expect("confirmation");
-
-        service
-            .remove_worktree(&root, &roots, confirmation)
-            .expect("confirmed removal");
-        assert!(!worktree.exists());
-    }
-
-    #[test]
-    fn unicode_and_spaces_in_repository_paths_work() {
-        let temp = TempDir::new().expect("temp");
-        let root = temp.path().join("projeto café");
-        fs::create_dir_all(&root).expect("repo");
-        git(&["init", "-b", "main"], &root);
-        git(&["config", "user.email", "test@example.com"], &root);
-        git(&["config", "user.name", "CLI Master"], &root);
-        git(&["commit", "--allow-empty", "-m", "init"], &root);
-        let service = GitService::from_path().expect("git");
-        let resolved = service.repository_root(&root).expect("root");
-        assert!(resolved.to_string_lossy().contains("projeto café"));
-    }
-
-    #[test]
-    fn command_args_do_not_use_a_shell() {
-        let (_temp, root, service) = repo();
-        // A path that would be destructive if interpolated into sh -c.
-        let nested = root.join("hello; rm -rf should-not-run");
-        fs::create_dir_all(&nested).expect("nested");
-        let resolved = service.repository_root(&nested).expect("still a repo");
-        assert_eq!(resolved, fs::canonicalize(&root).expect("canon"));
-        assert!(!root.join("should-not-run").exists());
-    }
+pub(crate) fn os(value: impl Into<OsString>) -> OsString {
+    value.into()
 }

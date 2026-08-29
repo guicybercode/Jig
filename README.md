@@ -129,6 +129,8 @@ apps/desktop/                  React, TypeScript, Vite, and Tauri bridge
 crates/                        Rust domain, storage, Git, PTY, and daemon crates
 design-system/cli-master/      UI tokens and interaction rules
 ARCHITECTURE.md                accepted architecture and protocol design
+AGENTS.md                      crate ownership and IPC rules for agents
+protocol/catalog.json          frozen v1 method and event names
 ```
 
 ## Safety principles

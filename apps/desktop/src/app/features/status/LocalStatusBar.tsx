@@ -1,4 +1,5 @@
 import { Icon } from "../../components/Icon";
+import { useConnection, useConnectionLabel } from "../../workspace";
 
 interface LocalStatusBarProps {
   readonly onOpenDiagnostics: () => void;
@@ -6,6 +7,10 @@ interface LocalStatusBarProps {
 
 /** Reports the current local-only application and daemon state. */
 export function LocalStatusBar({ onOpenDiagnostics }: LocalStatusBarProps) {
+  const connection = useConnection();
+  const label = useConnectionLabel();
+  const ready = connection.phase === "ready";
+
   return (
     <footer className="status-bar">
       <div className="status-bar__item">
@@ -21,13 +26,17 @@ export function LocalStatusBar({ onOpenDiagnostics }: LocalStatusBarProps) {
           Diagnostics
         </button>
         <div
-          className="status-bar__item status-bar__item--unavailable"
+          className={
+            ready
+              ? "status-bar__item"
+              : "status-bar__item status-bar__item--unavailable"
+          }
           role="status"
           aria-live="polite"
           aria-atomic="true"
         >
           <span className="status-bar__indicator" aria-hidden="true" />
-          <span>Daemon unavailable</span>
+          <span>{label}</span>
         </div>
       </div>
     </footer>
