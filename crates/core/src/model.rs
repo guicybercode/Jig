@@ -68,6 +68,8 @@ pub struct Project {
     pub current_branch: Option<String>,
     /// Creation time as Unix epoch milliseconds.
     pub created_at_ms: i64,
+    /// Most recent metadata update as Unix epoch milliseconds.
+    pub updated_at_ms: i64,
     /// Most recent open time as Unix epoch milliseconds.
     pub last_opened_at_ms: i64,
 }
@@ -86,7 +88,10 @@ pub struct Session {
     pub agent_id: AgentId,
     /// Effective process working directory.
     pub cwd: PathBuf,
-    /// OS process identifier when a process is attached.
+    /// Last known OS process identifier.
+    ///
+    /// After a daemon restart this is historical only and is never proof that
+    /// the process still belongs to the session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     /// Daemon-specific PTY handle when a PTY is attached.
@@ -110,6 +115,12 @@ pub struct Session {
     pub created_at_ms: i64,
     /// Most recent metadata update as Unix epoch milliseconds.
     pub updated_at_ms: i64,
+    /// Time the process was observed to start, as Unix epoch milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<i64>,
+    /// Time the process was observed to exit, as Unix epoch milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exited_at_ms: Option<i64>,
 }
 
 /// Serializable metadata for a managed Git worktree.
@@ -164,14 +175,16 @@ mod tests {
             repository_root: Some(PathBuf::from("/tmp/core")),
             current_branch: Some("main".to_owned()),
             created_at_ms: 1,
-            last_opened_at_ms: 2,
+            updated_at_ms: 2,
+            last_opened_at_ms: 3,
         };
         let value = serde_json::to_value(&project).expect("project should serialize");
         let decoded: Project =
             serde_json::from_value(value.clone()).expect("project should deserialize");
 
         assert_eq!(decoded, project);
-        assert_eq!(value["lastOpenedAtMs"], 2);
+        assert_eq!(value["updatedAtMs"], 2);
+        assert_eq!(value["lastOpenedAtMs"], 3);
     }
 
     #[test]
@@ -226,6 +239,8 @@ mod tests {
             exit_code: None,
             created_at_ms: 1,
             updated_at_ms: 2,
+            started_at_ms: Some(3),
+            exited_at_ms: None,
         };
         let worktree = Worktree {
             id: worktree_id,
