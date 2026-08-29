@@ -2,9 +2,9 @@ use cli_master_core::WorktreeId;
 use cli_master_storage::{StoredWorktree, WorktreeState};
 
 use crate::error::SagaError;
+use crate::saga::{SessionWorktreeSaga, require_project};
 use crate::spawn::SessionSpawner;
 use crate::token::now_ms;
-use crate::{SessionWorktreeSaga, require_project};
 
 /// Outcome of reconciling durable worktree rows after a daemon restart.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

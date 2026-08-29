@@ -1,7 +1,11 @@
 use std::{io, path::PathBuf};
 
-use cli_master_core::{SessionId, SessionStatus};
+use cli_master_core::{ApiError, SessionId, SessionStatus, WorktreeId};
+use cli_master_git::{GitError, GitErrorKind};
+use cli_master_storage::StorageError;
 use thiserror::Error;
+
+use crate::create::CreateStep;
 
 /// Failure returned by PTY session operations.
 #[derive(Debug, Error)]
@@ -225,7 +229,228 @@ pub enum SessionError {
     },
 }
 
-/// Backward-compatible name for saga-specific call sites.
-pub type SagaError = SessionError;
-/// Backward-compatible name for saga-specific category assertions.
-pub type SagaErrorKind = SessionErrorKind;
+/// Stable category for recoverable worktree-saga failures.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SagaErrorKind {
+    /// Required durable metadata was not found.
+    NotFound,
+    /// The process launcher rejected or could not start a command.
+    Spawn,
+    /// Caller input failed orchestration validation.
+    InvalidInput,
+    /// Two creates targeted the same destination concurrently.
+    ConcurrentCreate,
+    /// Another worktree mutation is already in progress.
+    MutationInProgress,
+    /// A confirmation token is invalid, expired, or stale.
+    InvalidToken,
+    /// Git left a worktree whose cleanup cannot be proven.
+    PartialWorktree,
+    /// Worktree removal is blocked by local changes.
+    DirtyWorktree,
+    /// Worktree removal is blocked by a live owner or Git lock.
+    WorktreeInUse,
+    /// Durable session metadata is still owned by a live process.
+    SessionInUse,
+    /// A test-only injected saga fault fired.
+    InjectedFailure,
+    /// The Git adapter rejected an operation.
+    Git,
+    /// The storage adapter rejected an operation.
+    Storage,
+}
+
+/// Actionable failure returned by the recoverable worktree saga.
+#[derive(Debug)]
+pub struct SagaError {
+    kind: SagaErrorKind,
+    message: String,
+    action: String,
+    path: Option<PathBuf>,
+    worktree_id: Option<WorktreeId>,
+    session_id: Option<SessionId>,
+}
+
+impl SagaError {
+    pub(crate) fn new(
+        kind: SagaErrorKind,
+        message: impl Into<String>,
+        action: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            action: action.into(),
+            path: None,
+            worktree_id: None,
+            session_id: None,
+        }
+    }
+
+    pub(crate) fn injected(step: CreateStep) -> Self {
+        Self::new(
+            SagaErrorKind::InjectedFailure,
+            format!("Injected saga failure after {step:?}"),
+            "Retry without the test-only fault hook",
+        )
+    }
+
+    pub(crate) fn partial_worktree(path: impl Into<PathBuf>, detail: impl Into<String>) -> Self {
+        Self::new(
+            SagaErrorKind::PartialWorktree,
+            format!(
+                "Worktree data was preserved because compensation could not be proven: {}",
+                detail.into()
+            ),
+            "Inspect the path with `git worktree list` and preserve any user data; do not retry automatically",
+        )
+        .with_path(path)
+    }
+
+    pub(crate) fn with_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
+    pub(crate) const fn with_worktree_id(mut self, id: WorktreeId) -> Self {
+        self.worktree_id = Some(id);
+        self
+    }
+
+    pub(crate) const fn with_session_id(mut self, id: SessionId) -> Self {
+        self.session_id = Some(id);
+        self
+    }
+
+    /// Returns the stable category for logging and wire translation.
+    #[must_use]
+    pub const fn kind(&self) -> SagaErrorKind {
+        self.kind
+    }
+
+    /// Returns the stable IPC error code for this failure.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self.kind {
+            SagaErrorKind::NotFound => "session_not_found",
+            SagaErrorKind::Spawn => "session_spawn_failed",
+            SagaErrorKind::InvalidInput => "session_invalid_input",
+            SagaErrorKind::ConcurrentCreate => "session_create_in_progress",
+            SagaErrorKind::MutationInProgress => "worktree_mutation_in_progress",
+            SagaErrorKind::InvalidToken => "worktree_confirmation_invalid",
+            SagaErrorKind::PartialWorktree => "worktree_partial",
+            SagaErrorKind::DirtyWorktree => "worktree_dirty",
+            SagaErrorKind::WorktreeInUse => "worktree_in_use",
+            SagaErrorKind::SessionInUse => "session_still_running",
+            SagaErrorKind::InjectedFailure => "session_injected_failure",
+            SagaErrorKind::Git => "session_git_failed",
+            SagaErrorKind::Storage => "session_storage_failed",
+        }
+    }
+
+    /// Returns a concise, non-secret operation message.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Returns the suggested recovery action.
+    #[must_use]
+    pub fn action(&self) -> &str {
+        &self.action
+    }
+
+    /// Returns the relevant local path, when present.
+    #[must_use]
+    pub fn path(&self) -> Option<&std::path::Path> {
+        self.path.as_deref()
+    }
+
+    /// Returns the related worktree identifier, when present.
+    #[must_use]
+    pub const fn worktree_id(&self) -> Option<WorktreeId> {
+        self.worktree_id
+    }
+
+    /// Returns the related session identifier, when present.
+    #[must_use]
+    pub const fn session_id(&self) -> Option<SessionId> {
+        self.session_id
+    }
+}
+
+impl std::fmt::Display for SagaError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}. Action: {}", self.message, self.action)
+    }
+}
+
+impl std::error::Error for SagaError {}
+
+impl From<GitError> for SagaError {
+    fn from(error: GitError) -> Self {
+        let kind = match error.kind() {
+            GitErrorKind::PartialWorktree => SagaErrorKind::PartialWorktree,
+            GitErrorKind::DirtyWorktree => SagaErrorKind::DirtyWorktree,
+            GitErrorKind::WorktreeInUse => SagaErrorKind::WorktreeInUse,
+            GitErrorKind::InvalidInput | GitErrorKind::UnsafePath | GitErrorKind::NotRepository => {
+                SagaErrorKind::InvalidInput
+            }
+            GitErrorKind::NotFound => SagaErrorKind::NotFound,
+            _ => SagaErrorKind::Git,
+        };
+        let mut saga = Self::new(kind, error.message(), error.action());
+        if let Some(path) = error.path() {
+            saga = saga.with_path(path);
+        }
+        saga
+    }
+}
+
+impl From<StorageError> for SagaError {
+    fn from(error: StorageError) -> Self {
+        let kind = match &error {
+            StorageError::NotFound { .. } => SagaErrorKind::NotFound,
+            StorageError::InvalidInput { .. } => SagaErrorKind::InvalidInput,
+            _ => SagaErrorKind::Storage,
+        };
+        Self::new(
+            kind,
+            error.to_string(),
+            "Inspect the local metadata and retry the session operation",
+        )
+    }
+}
+
+impl From<SessionError> for SagaError {
+    fn from(error: SessionError) -> Self {
+        let kind = match &error {
+            SessionError::NotFound { .. } => SagaErrorKind::NotFound,
+            SessionError::Spawn { .. } | SessionError::ProcessIdUnavailable { .. } => {
+                SagaErrorKind::Spawn
+            }
+            _ => SagaErrorKind::Spawn,
+        };
+        Self::new(
+            kind,
+            error.to_string(),
+            "Retry the session or restart Jig if the process cannot be recovered",
+        )
+    }
+}
+
+impl From<SagaError> for ApiError {
+    fn from(error: SagaError) -> Self {
+        let mut api = Self::new(error.code(), error.message).with_action(error.action);
+        if let Some(path) = error.path {
+            api = api.with_detail("path", path.display().to_string());
+        }
+        if let Some(worktree_id) = error.worktree_id {
+            api = api.with_detail("worktreeId", worktree_id.to_string());
+        }
+        if let Some(session_id) = error.session_id {
+            api = api.with_detail("sessionId", session_id.to_string());
+        }
+        api
+    }
+}

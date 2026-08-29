@@ -2,8 +2,7 @@ use std::path::Path;
 
 use cli_master_core::{AgentId, CommandSpec, ProjectId, SessionId, WorktreeId};
 
-use crate::SessionManager;
-use crate::error::{SessionError, SessionErrorKind};
+use crate::{SagaError, SagaErrorKind, SessionManager, TerminalSize};
 
 /// Result of spawning an agent process for a prepared session.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -48,14 +47,14 @@ pub trait SessionSpawner: Send + Sync {
     ///
     /// Returns an error when the process cannot be started. The saga then
     /// compensates the Git worktree if one was created.
-    fn spawn(&self, request: SpawnRequest<'_>) -> Result<SpawnedSession, SessionError>;
+    fn spawn(&self, request: SpawnRequest<'_>) -> Result<SpawnedSession, SagaError>;
 
     /// Stops and forgets a process that was spawned by an uncommitted saga.
     ///
     /// # Errors
     ///
     /// Returns an error if the runtime cannot find or tear down the session.
-    fn rollback(&self, _session_id: SessionId) -> Result<(), SessionError> {
+    fn rollback(&self, _session_id: SessionId) -> Result<(), SagaError> {
         Ok(())
     }
 
@@ -94,18 +93,18 @@ impl FakeSpawner {
 }
 
 impl SessionSpawner for FakeSpawner {
-    fn spawn(&self, request: SpawnRequest<'_>) -> Result<SpawnedSession, SessionError> {
+    fn spawn(&self, request: SpawnRequest<'_>) -> Result<SpawnedSession, SagaError> {
         if self.fail {
-            return Err(SessionError::new(
-                SessionErrorKind::InjectedFailure,
+            return Err(SagaError::new(
+                SagaErrorKind::InjectedFailure,
                 "Fake session spawner refused to start a process",
                 "Use FakeSpawner::succeeding in tests that need a running session",
             )
             .with_session_id(request.session_id));
         }
         if self.pid == 0 {
-            return Err(SessionError::new(
-                SessionErrorKind::InvalidInput,
+            return Err(SagaError::new(
+                SagaErrorKind::InvalidInput,
                 "Fake session spawner pid must be greater than zero",
                 "Construct FakeSpawner::succeeding with a non-zero pid",
             ));
@@ -118,34 +117,39 @@ impl SessionSpawner for FakeSpawner {
 }
 
 impl SessionSpawner for SessionManager {
-    fn spawn(&self, request: SpawnRequest<'_>) -> Result<SpawnedSession, SessionError> {
-        let session_id = request.session_id;
-        match self.create_prepared(&request) {
-            Ok(session) => {
-                let Some(pid) = session.pid else {
-                    let _ = self.rollback_created(session_id);
-                    return Err(SessionError::Spawn(
-                        "process exited before session creation committed".to_owned(),
-                    ));
-                };
-                Ok(SpawnedSession {
-                    pid,
-                    pty_id: session.pty_id,
-                })
-            }
-            Err(error) => {
-                let _ = self.rollback_created(session_id);
-                Err(error)
-            }
-        }
+    fn spawn(&self, request: SpawnRequest<'_>) -> Result<SpawnedSession, SagaError> {
+        let size = TerminalSize::new(request.rows, request.cols).map_err(SagaError::from)?;
+        let handle = self
+            .spawn_with_id(request.session_id, request.command, size)
+            .map_err(SagaError::from)?;
+        let pid = handle.pid.ok_or_else(|| {
+            SagaError::new(
+                SagaErrorKind::Spawn,
+                "process exited before session creation committed",
+                "Retry the session with an executable that remains available",
+            )
+            .with_session_id(request.session_id)
+        })?;
+        Ok(SpawnedSession {
+            pid,
+            pty_id: Some(format!("pty-{}", request.session_id.as_uuid().simple())),
+        })
     }
 
-    fn rollback(&self, session_id: SessionId) -> Result<(), SessionError> {
-        self.rollback_created(session_id)
+    fn rollback(&self, session_id: SessionId) -> Result<(), SagaError> {
+        let snapshot = match self.snapshot(session_id) {
+            Ok(snapshot) => snapshot,
+            Err(crate::SessionError::NotFound { .. }) => return Ok(()),
+            Err(error) => return Err(SagaError::from(error)),
+        };
+        if snapshot.status.is_live() {
+            self.kill(session_id).map_err(SagaError::from)?;
+        }
+        self.remove(session_id).map_err(SagaError::from)
     }
 
     fn is_live(&self, session_id: SessionId) -> bool {
-        self.get(session_id)
-            .is_some_and(|session| session.status.is_live())
+        self.snapshot(session_id)
+            .is_ok_and(|session| session.status.is_live())
     }
 }

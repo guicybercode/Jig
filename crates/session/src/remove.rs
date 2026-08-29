@@ -11,9 +11,9 @@ use crate::create::{require_session, require_worktree};
 use crate::error::{SagaError, SagaErrorKind};
 use crate::lock::{lock_destination, lock_mutation};
 use crate::map::is_live;
+use crate::saga::{SessionWorktreeSaga, require_project};
 use crate::spawn::SessionSpawner;
 use crate::token::now_ms;
-use crate::{SessionWorktreeSaga, require_project};
 
 pub(crate) fn prepare_remove<S: SessionSpawner>(
     saga: &SessionWorktreeSaga<S>,
