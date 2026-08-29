@@ -116,6 +116,7 @@ impl Daemon {
             .filter(|event| event.previous_status != event.new_status)
             .count();
         let schema_version = storage.schema_version()?;
+        let git = crate::git_inspection::discover_git();
 
         remove_stale_socket(config.socket_path())?;
         let listener = UnixListener::bind(config.socket_path())
@@ -236,7 +237,7 @@ impl Daemon {
         }
         self.state.sessions.shutdown();
         self.socket_owner.remove_if_owned();
-        self.storage.close()?;
+        self.state.storage.close()?;
         info!(instance_id = %self.state.hello.instance_id, "daemon stopped");
         Ok(())
     }
