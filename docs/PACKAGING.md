@@ -18,6 +18,11 @@ pnpm package                           # build, smoke the bundle, checksums
 `pnpm package` writes `dist/artifacts/` plus `SHA256SUMS`. It does not
 create a GitHub Release.
 
+`cargo clippy --workspace` and `cargo test --workspace` need
+`apps/desktop/src-tauri/binaries/cli-masterd-<triple>` to exist. Quality CI
+stages a real debug sidecar. A debug compile can also write a stub if the
+file is missing. Release `tauri build` still requires `scripts/stage-sidecar.sh`.
+
 ## Bundle targets
 
 Configured in `apps/desktop/src-tauri/tauri.conf.json`:

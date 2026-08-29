@@ -75,6 +75,9 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
 
+      - name: Stage cli-masterd sidecar
+        run: bash scripts/stage-sidecar.sh --debug
+
       - name: Lint Rust
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
