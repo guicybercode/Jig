@@ -8,8 +8,10 @@
 #![warn(missing_docs)]
 
 mod config;
+mod create;
 mod error;
 mod event;
+mod lock;
 mod manager;
 mod replay;
 mod runtime;

@@ -224,3 +224,8 @@ pub enum SessionError {
         session_id: SessionId,
     },
 }
+
+/// Backward-compatible name for saga-specific call sites.
+pub type SagaError = SessionError;
+/// Backward-compatible name for saga-specific category assertions.
+pub type SagaErrorKind = SessionErrorKind;
