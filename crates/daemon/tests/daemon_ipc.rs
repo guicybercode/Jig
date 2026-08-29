@@ -28,6 +28,7 @@ use tokio_util::sync::CancellationToken;
 struct RunningDaemon {
     config: DaemonConfig,
     instance_id: DaemonInstanceId,
+    events: cli_master_daemon::EventBus,
     cancellation: CancellationToken,
     task: JoinHandle<Result<(), DaemonError>>,
 }
@@ -37,12 +38,14 @@ impl RunningDaemon {
         let config = DaemonConfig::from_paths(root.join("data"), root.join("run"));
         let daemon = Daemon::bind(config.clone()).expect("daemon should bind");
         let instance_id = daemon.instance_id();
+        let events = daemon.events().clone();
         let cancellation = CancellationToken::new();
         let task_cancellation = cancellation.clone();
         let task = tokio::spawn(async move { daemon.run(task_cancellation).await });
         Self {
             config,
             instance_id,
+            events,
             cancellation,
             task,
         }

@@ -9,8 +9,11 @@
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("cli-master-daemon supports Linux and macOS only");
 
+mod client;
 mod config;
+mod diagnostics;
 mod error;
+mod events;
 mod lock;
 mod projects;
 mod server;
@@ -18,5 +21,9 @@ mod sessions;
 
 pub use cli_master_core::wire::{HelloResponse, StateSnapshotResponse};
 pub use config::DaemonConfig;
+pub use diagnostics::DiagnosticLog;
 pub use error::DaemonError;
+pub use events::{
+    ClientHandle, ClientId, EventBus, EventBusLimits, FanoutEvent, SubscribeError, SubscribeOutcome,
+};
 pub use server::{Daemon, MAX_FRAME_LENGTH};

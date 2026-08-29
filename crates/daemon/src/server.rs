@@ -27,10 +27,10 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::task::JoinSet;
-use tokio_util::codec::LengthDelimitedCodec;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
+use crate::client::serve_client;
 use crate::lock::InstanceLock;
 use crate::projects::ProjectRegistry;
 use crate::sessions::{SessionRegistry, encode_base64};
@@ -187,6 +187,12 @@ impl Daemon {
     #[must_use]
     pub fn socket_path(&self) -> &Path {
         self.config.socket_path()
+    }
+
+    /// Session event bus used by `SessionManager` and tests.
+    #[must_use]
+    pub fn events(&self) -> &EventBus {
+        &self.state.events
     }
 
     /// Accepts clients until cancellation, then closes all connections and
