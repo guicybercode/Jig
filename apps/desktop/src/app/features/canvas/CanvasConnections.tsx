@@ -4,6 +4,12 @@ import {
   type CanvasNode,
   type CanvasPoint,
 } from "./canvas-state";
+import {
+  CANVAS_ORIGIN_X,
+  CANVAS_ORIGIN_Y,
+  CANVAS_STAGE_HEIGHT,
+  CANVAS_STAGE_WIDTH,
+} from "./canvas-geometry";
 
 interface CanvasConnectionsProps {
   readonly connections: readonly CanvasConnection[];
@@ -24,12 +30,13 @@ export function CanvasConnections({
   return (
     <svg
       className="canvas-connections"
-      viewBox="0 0 2400 1600"
+      viewBox={`0 0 ${CANVAS_STAGE_WIDTH} ${CANVAS_STAGE_HEIGHT}`}
       preserveAspectRatio="none"
       aria-hidden="true"
       data-testid="canvas-connections"
     >
-      {connections.map((connection) => {
+      <g transform={`translate(${CANVAS_ORIGIN_X} ${CANVAS_ORIGIN_Y})`}>
+        {connections.map((connection) => {
         const source = nodesById.get(connection.sourceNodeId);
         const target = nodesById.get(connection.targetNodeId);
         if (!source || !target) {
@@ -42,22 +49,23 @@ export function CanvasConnections({
           connectionSourceId === source.id ||
           connectionSourceId === target.id;
 
-        return (
-          <g
-            key={connection.id}
-            className={
-              emphasized
-                ? "canvas-connection canvas-connection--emphasized"
-                : "canvas-connection"
-            }
-            data-connection-id={connection.id}
-          >
-            <path d={geometry.path} vectorEffect="non-scaling-stroke" />
-            <circle cx={geometry.source.x} cy={geometry.source.y} r="4" />
-            <circle cx={geometry.target.x} cy={geometry.target.y} r="4" />
-          </g>
-        );
-      })}
+          return (
+            <g
+              key={connection.id}
+              className={
+                emphasized
+                  ? "canvas-connection canvas-connection--emphasized"
+                  : "canvas-connection"
+              }
+              data-connection-id={connection.id}
+            >
+              <path d={geometry.path} vectorEffect="non-scaling-stroke" />
+              <circle cx={geometry.source.x} cy={geometry.source.y} r="4" />
+              <circle cx={geometry.target.x} cy={geometry.target.y} r="4" />
+            </g>
+          );
+        })}
+      </g>
     </svg>
   );
 }

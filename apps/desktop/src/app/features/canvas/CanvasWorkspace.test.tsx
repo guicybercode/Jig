@@ -212,6 +212,43 @@ describe("CanvasWorkspace", () => {
     expect(scrollTo).toHaveBeenCalledOnce();
   });
 
+  it("pans the canvas up, down, left, and right", () => {
+    const { container } = renderCanvas();
+    const viewport = container.querySelector<HTMLElement>(".canvas-viewport");
+    expect(viewport).not.toBeNull();
+    viewport!.scrollLeft = 2_000;
+    viewport!.scrollTop = 1_500;
+    viewport!.focus();
+
+    fireEvent.keyDown(viewport!, { key: "ArrowLeft" });
+    fireEvent.keyDown(viewport!, { key: "ArrowUp" });
+    expect(viewport!.scrollLeft).toBe(1_920);
+    expect(viewport!.scrollTop).toBe(1_420);
+    fireEvent.keyDown(viewport!, { key: "ArrowRight" });
+    fireEvent.keyDown(viewport!, { key: "ArrowDown" });
+    expect(viewport!.scrollLeft).toBe(2_000);
+    expect(viewport!.scrollTop).toBe(1_500);
+
+    fireEvent.pointerDown(viewport!, {
+      button: 0,
+      pointerId: 19,
+      clientX: 100,
+      clientY: 100,
+    });
+    fireEvent.pointerMove(viewport!, {
+      pointerId: 19,
+      clientX: 140,
+      clientY: 160,
+    });
+    fireEvent.pointerUp(viewport!, {
+      pointerId: 19,
+      clientX: 140,
+      clientY: 160,
+    });
+    expect(viewport!.scrollLeft).toBe(1_960);
+    expect(viewport!.scrollTop).toBe(1_440);
+  });
+
   it("removes a selected item's connection from the inspector", async () => {
     const user = userEvent.setup();
     const { container } = renderCanvas();

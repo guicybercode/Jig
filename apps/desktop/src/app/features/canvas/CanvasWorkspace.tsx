@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { Project, Session } from "../../../ipc/types";
 import { Icon } from "../../components/Icon";
@@ -14,6 +14,12 @@ import {
   type TerminalCanvasNode,
 } from "./canvas-state";
 import { CanvasConnections } from "./CanvasConnections";
+import {
+  CANVAS_ORIGIN_X,
+  CANVAS_ORIGIN_Y,
+  INITIAL_VIEW_CENTER,
+  toStagePoint,
+} from "./canvas-geometry";
 import { NewCanvasTerminalDialog } from "./NewCanvasTerminalDialog";
 import { useCanvasState } from "./useCanvasState";
 
@@ -41,6 +47,14 @@ export function CanvasWorkspace({
 }: CanvasWorkspaceProps) {
   const { state, dispatch, persistenceAvailable } = useCanvasState();
   const viewportRef = useRef<HTMLDivElement>(null);
+  const viewportInitializedRef = useRef(false);
+  const panRef = useRef<{
+    readonly pointerId: number;
+    readonly clientX: number;
+    readonly clientY: number;
+    readonly scrollLeft: number;
+    readonly scrollTop: number;
+  } | null>(null);
   const [layersOpen, setLayersOpen] = useState(false);
   const [terminalDialogOpen, setTerminalDialogOpen] = useState(false);
   const terminalSessions = useMemo(
@@ -63,12 +77,36 @@ export function CanvasWorkspace({
       })
     : [];
 
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport || viewportInitializedRef.current) {
+      return;
+    }
+    viewportInitializedRef.current = true;
+    viewport.scrollLeft = Math.max(
+      0,
+      (CANVAS_ORIGIN_X + INITIAL_VIEW_CENTER.x) * state.zoom -
+        viewport.clientWidth / 2,
+    );
+    viewport.scrollTop = Math.max(
+      0,
+      (CANVAS_ORIGIN_Y + INITIAL_VIEW_CENTER.y) * state.zoom -
+        viewport.clientHeight / 2,
+    );
+  }, [state.zoom]);
+
   function nextNodePosition() {
     const viewport = viewportRef.current;
     const offset = (state.nodes.length % 6) * 32;
     return {
-      x: ((viewport?.scrollLeft ?? 0) + 260) / state.zoom + offset,
-      y: ((viewport?.scrollTop ?? 0) + 150) / state.zoom + offset,
+      x:
+        ((viewport?.scrollLeft ?? 0) + 260) / state.zoom -
+        CANVAS_ORIGIN_X +
+        offset,
+      y:
+        ((viewport?.scrollTop ?? 0) + 150) / state.zoom -
+        CANVAS_ORIGIN_Y +
+        offset,
     };
   }
 
@@ -103,11 +141,13 @@ export function CanvasWorkspace({
     viewport.scrollTo({
       left: Math.max(
         0,
-        (node.x + size.width / 2) * state.zoom - viewport.clientWidth / 2,
+        (CANVAS_ORIGIN_X + node.x + size.width / 2) * state.zoom -
+          viewport.clientWidth / 2,
       ),
       top: Math.max(
         0,
-        (node.y + size.height / 2) * state.zoom - viewport.clientHeight / 2,
+        (CANVAS_ORIGIN_Y + node.y + size.height / 2) * state.zoom -
+          viewport.clientHeight / 2,
       ),
       behavior: "smooth",
     });
@@ -146,11 +186,13 @@ export function CanvasWorkspace({
     viewport.scrollTo({
       left: Math.max(
         0,
-        (minimumX + contentWidth / 2) * nextZoom - viewportWidth / 2,
+        (CANVAS_ORIGIN_X + minimumX + contentWidth / 2) * nextZoom -
+          viewportWidth / 2,
       ),
       top: Math.max(
         0,
-        (minimumY + contentHeight / 2) * nextZoom - viewportHeight / 2,
+        (CANVAS_ORIGIN_Y + minimumY + contentHeight / 2) * nextZoom -
+          viewportHeight / 2,
       ),
       behavior: "smooth",
     });
@@ -293,9 +335,62 @@ export function CanvasWorkspace({
       <div
         ref={viewportRef}
         className="canvas-viewport"
+        tabIndex={0}
+        aria-label="Pannable canvas"
+        aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
+        onKeyDown={(event) => {
+          if (event.defaultPrevented) {
+            return;
+          }
+          const step = event.altKey ? 16 : 80;
+          const movement = keyboardMovement(event.key, step);
+          if (movement) {
+            event.preventDefault();
+            event.currentTarget.scrollLeft += movement.x;
+            event.currentTarget.scrollTop += movement.y;
+          }
+        }}
         onPointerDown={(event) => {
-          if (event.currentTarget === event.target) {
-            dispatch({ type: "node/select", nodeId: null });
+          if (
+            event.button !== 0 ||
+            (event.target as HTMLElement).closest(".canvas-node")
+          ) {
+            return;
+          }
+          event.preventDefault();
+          dispatch({ type: "node/select", nodeId: null });
+          panRef.current = {
+            pointerId: event.pointerId,
+            clientX: event.clientX,
+            clientY: event.clientY,
+            scrollLeft: event.currentTarget.scrollLeft,
+            scrollTop: event.currentTarget.scrollTop,
+          };
+          event.currentTarget.setPointerCapture?.(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          const pan = panRef.current;
+          if (!pan || pan.pointerId !== event.pointerId) {
+            return;
+          }
+          event.currentTarget.scrollLeft =
+            pan.scrollLeft - (event.clientX - pan.clientX);
+          event.currentTarget.scrollTop =
+            pan.scrollTop - (event.clientY - pan.clientY);
+        }}
+        onPointerUp={(event) => {
+          if (panRef.current?.pointerId === event.pointerId) {
+            panRef.current = null;
+            event.currentTarget.releasePointerCapture?.(event.pointerId);
+          }
+        }}
+        onPointerCancel={() => {
+          panRef.current = null;
+        }}
+        onWheel={(event) => {
+          if (event.shiftKey && event.deltaX === 0) {
+            event.preventDefault();
+            event.currentTarget.scrollLeft += event.deltaY;
           }
         }}
       >
@@ -558,7 +653,7 @@ function CanvasNodeCard({
     <article
       className={classes}
       style={{
-        transform: `translate(${node.x}px, ${node.y}px)`,
+        transform: `translate(${toStagePoint(node).x}px, ${toStagePoint(node).y}px)`,
         ...(node.kind === "terminal"
           ? { width: `${node.width}px`, height: `${node.height}px` }
           : {}),

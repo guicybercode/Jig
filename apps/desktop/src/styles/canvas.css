@@ -423,6 +423,24 @@
   overflow: auto;
   overscroll-behavior: contain;
   background-color: var(--canvas-background);
+  cursor: grab;
+  scrollbar-gutter: stable;
+}
+
+.canvas-viewport:active {
+  cursor: grabbing;
+}
+
+.canvas-viewport:focus-visible {
+  outline: 3px solid var(--canvas-focus);
+  outline-offset: -3px;
+}
+
+.canvas-stage {
+  position: relative;
+  width: 12000px;
+  height: 12000px;
+  background-color: var(--canvas-background);
   background-image:
     linear-gradient(to right, var(--canvas-grid-major) 1px, transparent 1px),
     linear-gradient(to bottom, var(--canvas-grid-major) 1px, transparent 1px),
@@ -430,13 +448,11 @@
     linear-gradient(to bottom, var(--canvas-grid-fine) 1px, transparent 1px);
   background-position: -1px -1px;
   background-size: 128px 128px, 128px 128px, 16px 16px, 16px 16px;
+  transform-origin: 0 0;
 }
 
-.canvas-stage {
-  position: relative;
-  width: 2400px;
-  height: 1600px;
-  transform-origin: 0 0;
+.canvas-node {
+  cursor: default;
 }
 
 .canvas-connections {
