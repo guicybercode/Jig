@@ -12,7 +12,9 @@ export type IconName =
   | "diagnostics"
   | "folder"
   | "grid"
+  | "layers"
   | "link"
+  | "map"
   | "menu"
   | "more"
   | "note"
@@ -115,11 +117,25 @@ function getIconPaths(name: IconName): ReactNode {
           <rect x="14" y="14" width="7" height="7" rx="1" />
         </>
       );
+    case "layers":
+      return (
+        <>
+          <path d="m12 3 8.5 4.75L12 12.5 3.5 7.75 12 3Z" />
+          <path d="m5.5 11.25-2 1.1L12 17l8.5-4.65-2-1.1M5.5 15.75l-2 1.1L12 21.5l8.5-4.65-2-1.1" />
+        </>
+      );
     case "link":
       return (
         <>
           <path d="M10.2 13.8a4 4 0 0 0 5.7 0l2.1-2.1A4 4 0 1 0 12.3 6l-1.2 1.2" />
           <path d="M13.8 10.2a4 4 0 0 0-5.7 0L6 12.3A4 4 0 1 0 11.7 18l1.2-1.2" />
+        </>
+      );
+    case "map":
+      return (
+        <>
+          <path d="m3 5 5-2 8 3 5-2v15l-5 2-8-3-5 2V5Z" />
+          <path d="M8 3v15M16 6v15" />
         </>
       );
     case "menu":
