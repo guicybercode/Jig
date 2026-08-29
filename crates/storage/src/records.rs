@@ -15,7 +15,7 @@ pub enum PathStatus {
     Missing,
 }
 
-/// Git worktree lifecycle stored in SQLite.
+/// Git worktree lifecycle stored in `SQLite`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorktreeState {
     /// Git isolation is being created.

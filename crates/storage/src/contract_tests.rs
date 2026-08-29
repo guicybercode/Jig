@@ -234,6 +234,7 @@ fn project_crud_survives_reopen() {
     let db_path = directory.path().join("cli-master.db");
     let project_dir = directory.path().join("repo");
     fs::create_dir(&project_dir).expect("repo");
+    let canonical_project_dir = fs::canonicalize(&project_dir).expect("canonical repo path");
     let id = ProjectId::new();
 
     {
@@ -254,7 +255,11 @@ fn project_crud_survives_reopen() {
     let loaded = reopened.get_project(id).expect("reload");
     assert_eq!(loaded.project.name, "Renamed");
     assert_eq!(loaded.path_status, PathStatus::Available);
-    assert_eq!(loaded.project.repository_root.as_ref(), Some(&project_dir));
+    assert_eq!(loaded.project.path, canonical_project_dir);
+    assert_eq!(
+        loaded.project.repository_root.as_ref(),
+        Some(&loaded.project.path)
+    );
 
     reopened.remove_project(id).expect("remove metadata only");
     assert!(project_dir.exists(), "repository files must remain");

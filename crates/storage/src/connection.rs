@@ -19,7 +19,7 @@ pub(crate) enum StorageLocation {
 ///
 /// Every connection enables foreign-key enforcement, a 5 second busy timeout,
 /// and `FULL` synchronous writes. File-backed databases use WAL journal mode;
-/// in-memory databases keep SQLite's memory journal because WAL requires a
+/// in-memory databases keep `SQLite`'s memory journal because WAL requires a
 /// file. The daemon holds one connection behind a mutex, matching the v0.1
 /// single-writer ownership model.
 #[derive(Debug)]
