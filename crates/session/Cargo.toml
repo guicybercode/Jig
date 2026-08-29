@@ -16,6 +16,7 @@ path = "src/lib.rs"
 cli-master-core = { path = "../core" }
 cli-master-git = { path = "../git" }
 cli-master-storage = { path = "../storage" }
+getrandom = "0.4.3"
 nix = { version = "0.30.1", features = ["process", "signal"] }
 portable-pty = "0.9.0"
 tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread", "sync", "time"] }

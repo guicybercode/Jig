@@ -64,6 +64,27 @@ describe("AgentsView", () => {
     expect(copied).not.toMatch(/sk-|super-secret/);
   });
 
+  it("fails closed when copying agent diagnostics is denied", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockRejectedValue(new Error("clipboard denied"));
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderAgents();
+    const claude = await screen.findByRole("heading", { name: "Claude Code" });
+    const card = claude.closest("article") as HTMLElement;
+    await user.click(within(card).getByRole("button", { name: "Diagnostics" }));
+    const dialog = screen.getByRole("dialog", { name: "Claude Code diagnostics" });
+    await user.click(within(dialog).getByRole("button", { name: "Copy diagnostics" }));
+
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(within(dialog).getByRole("status")).toHaveTextContent(
+      "No unsanitized fallback was copied",
+    );
+  });
+
   it("creates, validates, and removes a custom agent without putting secrets in the DOM", async () => {
     const user = userEvent.setup();
     renderAgents();

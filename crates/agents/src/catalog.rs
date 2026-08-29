@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use cli_master_core::{
     AgentCustomCreateRequest, AgentCustomUpdateRequest, AgentDetectResponse,
     AgentDiagnosticsReport, AgentId, AgentListResponse, AgentRecord, AgentSource,
-    LaunchTestStatusDto, builtin_agent_ids,
+    LaunchTestStatusDto, builtin_agent_ids, redact_text,
 };
 
 use crate::{
@@ -259,14 +259,16 @@ impl AgentCatalog {
             .get(&adapter_key)
             .ok_or(CatalogError::NotFound(id))?;
         let report = adapter.diagnostics_with_options(&self.environment, ProbeOptions::default());
+        let version = report.version.as_deref().map(redact_text);
+        let warning = report.warning.as_deref().map(redact_text);
         let entry = self
             .entries
             .get_mut(&id)
             .ok_or(CatalogError::NotFound(id))?;
         entry.installed = report.installed;
         entry.resolved_path.clone_from(&report.path);
-        entry.version.clone_from(&report.version);
-        entry.warning.clone_from(&report.warning);
+        entry.version.clone_from(&version);
+        entry.warning.clone_from(&warning);
         Ok(AgentDiagnosticsReport {
             agent_id: id,
             display_name: report.display_name,
@@ -274,8 +276,8 @@ impl AgentCatalog {
             launch_test: launch_test_dto(report.launch_test),
             searched_paths: report.searched_paths,
             path: report.path,
-            version: report.version,
-            warning: report.warning,
+            version,
+            warning,
         })
     }
 
@@ -333,7 +335,9 @@ fn launch_test_dto(status: LaunchTestStatus) -> LaunchTestStatusDto {
             LaunchTestStatusDto::NotExecutable { candidate }
         }
         LaunchTestStatus::Timeout => LaunchTestStatusDto::Timeout,
-        LaunchTestStatus::Failed { message } => LaunchTestStatusDto::Failed { message },
+        LaunchTestStatus::Failed { message } => LaunchTestStatusDto::Failed {
+            message: redact_text(&message),
+        },
     }
 }
 

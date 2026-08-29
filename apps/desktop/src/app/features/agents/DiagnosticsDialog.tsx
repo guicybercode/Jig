@@ -19,12 +19,16 @@ export function DiagnosticsDialog({
 }: DiagnosticsDialogProps) {
   const textId = useId();
   const liveId = useId();
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const text = formatAgentDiagnostics(agent, diagnostics);
 
   async function copy() {
-    await navigator.clipboard.writeText(text);
-    setCopied(true);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
   }
 
   return (
@@ -33,7 +37,11 @@ export function DiagnosticsDialog({
         {text}
       </pre>
       <p id={liveId} className="form__hint" role="status" aria-live="polite">
-        {copied ? "Diagnostics copied. Secrets are not included." : "Environment values are omitted."}
+        {copyState === "copied"
+          ? "Diagnostics copied. Secrets are not included."
+          : copyState === "failed"
+            ? "Diagnostics copy failed. No unsanitized fallback was copied."
+            : "Environment values and argument contents are omitted."}
       </p>
       <div className="dialog__actions">
         <button className="button button--secondary" type="button" onClick={onClose}>

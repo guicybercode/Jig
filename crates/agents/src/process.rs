@@ -1,13 +1,21 @@
 use std::{
     io::{self, Read},
     process::{Child, Command, Stdio},
-    thread::{self, JoinHandle},
+    sync::mpsc::{self, Receiver, RecvTimeoutError},
+    thread,
     time::{Duration, Instant},
 };
 
 pub(crate) const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) const DEFAULT_PROBE_OUTPUT_LIMIT: usize = 4096;
 pub(crate) const PATH_IMPORT_OUTPUT_LIMIT: usize = 64 * 1024;
+
+const POLL_INTERVAL: Duration = Duration::from_millis(10);
+const MAX_SPAWN_ATTEMPTS: u32 = 8;
+const SPAWN_RETRY_BASE: Duration = Duration::from_millis(15);
+const TERMINATION_GRACE: Duration = Duration::from_millis(250);
+
+type ReaderResult = io::Result<Vec<u8>>;
 
 pub(crate) struct LimitedOutput {
     pub timed_out: bool,
@@ -30,59 +38,101 @@ pub(crate) fn run_limited(
     command.stdin(Stdio::null());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
-
-    let mut child = spawn_with_retry(&mut command)?;
-    let started = run_spawned_child(&mut child, timeout, max_output);
-    if started.is_err() {
-        let _ = child.kill();
-        let _ = child.wait();
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
     }
-    started
-}
 
-fn run_spawned_child(
-    child: &mut Child,
-    timeout: Duration,
-    max_output: usize,
-) -> io::Result<LimitedOutput> {
     let start = Instant::now();
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| io::Error::other("child stdout pipe was not available"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| io::Error::other("child stderr pipe was not available"))?;
-    let stdout_reader = spawn_limited_reader("agent-probe-stdout", stdout, max_output)?;
-    let stderr_reader = spawn_limited_reader("agent-probe-stderr", stderr, max_output)?;
+    let deadline = start + timeout;
+    let mut child = spawn_with_retry(&mut command, deadline)?;
+    if Instant::now() >= deadline {
+        terminate_process_group(&mut child);
+        return Ok(timeout_output());
+    }
+    let Some(stdout) = child.stdout.take() else {
+        terminate_process_group(&mut child);
+        return Err(io::Error::other("child stdout pipe was not available"));
+    };
+    let Some(stderr) = child.stderr.take() else {
+        terminate_process_group(&mut child);
+        return Err(io::Error::other("child stderr pipe was not available"));
+    };
+    let stdout_reader = match spawn_limited_reader("agent-probe-stdout", stdout, max_output) {
+        Ok(reader) => reader,
+        Err(error) => {
+            terminate_process_group(&mut child);
+            return Err(error);
+        }
+    };
+    let stderr_reader = match spawn_limited_reader("agent-probe-stderr", stderr, max_output) {
+        Ok(reader) => reader,
+        Err(error) => {
+            terminate_process_group(&mut child);
+            return Err(error);
+        }
+    };
 
-    let wait_result = wait_with_timeout(child, start, timeout);
-    if wait_result.is_err() {
-        let _ = child.kill();
-        let _ = child.wait();
+    let wait_result = wait_with_timeout(&mut child, deadline);
+    let (timed_out, exit_code) = match wait_result {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            terminate_process_group(&mut child);
+            return Err(error);
+        }
+    };
+    if timed_out {
+        return Ok(timeout_output());
     }
 
-    let stdout = join_limited_reader(stdout_reader);
-    let stderr = join_limited_reader(stderr_reader);
-    let (timed_out, exit_code) = wait_result?;
+    let stdout = match receive_limited_reader(&stdout_reader, deadline) {
+        Ok(Some(output)) => output,
+        Ok(None) => {
+            terminate_process_group(&mut child);
+            return Ok(timeout_output());
+        }
+        Err(error) => {
+            terminate_process_group(&mut child);
+            return Err(error);
+        }
+    };
+    let stderr = match receive_limited_reader(&stderr_reader, deadline) {
+        Ok(Some(output)) => output,
+        Ok(None) => {
+            terminate_process_group(&mut child);
+            return Ok(timeout_output());
+        }
+        Err(error) => {
+            terminate_process_group(&mut child);
+            return Err(error);
+        }
+    };
 
     Ok(LimitedOutput {
-        timed_out,
+        timed_out: false,
         exit_code,
-        stdout: stdout?,
-        stderr: stderr?,
+        stdout,
+        stderr,
     })
 }
 
-fn spawn_with_retry(command: &mut Command) -> io::Result<Child> {
+fn spawn_with_retry(command: &mut Command, deadline: Instant) -> io::Result<Child> {
     let mut last_error = None;
-    for attempt in 0..8 {
+    for attempt in 0..MAX_SPAWN_ATTEMPTS {
         match command.spawn() {
             Ok(child) => return Ok(child),
             Err(error) if is_transient_spawn_error(&error) => {
+                if attempt + 1 == MAX_SPAWN_ATTEMPTS {
+                    return Err(error);
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(error);
+                }
                 last_error = Some(error);
-                thread::sleep(Duration::from_millis(15 * (attempt + 1)));
+                let backoff = SPAWN_RETRY_BASE.saturating_mul(attempt + 1);
+                thread::sleep(backoff.min(remaining));
             }
             Err(error) => return Err(error),
         }
@@ -97,28 +147,17 @@ fn is_transient_spawn_error(error: &io::Error) -> bool {
     ) || matches!(error.raw_os_error(), Some(11 | 35))
 }
 
-fn wait_with_timeout(
-    child: &mut Child,
-    start: Instant,
-    timeout: Duration,
-) -> io::Result<(bool, Option<i32>)> {
+fn wait_with_timeout(child: &mut Child, deadline: Instant) -> io::Result<(bool, Option<i32>)> {
     loop {
         match child.try_wait()? {
             Some(status) => return Ok((false, status.code())),
-            None if start.elapsed() >= timeout => {
-                match child.kill() {
-                    Ok(()) => {
-                        let _ = child.wait();
-                    }
-                    Err(_) => {
-                        let _ = child.try_wait();
-                    }
-                }
+            None if Instant::now() >= deadline => {
+                terminate_process_group(child);
                 return Ok((true, None));
             }
             None => {
-                let remaining = timeout.saturating_sub(start.elapsed());
-                thread::sleep(remaining.min(Duration::from_millis(10)));
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                thread::sleep(remaining.min(POLL_INTERVAL));
             }
         }
     }
@@ -128,13 +167,17 @@ fn spawn_limited_reader<R>(
     name: &str,
     reader: R,
     max_output: usize,
-) -> io::Result<JoinHandle<io::Result<Vec<u8>>>>
+) -> io::Result<Receiver<ReaderResult>>
 where
     R: Read + Send + 'static,
 {
+    let (sender, receiver) = mpsc::sync_channel(1);
     thread::Builder::new()
         .name(name.to_owned())
-        .spawn(move || drain_limited(reader, max_output))
+        .spawn(move || {
+            let _ = sender.send(drain_limited(reader, max_output));
+        })?;
+    Ok(receiver)
 }
 
 fn drain_limited(mut reader: impl Read, max_output: usize) -> io::Result<Vec<u8>> {
@@ -153,10 +196,49 @@ fn drain_limited(mut reader: impl Read, max_output: usize) -> io::Result<Vec<u8>
     Ok(output)
 }
 
-fn join_limited_reader(reader: JoinHandle<io::Result<Vec<u8>>>) -> io::Result<Vec<u8>> {
-    reader
-        .join()
-        .map_err(|_| io::Error::other("child output reader thread panicked"))?
+fn receive_limited_reader(
+    reader: &Receiver<ReaderResult>,
+    deadline: Instant,
+) -> io::Result<Option<Vec<u8>>> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match reader.recv_timeout(remaining) {
+        Ok(result) => result.map(Some),
+        Err(RecvTimeoutError::Timeout) => Ok(None),
+        Err(RecvTimeoutError::Disconnected) => Err(io::Error::other(
+            "child output reader thread stopped unexpectedly",
+        )),
+    }
+}
+
+fn terminate_process_group(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{Signal, killpg};
+        use nix::unistd::Pid;
+
+        if let Ok(group) = i32::try_from(child.id()) {
+            if group > 1 {
+                let _ = killpg(Pid::from_raw(group), Signal::SIGKILL);
+            }
+        }
+    }
+    let _ = child.kill();
+    let deadline = Instant::now() + TERMINATION_GRACE;
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return,
+            Ok(None) => thread::sleep(POLL_INTERVAL),
+        }
+    }
+}
+
+fn timeout_output() -> LimitedOutput {
+    LimitedOutput {
+        timed_out: true,
+        exit_code: None,
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -189,6 +271,19 @@ mod tests {
     }
 
     #[test]
+    fn descendant_retaining_output_pipes_cannot_hold_the_runner() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 10 &"]);
+        let started = Instant::now();
+
+        let output = run_limited(command, Duration::from_millis(250), 64)
+            .expect("runner should bound inherited pipes");
+
+        assert!(output.timed_out);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
     fn times_out_a_sleeping_child_without_busy_looping() {
         let mut command = Command::new("/bin/sleep");
         command.arg("30");
@@ -196,5 +291,18 @@ mod tests {
             run_limited(command, Duration::from_millis(200), 64).expect("timeout should return");
         assert!(output.timed_out);
         assert!(output.exit_code.is_none());
+    }
+
+    #[test]
+    fn classifies_only_transient_spawn_failures_for_retry() {
+        assert!(is_transient_spawn_error(&io::Error::from(
+            io::ErrorKind::WouldBlock
+        )));
+        assert!(is_transient_spawn_error(&io::Error::from(
+            io::ErrorKind::Interrupted
+        )));
+        assert!(!is_transient_spawn_error(&io::Error::from(
+            io::ErrorKind::PermissionDenied
+        )));
     }
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AgentApiProvider } from "../ipc/AgentApiProvider";
 import { createMemoryAgentApi } from "../ipc/memoryAgentApi";
@@ -9,6 +9,9 @@ import {
   CommandPalette,
   type CommandPaletteCommand,
 } from "./features/commands/CommandPalette";
+import {
+  DiagnosticsDialog as ApplicationDiagnosticsDialog,
+} from "./features/diagnostics/DiagnosticsDialog";
 import { ProjectSidebar } from "./features/navigation/ProjectSidebar";
 import { LocalStatusBar } from "./features/status/LocalStatusBar";
 import { CustomAgentDialog } from "./features/workspace/CustomAgentDialog";
@@ -44,6 +47,11 @@ function AppShellLayout() {
   const daemonReady = useDaemonReady();
   const notifications = useNotifications();
   const actions = useWorkspaceActions();
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const loadDiagnostics = useCallback(
+    () => actions.getDiagnostics(),
+    [actions],
+  );
   const [view, setView] = useState<"workspace" | "agents">("workspace");
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
@@ -110,7 +118,11 @@ function AppShellLayout() {
           <WorkspaceEmptyState />
         )}
       </div>
-      <LocalStatusBar />
+      <LocalStatusBar
+        onOpenDiagnostics={() => {
+          setDiagnosticsOpen(true);
+        }}
+      />
       {notifications.length > 0 ? (
         <ul className="notification-list" aria-label="Workspace notifications">
           {notifications.map((notification) => (
@@ -136,6 +148,13 @@ function AppShellLayout() {
       ) : null}
       <NewSessionDialog />
       <CustomAgentDialog />
+      <ApplicationDiagnosticsDialog
+        open={diagnosticsOpen}
+        load={loadDiagnostics}
+        onClose={() => {
+          setDiagnosticsOpen(false);
+        }}
+      />
       <CommandPalette
         open={commandPaletteOpen}
         commands={commandPaletteCommands}

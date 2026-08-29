@@ -325,8 +325,8 @@ pub fn expand_leading_tilde(path: &str) -> Result<String, crate::AgentError> {
 /// does not contain the expected markers.
 pub fn read_login_shell_path(timeout: Duration) -> Result<OsString, PathImportError> {
     let shell = login_shell_executable().ok_or(PathImportError::ShellNotFound)?;
-    let mut command = Command::new(shell);
-    command.args(["-lc", LOGIN_PATH_COMMAND]);
+    let mut command = Command::new(shell.executable);
+    command.args([shell.command_flag, LOGIN_PATH_COMMAND]);
     let output = run_limited(command, timeout, PATH_IMPORT_OUTPUT_LIMIT)
         .map_err(|_| PathImportError::SpawnFailed)?;
     if output.timed_out {
@@ -393,20 +393,42 @@ fn standard_search_directories_for(
     merge_unique(directories)
 }
 
-fn login_shell_executable() -> Option<PathBuf> {
+fn login_shell_executable() -> Option<SupportedLoginShell> {
     if let Some(shell) = env::var_os("SHELL") {
-        let path = PathBuf::from(shell);
-        if !path.as_os_str().is_empty() {
+        if let Some(path) = supported_login_shell(PathBuf::from(shell)) {
             return Some(path);
         }
     }
-    for candidate in ["/bin/bash", "/bin/zsh"] {
-        let path = PathBuf::from(candidate);
-        if path.is_file() {
+    for candidate in ["/bin/bash", "/bin/zsh", "/bin/sh"] {
+        if let Some(path) = supported_login_shell(PathBuf::from(candidate)) {
             return Some(path);
         }
     }
     None
+}
+
+struct SupportedLoginShell {
+    executable: PathBuf,
+    command_flag: &'static str,
+}
+
+fn supported_login_shell(candidate: PathBuf) -> Option<SupportedLoginShell> {
+    if !candidate.is_absolute() {
+        return None;
+    }
+    let DetectionResult::Found { executable } = inspect_candidate(candidate) else {
+        return None;
+    };
+    let name = executable.file_name()?.to_str()?;
+    let command_flag = match name {
+        "bash" | "zsh" => "-lc",
+        "sh" | "dash" => "-c",
+        _ => return None,
+    };
+    Some(SupportedLoginShell {
+        executable,
+        command_flag,
+    })
 }
 
 fn parse_marked_path(stdout: &[u8]) -> Result<OsString, PathImportError> {
@@ -455,6 +477,8 @@ fn inspect_candidate(candidate: PathBuf) -> DetectionResult {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
 
     #[test]
@@ -469,6 +493,24 @@ mod tests {
         assert!(dirs.contains(&PathBuf::from("/Users/ada/.cargo/bin")));
         assert!(dirs.contains(&PathBuf::from("/opt/homebrew/bin")));
         assert!(dirs.contains(&PathBuf::from("/Users/ada/Library/pnpm")));
+    }
+
+    #[test]
+    fn login_shell_requires_an_absolute_supported_executable() {
+        assert!(supported_login_shell(PathBuf::from("bash")).is_none());
+        let shell = supported_login_shell(PathBuf::from("/bin/sh"))
+            .expect("/bin/sh should resolve to a supported POSIX shell");
+        assert!(matches!(shell.command_flag, "-c" | "-lc"));
+
+        let temp = tempfile::TempDir::new().expect("temporary directory should be created");
+        let unsupported = temp.path().join("not-a-shell");
+        std::fs::write(&unsupported, b"#!/bin/sh\n").expect("fixture should be written");
+        let mut permissions = std::fs::metadata(&unsupported)
+            .expect("fixture metadata should exist")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&unsupported, permissions).expect("fixture mode should be set");
+        assert!(supported_login_shell(unsupported).is_none());
     }
 
     #[test]

@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
+use std::env;
 use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cli_master_core::wire::{
@@ -89,7 +91,7 @@ pub(crate) async fn serve_client(
                 };
                 if !send_json(
                     &mut framed,
-                    &ResponseEnvelope::<Value>::failure(request_id, failure.error),
+                    &ResponseEnvelope::<Value>::failure(request_id, *failure.error),
                 )
                 .await
                 {
@@ -318,16 +320,36 @@ fn handle_subscribe(
 }
 
 fn diagnostics_payload(state: &ServerState) -> DiagnosticsResponse {
-    DiagnosticsResponse {
+    let home = env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute() && path != Path::new("/"));
+    let mut response = DiagnosticsResponse {
         daemon_version: state.hello.daemon_version.clone(),
         protocol_version: PROTOCOL_V1,
         schema_version: state.schema_version,
         daemon_instance_id: state.hello.instance_id,
-        data_path: state.config.data_directory().to_path_buf(),
-        runtime_path: state.config.runtime_directory().to_path_buf(),
-        log_path: state.config.log_directory().to_path_buf(),
+        data_path: sanitize_diagnostic_path(state.config.data_directory(), home.as_deref()),
+        runtime_path: sanitize_diagnostic_path(state.config.runtime_directory(), home.as_deref()),
+        log_path: sanitize_diagnostic_path(state.config.log_directory(), home.as_deref()),
         effective_path: Vec::new(),
         recent_issues: state.events.diagnostics().recent(),
+        export_text: String::new(),
+    };
+    response.refresh_export_text();
+    response
+}
+
+fn sanitize_diagnostic_path(path: &Path, home: Option<&Path>) -> PathBuf {
+    let Some(home) = home else {
+        return path.to_path_buf();
+    };
+    let Ok(relative) = path.strip_prefix(home) else {
+        return path.to_path_buf();
+    };
+    if relative.as_os_str().is_empty() {
+        PathBuf::from("~")
+    } else {
+        PathBuf::from("~").join(relative)
     }
 }
 
@@ -359,14 +381,16 @@ fn invalid_payload(request_id: RequestId, error: &serde_json::Error) -> Response
 
 struct RequestFailure {
     request_id: Option<RequestId>,
-    error: ApiError,
+    error: Box<ApiError>,
 }
 
 fn decode_request(bytes: &[u8]) -> Result<RequestEnvelope<Value>, RequestFailure> {
     let value: Value = serde_json::from_slice(bytes).map_err(|error| RequestFailure {
         request_id: None,
-        error: ApiError::new("invalid_json", "Request frame is not valid JSON")
-            .with_detail("reason", error.to_string()),
+        error: Box::new(
+            ApiError::new("invalid_json", "Request frame is not valid JSON")
+                .with_detail("reason", error.to_string()),
+        ),
     })?;
     let request_id = value
         .get("requestId")
@@ -375,11 +399,13 @@ fn decode_request(bytes: &[u8]) -> Result<RequestEnvelope<Value>, RequestFailure
 
     serde_json::from_value(value).map_err(|error| RequestFailure {
         request_id,
-        error: ApiError::new(
-            "invalid_request",
-            "Request does not match the IPC envelope schema",
-        )
-        .with_detail("reason", error.to_string()),
+        error: Box::new(
+            ApiError::new(
+                "invalid_request",
+                "Request does not match the IPC envelope schema",
+            )
+            .with_detail("reason", error.to_string()),
+        ),
     })
 }
 

@@ -11,6 +11,7 @@ mod error;
 mod ids;
 mod model;
 mod protocol;
+mod redact;
 pub mod wire;
 
 pub use catalog::{
@@ -19,8 +20,10 @@ pub use catalog::{
     AgentListResponse, AgentRecord, AgentSetEnabledRequest, LaunchTestStatusDto, agent_methods,
     builtin_agent_ids,
 };
-pub use command::{CommandSpec, CommandSpecError, MAX_STARTUP_INPUT_BYTES};
-pub use error::ApiError;
+pub use command::{
+    CommandSpec, CommandSpecError, MAX_STARTUP_INPUT_BYTES, validate_structured_invocation,
+};
+pub use error::{ApiError, ApplicationError};
 pub use ids::{AgentId, DaemonInstanceId, ProjectId, RequestId, SessionId, WorktreeId};
 pub use model::{
     AgentDefinition, AgentSource, Project, Session, SessionStatus, Worktree, WorktreeState,
@@ -28,4 +31,7 @@ pub use model::{
 pub use protocol::{
     APPLICATION_VERSION, EnvelopeKind, EventEnvelope, PROTOCOL_V1, RequestEnvelope,
     ResponseEnvelope, ResponsePayload,
+};
+pub use redact::{
+    REDACTED, is_sensitive_name, redact_json_value, redact_map, redact_text, redact_value,
 };

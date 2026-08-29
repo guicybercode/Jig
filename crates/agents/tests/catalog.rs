@@ -7,7 +7,7 @@ use cli_master_core::{
 };
 use tempfile::TempDir;
 
-use common::{executable, isolated_env};
+use common::{executable, isolated_env, script};
 
 mod common;
 
@@ -149,4 +149,50 @@ fn ipc_method_names_are_stable() {
     assert_eq!(agent_methods::CUSTOM_CREATE, "agent.custom.create");
     assert_eq!(agent_methods::CUSTOM_UPDATE, "agent.custom.update");
     assert_eq!(agent_methods::CUSTOM_REMOVE, "agent.custom.remove");
+}
+
+#[test]
+fn catalog_redacts_probe_output_before_it_reaches_diagnostics() {
+    let temp = TempDir::new().expect("temp");
+    script(
+        temp.path(),
+        "codex",
+        "echo 'version TOKEN=probe-secret sk_live_example'",
+    );
+    let mut catalog = AgentCatalog::new(isolated_env(&temp));
+    let diagnostics = catalog
+        .detect(Some(builtin_agent_ids::codex()))
+        .expect("built-in agent should be detected");
+    let encoded = serde_json::to_string(&diagnostics).expect("diagnostics should serialize");
+
+    assert!(!encoded.contains("probe-secret"));
+    assert!(!encoded.contains("sk_live_example"));
+    assert!(
+        encoded.contains("[redacted]"),
+        "unexpected report: {encoded}"
+    );
+}
+
+#[test]
+fn catalog_rejects_shell_command_strings_at_crud_boundary() {
+    let mut catalog = AgentCatalog::new(isolated_env(&TempDir::new().expect("temp")));
+    let error = catalog
+        .create_custom(AgentCustomCreateRequest {
+            display_name: "Unsafe Shell".to_owned(),
+            executable: "sh".to_owned(),
+            args: vec!["-c".to_owned(), "echo should-not-run".to_owned()],
+            env: BTreeMap::new(),
+            default_cwd: None,
+            requires_pty: true,
+        })
+        .expect_err("shell command strings must be refused before persistence");
+
+    assert!(matches!(error, CatalogError::InvalidDefinition(_)));
+    assert!(
+        !catalog
+            .list()
+            .agents
+            .iter()
+            .any(|agent| agent.display_name == "Unsafe Shell")
+    );
 }
