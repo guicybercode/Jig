@@ -44,9 +44,10 @@ impl DaemonConfig {
                         .map(|path| path.join(".local/share").join(APP_DIRECTORY))
                 })
                 .ok_or(DaemonError::MissingHomeDirectory)?;
-            let runtime_directory = absolute_environment_path("XDG_RUNTIME_DIR")
-                .map(|path| path.join(APP_DIRECTORY))
-                .unwrap_or_else(|| data_directory.join("runtime"));
+            let runtime_directory = absolute_environment_path("XDG_RUNTIME_DIR").map_or_else(
+                || data_directory.join("runtime"),
+                |path| path.join(APP_DIRECTORY),
+            );
             Ok(Self::from_paths(data_directory, runtime_directory))
         }
 
