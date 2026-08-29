@@ -16,6 +16,16 @@ export function DiagnosticsDialog({
   onClose,
   load,
 }: DiagnosticsDialogProps) {
+  if (!open) {
+    return null;
+  }
+  return <OpenDiagnosticsDialog onClose={onClose} load={load} />;
+}
+
+function OpenDiagnosticsDialog({
+  onClose,
+  load,
+}: Omit<DiagnosticsDialogProps, "open">) {
   const [report, setReport] = useState<DiagnosticsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
@@ -23,28 +33,26 @@ export function DiagnosticsDialog({
   );
 
   useEffect(() => {
-    if (!open) {
-      return undefined;
-    }
     let cancelled = false;
-    setReport(null);
-    setError(null);
-    setCopyState("idle");
     void load()
       .then((next) => {
         if (!cancelled) {
+          setError(null);
+          setCopyState("idle");
           setReport(next);
         }
       })
       .catch(() => {
         if (!cancelled) {
+          setReport(null);
+          setCopyState("idle");
           setError("Diagnostics could not be loaded safely.");
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [load, open]);
+  }, [load]);
 
   async function copyReport() {
     if (!report?.exportText) {
@@ -59,7 +67,7 @@ export function DiagnosticsDialog({
   }
 
   return (
-    <Dialog title="Diagnostics" open={open} onClose={onClose}>
+    <Dialog title="Diagnostics" open onClose={onClose}>
       <p className="dialog__lede">
         This snapshot omits environment values, command arguments, prompts, and
         terminal output. Home-directory prefixes are replaced before the daemon
