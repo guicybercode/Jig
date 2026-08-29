@@ -21,13 +21,13 @@ pub enum AgentSource {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorktreeState {
-    /// Git and SQLite have not both accepted the worktree yet.
+    /// Git and `SQLite` have not both accepted the worktree yet.
     Creating,
     /// The worktree exists and may be used as a session cwd.
     Active,
     /// Removal was requested and is waiting on confirmation or cleanup.
     RemovePending,
-    /// Git and SQLite disagree; recovery instructions should be shown.
+    /// Git and `SQLite` disagree; recovery instructions should be shown.
     Orphaned,
 }
 

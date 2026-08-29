@@ -17,8 +17,16 @@ struct ProtocolInfo {
 fn protocol_info() -> ProtocolInfo {
     ProtocolInfo {
         protocol_version: PROTOCOL_V1,
-        methods: IpcMethod::ALL.iter().map(IpcMethod::as_str).collect(),
-        events: IpcEvent::ALL.iter().map(IpcEvent::as_str).collect(),
+        methods: IpcMethod::ALL
+            .iter()
+            .copied()
+            .map(IpcMethod::as_str)
+            .collect(),
+        events: IpcEvent::ALL
+            .iter()
+            .copied()
+            .map(IpcEvent::as_str)
+            .collect(),
     }
 }
 

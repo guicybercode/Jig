@@ -328,7 +328,7 @@ pub struct DiagnosticsSnapshot {
     pub protocol_version: u16,
     /// `linux` or `macos`.
     pub platform: String,
-    /// Data directory containing SQLite, with home abbreviated when possible.
+    /// Data directory containing `SQLite`, with home abbreviated when possible.
     pub data_dir: String,
     /// Schema version currently applied.
     pub schema_version: u32,

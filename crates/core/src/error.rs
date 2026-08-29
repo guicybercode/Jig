@@ -67,7 +67,7 @@ pub mod error_codes {
     /// Git exited unsuccessfully. Details contain the sanitized stderr.
     pub const GIT_COMMAND_FAILED: &str = "GIT_COMMAND_FAILED";
 
-    /// SQLite rejected an operation or the schema is newer than this binary.
+    /// `SQLite` rejected an operation or the schema is newer than this binary.
     pub const STORAGE_FAILURE: &str = "STORAGE_FAILURE";
 }
 

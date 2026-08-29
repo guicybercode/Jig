@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 macro_rules! ipc_names {
     ($enum:ident, $unknown:ident, { $($variant:ident => $wire:literal),+ $(,)? }) => {
         impl $enum {
-            /// Every named v1 catalog entry, excluding [`Self::$unknown`].
+            /// Every named v1 catalog entry, excluding the unknown variant.
             pub const ALL: &'static [Self] = &[$(Self::$variant),+];
 
             /// Returns the dotted wire name.
