@@ -6,11 +6,14 @@ import { StatusBadge } from "../../components/StatusBadge";
 import {
   createCanvasNode,
   createInitialCanvasDocument,
+  createTerminalCanvasNode,
+  type CanvasTerminalConfiguration,
   type CanvasNode,
   type NoteCanvasNode,
   type TerminalCanvasNode,
 } from "./canvas-state";
 import { CanvasConnections } from "./CanvasConnections";
+import { NewCanvasTerminalDialog } from "./NewCanvasTerminalDialog";
 import { useCanvasState } from "./useCanvasState";
 
 interface CanvasWorkspaceProps {
@@ -42,6 +45,7 @@ export function CanvasWorkspace({
   const { state, dispatch, persistenceAvailable } = useCanvasState();
   const viewportRef = useRef<HTMLDivElement>(null);
   const [layersOpen, setLayersOpen] = useState(false);
+  const [terminalDialogOpen, setTerminalDialogOpen] = useState(false);
   const terminalSessions = useMemo(
     () => new Map(sessions.map((session) => [session.id, session])),
     [sessions],
@@ -62,14 +66,28 @@ export function CanvasWorkspace({
       })
     : [];
 
-  function addNode(kind: "terminal" | "note") {
+  function nextNodePosition() {
     const viewport = viewportRef.current;
     const offset = (state.nodes.length % 6) * 32;
-    const position = {
+    return {
       x: ((viewport?.scrollLeft ?? 0) + 260) / state.zoom + offset,
       y: ((viewport?.scrollTop ?? 0) + 150) / state.zoom + offset,
     };
-    dispatch({ type: "node/add", node: createCanvasNode(kind, position) });
+  }
+
+  function addNote() {
+    dispatch({
+      type: "node/add",
+      node: createCanvasNode("note", nextNodePosition()),
+    });
+  }
+
+  function addTerminal(configuration: CanvasTerminalConfiguration) {
+    dispatch({
+      type: "node/add",
+      node: createTerminalCanvasNode(nextNodePosition(), configuration),
+    });
+    setTerminalDialogOpen(false);
   }
 
   function setZoom(zoom: number) {
@@ -175,7 +193,7 @@ export function CanvasWorkspace({
           className="canvas-tool"
           type="button"
           aria-label="Add terminal card"
-          onClick={() => addNode("terminal")}
+          onClick={() => setTerminalDialogOpen(true)}
         >
           <Icon name="terminal" />
         </button>
@@ -183,7 +201,7 @@ export function CanvasWorkspace({
           className="canvas-tool"
           type="button"
           aria-label="Add note"
-          onClick={() => addNode("note")}
+          onClick={addNote}
         >
           <Icon name="note" />
         </button>
@@ -463,6 +481,14 @@ export function CanvasWorkspace({
           ? "Canvas saved locally"
           : "Canvas persistence unavailable"}
       </p>
+
+      {terminalDialogOpen ? (
+        <NewCanvasTerminalDialog
+          defaultWorkingDirectory={project?.path ?? "~"}
+          onClose={() => setTerminalDialogOpen(false)}
+          onCreate={addTerminal}
+        />
+      ) : null}
     </main>
   );
 }
@@ -691,7 +717,7 @@ function TerminalNodeBody({
           </>
         ) : (
           <span className="canvas-terminal__draft">
-            <Icon name="terminal" /> Terminal draft
+            <Icon name="terminal" /> {node.executable ?? "Shell"} draft
           </span>
         )}
       </div>
@@ -700,7 +726,7 @@ function TerminalNodeBody({
         <p>
           {session
             ? "The PTY surface will attach here without routing output through React."
-            : "Create a project session to attach a live PTY to this terminal card."}
+            : `${node.executable ?? "A login shell"} is configured. Attach a project session to start its live PTY.`}
         </p>
         {session ? (
           <button type="button" onClick={onOpenSession}>

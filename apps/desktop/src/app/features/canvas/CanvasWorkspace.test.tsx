@@ -80,6 +80,34 @@ describe("CanvasWorkspace", () => {
     );
   });
 
+  it("configures a Codex terminal from the terminal tool", async () => {
+    const user = userEvent.setup();
+    renderCanvas();
+
+    await user.click(screen.getByRole("button", { name: "Add terminal card" }));
+    const dialog = screen.getByRole("dialog", { name: "New Terminal" });
+    await user.click(within(dialog).getByRole("radio", { name: "Codex" }));
+    expect(within(dialog).getByLabelText("Terminal name")).toHaveValue("Codex");
+    expect(within(dialog).getByLabelText("Command")).toHaveValue("codex");
+    await user.click(
+      within(dialog).getByRole("button", { name: "Create terminal" }),
+    );
+
+    expect(
+      screen.getByRole("article", { name: "Codex, terminal canvas item" }),
+    ).toBeVisible();
+    await waitFor(() => {
+      const persisted = JSON.parse(
+        localStorage.getItem(CANVAS_STORAGE_KEY) ?? "{}",
+      ) as {
+        nodes?: readonly { readonly title?: string; readonly preset?: string }[];
+      };
+      expect(persisted.nodes).toContainEqual(
+        expect.objectContaining({ title: "Codex", preset: "codex" }),
+      );
+    });
+  });
+
   it("moves a selected node with keyboard and pointer alternatives", async () => {
     const user = userEvent.setup();
     const { container } = renderCanvas();
