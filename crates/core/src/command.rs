@@ -324,42 +324,64 @@ pub fn validate_structured_invocation(
     executable: &str,
     args: &[String],
 ) -> Result<(), CommandSpecError> {
-    if executable_has_name(executable, "env") && parse_env_invocation(args).uses_split_string {
-        return Err(CommandSpecError::ShellCommandString);
-    }
-    if let Some((nested, nested_args)) = wrapped_shell(executable, args) {
-        return validate_structured_invocation(nested, nested_args);
-    }
+    let mut executable = executable;
+    let mut args = args;
 
-    let shell = classify_shell_executable(executable);
-    let uses_command_string = match shell {
-        Some(ShellKind::Posix) => args.iter().any(|argument| {
-            let argument = argument.to_ascii_lowercase();
-            argument == "--command"
-                || argument.starts_with("--command=")
-                || argument == "--init-command"
-                || argument.starts_with("--init-command=")
-                || argument
-                    .strip_prefix('-')
-                    .is_some_and(|flags| !flags.starts_with('-') && flags.contains('c'))
-        }),
-        Some(ShellKind::PowerShell) => args.iter().any(|argument| {
-            let flag = argument.trim_start_matches(['-', '/']).to_ascii_lowercase();
-            !flag.is_empty()
-                && ("command".starts_with(&flag)
-                    || "commandwithargs".starts_with(&flag)
-                    || "encodedcommand".starts_with(&flag))
-        }),
-        Some(ShellKind::Cmd) => args.iter().any(|argument| {
-            let argument = argument.to_ascii_lowercase();
-            argument.starts_with("/c") || argument.starts_with("/k")
-        }),
-        None => false,
-    };
-    if uses_command_string {
-        Err(CommandSpecError::ShellCommandString)
-    } else {
-        Ok(())
+    // Each known wrapper consumes at least one argument, bounding traversal by
+    // the caller-provided argument count without recursive stack growth.
+    loop {
+        if executable_has_name(executable, "env") {
+            let invocation = parse_env_invocation(args);
+            if invocation.uses_split_string {
+                return Err(CommandSpecError::ShellCommandString);
+            }
+            let Some(index) = invocation.command_index else {
+                return Ok(());
+            };
+            executable = args[index].as_str();
+            args = &args[index + 1..];
+            continue;
+        }
+
+        if executable_has_name(executable, "busybox") {
+            let Some((nested, nested_args)) = args.split_first() else {
+                return Ok(());
+            };
+            executable = nested.as_str();
+            args = nested_args;
+            continue;
+        }
+
+        let shell = classify_shell_executable(executable);
+        let uses_command_string = match shell {
+            Some(ShellKind::Posix) => args.iter().any(|argument| {
+                let argument = argument.to_ascii_lowercase();
+                argument == "--command"
+                    || argument.starts_with("--command=")
+                    || argument == "--init-command"
+                    || argument.starts_with("--init-command=")
+                    || argument
+                        .strip_prefix('-')
+                        .is_some_and(|flags| !flags.starts_with('-') && flags.contains('c'))
+            }),
+            Some(ShellKind::PowerShell) => args.iter().any(|argument| {
+                let flag = argument.trim_start_matches(['-', '/']).to_ascii_lowercase();
+                !flag.is_empty()
+                    && ("command".starts_with(&flag)
+                        || "commandwithargs".starts_with(&flag)
+                        || "encodedcommand".starts_with(&flag))
+            }),
+            Some(ShellKind::Cmd) => args.iter().any(|argument| {
+                let argument = argument.to_ascii_lowercase();
+                argument.starts_with("/c") || argument.starts_with("/k")
+            }),
+            None => false,
+        };
+        return if uses_command_string {
+            Err(CommandSpecError::ShellCommandString)
+        } else {
+            Ok(())
+        };
     }
 }
 
@@ -541,19 +563,6 @@ fn parse_env_long_option(option: &str) -> (EnvOption, bool) {
         }
     });
     (kind, attached_value)
-}
-
-fn wrapped_shell<'a>(executable: &str, args: &'a [String]) -> Option<(&'a str, &'a [String])> {
-    if executable_has_name(executable, "busybox") {
-        let (nested, rest) = args.split_first()?;
-        return classify_shell_executable(nested).map(|_| (nested.as_str(), rest));
-    }
-    if !executable_has_name(executable, "env") {
-        return None;
-    }
-    let index = parse_env_invocation(args).command_index?;
-    let nested = args.get(index)?;
-    classify_shell_executable(nested).map(|_| (nested.as_str(), &args[index + 1..]))
 }
 
 fn unique_preserving_order(keys: impl IntoIterator<Item = String>) -> Vec<String> {
@@ -742,6 +751,50 @@ mod tests {
                 validate_structured_invocation("/usr/bin/env", &args),
                 Ok(()),
                 "rejected structured env arguments: {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_shell_command_strings_through_nested_known_wrappers() {
+        for (executable, args) in [
+            (
+                "/usr/bin/env",
+                vec!["/usr/bin/env", "/bin/sh", "-c", "echo unsafe"],
+            ),
+            ("env", vec!["busybox", "sh", "-c", "echo unsafe"]),
+            ("busybox", vec!["env", "-S", "sh -c 'echo unsafe'"]),
+            ("/bin/busybox", vec!["busybox", "ash", "-c", "echo unsafe"]),
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert_eq!(
+                validate_structured_invocation(executable, &args),
+                Err(CommandSpecError::ShellCommandString),
+                "accepted nested wrapper chain {executable} {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn allows_structured_commands_through_nested_known_wrappers() {
+        for (executable, args) in [
+            ("/usr/bin/env", vec!["env", "codex", "-c", "plain argument"]),
+            ("env", vec!["busybox", "codex", "-c", "plain argument"]),
+            (
+                "busybox",
+                vec!["env", "--", "codex", "-c", "plain argument"],
+            ),
+            (
+                "/bin/busybox",
+                vec!["busybox", "codex", "-c", "plain argument"],
+            ),
+            ("env", vec!["env", "/bin/sh"]),
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert_eq!(
+                validate_structured_invocation(executable, &args),
+                Ok(()),
+                "rejected structured nested wrapper chain {executable} {args:?}"
             );
         }
     }

@@ -502,8 +502,8 @@ dependencies = [
 name = "cli-master-daemon"
 version = "0.1.0"
 dependencies = [
- "cli-master-agents",
  "base64 0.22.1",
+ "cli-master-agents",
  "cli-master-core",
  "cli-master-git",
  "cli-master-storage",
