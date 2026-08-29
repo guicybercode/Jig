@@ -118,12 +118,20 @@ describe("AppShell", () => {
     expect(opener).toHaveFocus();
   });
 
-  it("opens commands globally without stealing text or terminal input", async () => {
+  it("opens commands globally while preserving text and xterm input", async () => {
     const user = userEvent.setup();
     renderConnectedShell();
     await screen.findByRole("heading", { name: "Demo", level: 1 });
 
     await user.keyboard("{Control>}k{/Control}");
+    expect(
+      screen.getByRole("dialog", { name: "Command palette" }),
+    ).toBeVisible();
+    await user.keyboard("{Escape}");
+
+    const commandButton = screen.getByRole("button", { name: "Commands" });
+    commandButton.focus();
+    await user.keyboard("{Meta>}k{/Meta}");
     expect(
       screen.getByRole("dialog", { name: "Command palette" }),
     ).toBeVisible();
@@ -138,14 +146,24 @@ describe("AppShell", () => {
       screen.queryByRole("dialog", { name: "Command palette" }),
     ).not.toBeInTheDocument();
     expect(projectPath).toHaveFocus();
+    await user.keyboard("{Meta>}k{/Meta}");
+    expect(
+      screen.queryByRole("dialog", { name: "Command palette" }),
+    ).not.toBeInTheDocument();
+    expect(projectPath).toHaveFocus();
 
     render(
       <section data-terminal-root="true">
-        <textarea aria-label="Terminal input" />
+        <div
+          className="xterm"
+          role="group"
+          aria-label="Terminal viewport"
+          tabIndex={0}
+        />
       </section>,
     );
-    const terminalInput = screen.getByRole("textbox", {
-      name: "Terminal input",
+    const terminalInput = screen.getByRole("group", {
+      name: "Terminal viewport",
     });
     terminalInput.focus();
     await user.keyboard("{Control>}k{/Control}");
