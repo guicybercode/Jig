@@ -104,7 +104,7 @@ impl ProjectRegistry {
                 "storage_unavailable",
                 "Project storage is temporarily unavailable.",
             )
-            .with_action("Restart CLI Master and try again.")
+            .with_action("Restart Jig and try again.")
         })
     }
 }
@@ -127,7 +127,7 @@ fn default_project_name(repository_root: &Path) -> Result<String, ApiError> {
         .ok_or_else(|| {
             ApiError::new(
                 "project_name_unavailable",
-                "CLI Master could not derive a project name from this folder.",
+                "Jig could not derive a project name from this folder.",
             )
             .with_action("Enter a display name and try again.")
         })
@@ -151,7 +151,7 @@ fn canonical_project_directory(path: &Path) -> Result<PathBuf, ApiError> {
     fs::canonicalize(path).map_err(|error| {
         ApiError::new(
             "project_path_unavailable",
-            "CLI Master could not open the selected project folder.",
+            "Jig could not open the selected project folder.",
         )
         .with_action("Check the folder permissions and try again.")
         .with_detail("reason", error.to_string())
@@ -227,9 +227,9 @@ fn storage_error(error: StorageError) -> ApiError {
         }
         other => ApiError::new(
             "project_storage_failed",
-            "CLI Master could not update the project database.",
+            "Jig could not update the project database.",
         )
-        .with_action("Restart CLI Master and try again.")
+        .with_action("Restart Jig and try again.")
         .with_detail("reason", other.to_string()),
     }
 }

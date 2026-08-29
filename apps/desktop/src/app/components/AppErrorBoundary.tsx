@@ -20,7 +20,7 @@ export class AppErrorBoundary extends Component<
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error("CLI Master frontend failed", error, info.componentStack);
+    console.error("Jig frontend failed", error, info.componentStack);
   }
 
   render() {
@@ -29,7 +29,7 @@ export class AppErrorBoundary extends Component<
         <main className="fatal-screen" role="alert">
           <div className="fatal-screen__panel">
             <p className="workspace-header__eyebrow">Unexpected interface error</p>
-            <h1>CLI Master could not render this view</h1>
+            <h1>Jig could not render this view</h1>
             <p>
               Reload the window. If the problem returns, open the application
               logs from Diagnostics after restart.

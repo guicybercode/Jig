@@ -58,7 +58,7 @@ impl Git {
             GitError::new(
                 GitErrorKind::NotFound,
                 "Git was not found on PATH",
-                "Install Git and restart CLI Master so the desktop process inherits the updated PATH",
+                "Install Git and restart Jig so the desktop process inherits the updated PATH",
             )
         })?;
         Self::with_executable(executable)

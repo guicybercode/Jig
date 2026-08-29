@@ -11,7 +11,7 @@ interface AppProps {
   readonly initialView?: WorkspaceView;
 }
 
-/** Renders the CLI Master desktop application. */
+/** Renders the Jig desktop application. */
 export function App({ client, initialView }: AppProps) {
   return (
     <AppErrorBoundary>

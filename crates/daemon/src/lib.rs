@@ -1,4 +1,4 @@
-//! Local, per-user session daemon for CLI Master.
+//! Local, per-user session daemon for Jig.
 //!
 //! The daemon owns durable backend resources independently from the desktop
 //! window and exposes a small, versioned JSON protocol over a Unix domain

@@ -142,7 +142,7 @@ function ConnectionWorkspace({
         <span className="empty-state__icon" aria-hidden="true"><Icon name="warning" /></span>
         <div className="empty-state__copy">
           <p className="workspace-header__eyebrow">{fatal ? "Incompatible local service" : "Local service offline"}</p>
-          <h1 id="connection-title">{fatal ? "CLI Master cannot continue" : "Daemon disconnected"}</h1>
+          <h1 id="connection-title">{fatal ? "Jig cannot continue" : "Daemon disconnected"}</h1>
           <p>{error?.message ?? "The application could not connect to its local session daemon."}</p>
           {error?.action ? <p className="empty-state__action-copy">{error.action}</p> : null}
         </div>
@@ -266,7 +266,7 @@ function SettingsWorkspace({
               <span aria-hidden="true"><Icon name="repository" /></span>
               <div><h2 id="settings-local-title">Local data</h2><p>Your project stays on this computer.</p></div>
             </div>
-            <p className="canvas-settings__copy">CLI Master stores project references, sessions, and canvas layouts locally. Terminal output is not copied into application metadata.</p>
+            <p className="canvas-settings__copy">Jig stores project references, sessions, and canvas layouts locally. Terminal output is not copied into application metadata.</p>
           </section>
 
           <section className="canvas-settings__section canvas-settings__section--wide" aria-labelledby="settings-keyboard-title">

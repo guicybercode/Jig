@@ -10,7 +10,7 @@ pub enum DaemonError {
     #[error("could not resolve a per-user home directory")]
     MissingHomeDirectory,
     /// Another process currently owns the per-user daemon lock.
-    #[error("another CLI Master daemon already owns {path}")]
+    #[error("another Jig daemon already owns {path}")]
     AlreadyRunning {
         /// Lock file that is already held.
         path: PathBuf,

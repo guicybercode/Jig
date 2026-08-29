@@ -2,7 +2,7 @@
 name = "cli-master-desktop"
 version.workspace = true
 description = "Local control center for CLI coding agents"
-authors = ["CLI Master contributors"]
+authors = ["Jig contributors"]
 edition.workspace = true
 rust-version.workspace = true
 

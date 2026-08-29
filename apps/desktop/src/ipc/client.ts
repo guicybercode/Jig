@@ -95,7 +95,7 @@ export function toIpcError(error: unknown): IpcError {
     return new IpcError(
       {
         code: error.code,
-        message: "CLI Master received an invalid response from the local daemon.",
+        message: "Jig received an invalid response from the local daemon.",
         action: "Open Diagnostics and verify that desktop and daemon versions match.",
         details: { reason: error.message },
       },
@@ -124,7 +124,7 @@ class TauriIpcClient implements IpcClient {
       throw new IpcError({
         code: "unsupported_protocol_version",
         message: `The daemon uses protocol ${hello.protocolVersion}; this desktop expects protocol 1.`,
-        action: "Update CLI Master so the desktop and daemon versions match.",
+        action: "Update Jig so the desktop and daemon versions match.",
       });
     }
     const snapshot = decodeSnapshot(await this.request("state.snapshot", {}));

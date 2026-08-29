@@ -375,7 +375,7 @@ impl SessionRegistry {
                 "storage_unavailable",
                 "Terminal storage is temporarily unavailable.",
             )
-            .with_action("Restart CLI Master and try again.")
+            .with_action("Restart Jig and try again.")
         })
     }
 }
@@ -490,9 +490,9 @@ fn storage_error(error: StorageError) -> ApiError {
         ),
         other => ApiError::new(
             "storage_error",
-            "CLI Master could not update terminal metadata.",
+            "Jig could not update terminal metadata.",
         )
-        .with_action("Try again or restart CLI Master.")
+        .with_action("Try again or restart Jig.")
         .with_detail("reason", other.to_string()),
     }
 }

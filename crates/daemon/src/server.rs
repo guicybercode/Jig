@@ -529,7 +529,7 @@ fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> ResponseEnv
                 "unsupported_protocol_version",
                 "The requested IPC protocol version is not supported",
             )
-            .with_action("Update CLI Master so the desktop and daemon versions match")
+            .with_action("Update Jig so the desktop and daemon versions match")
             .with_detail("receivedVersion", request.version)
             .with_detail("supportedVersion", PROTOCOL_V1),
         );

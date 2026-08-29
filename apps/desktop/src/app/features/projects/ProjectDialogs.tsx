@@ -93,7 +93,7 @@ export function AddProjectDialog({
     <Dialog
       open={open}
       title="Add Project"
-      description="Register a local project folder with CLI Master."
+      description="Register a local project folder with Jig."
       size="medium"
       closeDisabled={submitting}
       initialFocusRef={browseRef}
@@ -181,11 +181,11 @@ export function AddProjectDialog({
         <div className="field">
           <label htmlFor={nameId}>Display name <span className="field__optional">Optional</span></label>
           <input id={nameId} className="text-input" value={name} maxLength={120} placeholder="Defaults to the folder name" onChange={(event) => setName(event.target.value)} />
-          <p className="field__hint">This changes only how the project appears in CLI Master.</p>
+          <p className="field__hint">This changes only how the project appears in Jig.</p>
         </div>
         <div className="information-box">
           <Icon name="repository" />
-          <p>The folder is only registered in CLI Master. Its files are never changed or deleted.</p>
+          <p>The folder is only registered in Jig. Its files are never changed or deleted.</p>
         </div>
       </form>
     </Dialog>
@@ -280,9 +280,9 @@ export function RemoveProjectDialog({ open, project, onClose, onRemove }: Remove
   }
 
   return (
-    <Dialog open={open} title="Remove Project" description={`Remove ${project.name} from CLI Master?`} onClose={onClose} closeDisabled={submitting} initialFocusRef={cancelRef} footer={<><button ref={cancelRef} className="button button--secondary" type="button" disabled={submitting} onClick={onClose}>Keep Project</button><button className="button button--danger" type="button" disabled={submitting} aria-busy={submitting} onClick={() => void handleRemove()}>{submitting ? "Removing…" : "Remove from App"}</button></>}>
+    <Dialog open={open} title="Remove Project" description={`Remove ${project.name} from Jig?`} onClose={onClose} closeDisabled={submitting} initialFocusRef={cancelRef} footer={<><button ref={cancelRef} className="button button--secondary" type="button" disabled={submitting} onClick={onClose}>Keep Project</button><button className="button button--danger" type="button" disabled={submitting} aria-busy={submitting} onClick={() => void handleRemove()}>{submitting ? "Removing…" : "Remove from App"}</button></>}>
       {error ? <InlineRequestError error={error} /> : null}
-      <div className="destructive-copy"><Icon name="warning" /><div><strong>Files stay on disk.</strong><p>This removes only CLI Master’s project registration. It does not delete the repository, branches, or files. Existing session or worktree references may prevent removal.</p></div></div>
+      <div className="destructive-copy"><Icon name="warning" /><div><strong>Files stay on disk.</strong><p>This removes only Jig’s project registration. It does not delete the repository, branches, or files. Existing session or worktree references may prevent removal.</p></div></div>
       <p className="path-context mono">{project.repositoryRoot ?? project.path}</p>
     </Dialog>
   );

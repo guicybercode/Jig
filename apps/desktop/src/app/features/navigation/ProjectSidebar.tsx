@@ -101,7 +101,7 @@ export function ProjectSidebar({
                     <button
                       className="icon-button icon-button--small"
                       type="button"
-                      aria-label={`Remove ${project.name} from CLI Master`}
+                      aria-label={`Remove ${project.name} from Jig`}
                       title="Remove project metadata"
                       disabled={!canManageProjects}
                       onClick={() => onRemoveProject(project.id)}

@@ -35,11 +35,11 @@ export function AppHeader({
         >
           <Icon name="menu" />
         </button>
-        <div className="app-header__brand" aria-label="CLI Master">
+        <div className="app-header__brand" aria-label="Jig">
           <span className="app-header__mark" aria-hidden="true">
             <Icon name="terminal" />
           </span>
-          <span className="app-header__name">CLI Master</span>
+          <span className="app-header__name">Jig</span>
         </div>
         {project ? (
           <div className="app-header__context">

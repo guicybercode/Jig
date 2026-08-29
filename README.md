@@ -1,6 +1,6 @@
-# CLI Master
+# Jig
 
-CLI Master is a local-first desktop control center for running multiple coding
+Jig is a local-first desktop control center for running multiple coding
 agent CLIs. It coordinates projects, interactive terminal sessions, Git
 worktrees, and agent processes without replacing the agents themselves.
 
@@ -12,7 +12,7 @@ The Beta v0.1 target supports these installed CLIs through adapters:
 - OpenCode
 - custom executables with structured argument lists
 
-CLI Master does not require an account, cloud backend, telemetry service, or
+Jig does not require an account, cloud backend, telemetry service, or
 API server. Authentication remains with each CLI installed on the machine.
 
 > [!IMPORTANT]
@@ -37,7 +37,7 @@ React + xterm.js
 Tauri 2 desktop bridge
        │ versioned local IPC
        ▼
-CLI Master daemon
+Jig daemon
        ├── PTY session manager ── Codex / Claude / Gemini / OpenCode
        ├── Git and worktree service
        └── SQLite metadata storage
@@ -60,7 +60,7 @@ Install the following development tools:
 
 Linux needs WebKitGTK and the distribution-specific packages documented in the
 [official Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
-macOS needs Xcode Command Line Tools. CLI Master itself does not require
+macOS needs Xcode Command Line Tools. Jig itself does not require
 Homebrew.
 
 At least one supported coding-agent CLI is required only when exercising real
