@@ -12,13 +12,13 @@ fn v1_rfc3339_rows_upgrade_and_load_through_typed_apis() {
     let temporary_directory = TempDir::new().expect("temporary directory should be created");
     let database_path = temporary_directory.path().join("v1.db");
     let project_id = ProjectId::new();
-    let agent_id = AgentId::new_custom();
+    let agent_id = AgentId::new();
     let session_id = SessionId::new();
     let worktree_id = WorktreeId::new();
     {
         let storage = Storage::open(&database_path).expect("v1 database should open");
         install_v1_schema(&storage);
-        insert_v1_graph(&storage, project_id, &agent_id, session_id, worktree_id);
+        insert_v1_graph(&storage, project_id, agent_id, session_id, worktree_id);
     }
 
     let mut storage = Storage::open(&database_path).expect("v1 database should reopen");
@@ -29,7 +29,7 @@ fn v1_rfc3339_rows_upgrade_and_load_through_typed_apis() {
         .expect("project should load")
         .expect("project should exist");
     let agent = storage
-        .get_agent(&agent_id)
+        .get_agent(agent_id)
         .expect("agent should load")
         .expect("agent should exist");
     let session = storage
@@ -40,8 +40,8 @@ fn v1_rfc3339_rows_upgrade_and_load_through_typed_apis() {
         .get_worktree(worktree_id)
         .expect("worktree should load")
         .expect("worktree should exist");
-    assert_eq!(project.created_at, RFC3339_TIMESTAMP);
-    assert_eq!(project.last_opened_at, RFC3339_TIMESTAMP);
+    assert_eq!(project.created_at_ms, RFC3339_TIMESTAMP_MS);
+    assert_eq!(project.last_opened_at_ms, RFC3339_TIMESTAMP_MS);
     assert_eq!(agent.source, AgentSource::Custom);
     assert_eq!(agent.args, ["--quiet"]);
     assert_eq!(agent.env["AGENT_MODE"], "review");
@@ -67,14 +67,14 @@ fn migration_triggers_reject_cross_project_insert_and_update() {
     storage.migrate().expect("database should migrate");
     let first_project_id = ProjectId::new();
     let second_project_id = ProjectId::new();
-    let agent_id = AgentId::new_custom();
+    let agent_id = AgentId::new();
     let first_session_id = SessionId::new();
     let second_session_id = SessionId::new();
     insert_runtime_graph(
         &storage,
         first_project_id,
         second_project_id,
-        &agent_id,
+        agent_id,
         first_session_id,
         second_session_id,
     );
@@ -111,10 +111,10 @@ fn session_decoder_rejects_pid_outside_u32() {
     let mut storage = Storage::open_in_memory().expect("database should open");
     storage.migrate().expect("database should migrate");
     let project_id = ProjectId::new();
-    let agent_id = AgentId::new_custom();
+    let agent_id = AgentId::new();
     let session_id = SessionId::new();
     insert_raw_project(&storage, project_id, "/tmp/pid-project");
-    insert_raw_agent(&storage, &agent_id);
+    insert_raw_agent(&storage, agent_id);
     storage
         .connection
         .execute(
@@ -163,7 +163,7 @@ fn install_v1_schema(storage: &Storage) {
 fn insert_v1_graph(
     storage: &Storage,
     project_id: ProjectId,
-    agent_id: &AgentId,
+    agent_id: AgentId,
     session_id: SessionId,
     worktree_id: WorktreeId,
 ) {
@@ -215,7 +215,7 @@ fn insert_runtime_graph(
     storage: &Storage,
     first_project_id: ProjectId,
     second_project_id: ProjectId,
-    agent_id: &AgentId,
+    agent_id: AgentId,
     first_session_id: SessionId,
     second_session_id: SessionId,
 ) {
@@ -237,7 +237,7 @@ fn insert_raw_project(storage: &Storage, id: ProjectId, path: &str) {
         .expect("raw project should insert");
 }
 
-fn insert_raw_agent(storage: &Storage, id: &AgentId) {
+fn insert_raw_agent(storage: &Storage, id: AgentId) {
     storage
         .connection
         .execute(
@@ -248,7 +248,7 @@ fn insert_raw_agent(storage: &Storage, id: &AgentId) {
         .expect("raw agent should insert");
 }
 
-fn insert_raw_session(storage: &Storage, id: SessionId, project_id: ProjectId, agent_id: &AgentId) {
+fn insert_raw_session(storage: &Storage, id: SessionId, project_id: ProjectId, agent_id: AgentId) {
     storage
         .connection
         .execute(

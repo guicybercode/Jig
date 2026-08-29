@@ -9,9 +9,9 @@ use crate::Storage;
 use crate::error::{
     StorageError, corrupt_data, map_delete_error, map_write_error, persisted_validation,
 };
-use crate::models::{validate_display_name, validate_rfc3339_timestamp};
+use crate::models::{validate_display_name, validate_timestamp};
 use crate::paths::{path_from_sql_value, path_to_sql_value};
-use crate::values::rfc3339_timestamp_from_sql_value;
+use crate::values::timestamp_from_sql_value;
 
 const PROJECT_COLUMNS: &str = "id, name, path, created_at, last_opened_at";
 
@@ -38,8 +38,8 @@ impl Storage {
                     project.id.to_string(),
                     project.name,
                     path,
-                    project.created_at,
-                    project.last_opened_at,
+                    project.created_at_ms,
+                    project.last_opened_at_ms,
                 ],
             )
             .map_err(|error| map_write_error(error, "project"))?;
@@ -54,7 +54,7 @@ impl Storage {
     pub fn list_projects(&self) -> Result<Vec<Project>, StorageError> {
         let sql = format!(
             "SELECT {PROJECT_COLUMNS} FROM projects
-             ORDER BY julianday(last_opened_at) DESC, name COLLATE NOCASE, id"
+             ORDER BY CAST(last_opened_at AS INTEGER) DESC, name COLLATE NOCASE, id"
         );
         let mut statement = self.connection.prepare(&sql)?;
         let mut rows = statement.query([])?;
@@ -96,11 +96,11 @@ impl Storage {
     /// # Errors
     ///
     /// Returns an error if the timestamp is invalid, the project is missing, or the update fails.
-    pub fn touch_project(&self, id: ProjectId, opened_at: &str) -> Result<(), StorageError> {
-        validate_rfc3339_timestamp("project last_opened_at", opened_at)?;
+    pub fn touch_project(&self, id: ProjectId, opened_at_ms: i64) -> Result<(), StorageError> {
+        validate_timestamp("project last_opened_at_ms", opened_at_ms)?;
         let changed = self.connection.execute(
             "UPDATE projects SET last_opened_at = ?1 WHERE id = ?2",
-            params![opened_at, id.to_string()],
+            params![opened_at_ms, id.to_string()],
         )?;
         require_changed(changed, id)
     }
@@ -123,8 +123,8 @@ impl Storage {
 
 fn validate_project(project: &Project) -> Result<(), StorageError> {
     validate_display_name("project name", &project.name)?;
-    validate_rfc3339_timestamp("project created_at", &project.created_at)?;
-    validate_rfc3339_timestamp("project last_opened_at", &project.last_opened_at)?;
+    validate_timestamp("project created_at_ms", project.created_at_ms)?;
+    validate_timestamp("project last_opened_at_ms", project.last_opened_at_ms)?;
     path_to_sql_value(&project.path, "project path")?;
     Ok(())
 }
@@ -137,12 +137,10 @@ fn decode_project(row: &Row<'_>) -> Result<Project, StorageError> {
         id,
         name: row.get(1)?,
         path: path_from_sql_value(row.get_ref(2)?, "project", "path")?,
-        created_at: rfc3339_timestamp_from_sql_value(row.get_ref(3)?, "project", "created_at")?,
-        last_opened_at: rfc3339_timestamp_from_sql_value(
-            row.get_ref(4)?,
-            "project",
-            "last_opened_at",
-        )?,
+        repository_root: None,
+        current_branch: None,
+        created_at_ms: timestamp_from_sql_value(row.get_ref(3)?, "project", "created_at")?,
+        last_opened_at_ms: timestamp_from_sql_value(row.get_ref(4)?, "project", "last_opened_at")?,
     };
     persisted_validation("project", validate_project(&project))?;
     Ok(project)

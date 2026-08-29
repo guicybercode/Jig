@@ -1,159 +1,202 @@
 import type {
-  AgentCreateCustomRequest,
-  AgentDeleteCustomRequest,
+  AgentChangedEvent,
+  AgentCustomCreateRequest,
+  AgentCustomRemoveRequest,
+  AgentCustomUpdateRequest,
+  AgentDetectRequest,
   AgentDetectResponse,
   AgentListResponse,
-  AgentUpdateCustomRequest,
-  CustomAgent,
-  DaemonStatusChangedEvent,
-  DiagnosticsSnapshot,
-  EmptyPayload,
-  GitDiff,
-  GitObserveRequest,
-  GitStatus,
+  AgentRecord,
+  AgentRemovedEvent,
+  AgentSetEnabledRequest,
+  ApiError,
+  DaemonShuttingDownEvent,
+  DiagnosticsResponse,
+  EmptyRequest,
+  EmptyResponse,
+  GitDiffRequest,
+  GitDiffResponse,
   GitStatusChangedEvent,
+  GitStatusRequest,
+  GitStatusResponse,
   HelloRequest,
   HelloResponse,
   Project,
   ProjectAddRequest,
   ProjectChangedEvent,
-  ProjectIdRequest,
   ProjectListResponse,
+  ProjectRemoveRequest,
+  ProjectRemovedEvent,
   ProjectRenameRequest,
   Session,
+  SessionChangedEvent,
   SessionCreateRequest,
+  SessionDeletedEvent,
   SessionExitedEvent,
   SessionIdRequest,
   SessionListRequest,
   SessionListResponse,
   SessionOutputEvent,
+  SessionOutputGapEvent,
+  SessionRenameRequest,
+  SessionReplayCompleteEvent,
   SessionResizeRequest,
   SessionStatusChangedEvent,
+  SessionSubscribeRequest,
   SessionWriteRequest,
-  StateSnapshot,
-  Worktree,
-  WorktreeCreateRequest,
-  WorktreeListRequest,
-  WorktreeListResponse,
+  StateSnapshotResponse,
+  WorktreeChangedEvent,
+  WorktreePrepareRemoveRequest,
+  WorktreePrepareRemoveResponse,
   WorktreeRemoveRequest,
-  WorktreeRemoveResponse,
+  WorktreeRemovedEvent,
 } from "./domain";
+import type { RequestId } from "./ids";
 
 /** Protocol major version spoken by this client. */
 export const PROTOCOL_V1 = 1;
 
-/** Sorted v1 request catalog. Keep in sync with `protocol/catalog.json`. */
+/** Beta v1 request catalog, in the authoritative Rust contract order. */
 export const IPC_METHODS = [
-  "agent.create_custom",
-  "agent.delete_custom",
-  "agent.detect",
-  "agent.list",
-  "agent.update_custom",
-  "diagnostics.get",
-  "git.diff",
-  "git.status",
+  "system.hello",
+  "state.snapshot",
   "project.add",
   "project.list",
-  "project.remove",
   "project.rename",
+  "project.remove",
+  "agent.list",
+  "agent.detect",
+  "agent.set_enabled",
+  "agent.custom.create",
+  "agent.custom.update",
+  "agent.custom.remove",
   "session.create",
-  "session.delete",
   "session.list",
-  "session.resize",
-  "session.restart",
+  "session.rename",
   "session.start",
+  "session.restart",
   "session.stop",
+  "session.delete",
   "session.write",
-  "state.snapshot",
-  "system.hello",
-  "worktree.create",
-  "worktree.list",
+  "session.resize",
+  "session.subscribe",
+  "session.unsubscribe",
+  "git.status",
+  "git.diff",
+  "worktree.prepare_remove",
   "worktree.remove",
+  "diagnostics.get",
 ] as const;
 
 export type IpcMethod = (typeof IPC_METHODS)[number];
 
-/** Sorted v1 event catalog. Keep in sync with `protocol/catalog.json`. */
+/** Beta v1 event catalog, in the authoritative Rust contract order. */
 export const IPC_EVENTS = [
-  "daemon.status_changed",
-  "git.status_changed",
-  "project.changed",
-  "session.exited",
+  "project.updated",
+  "project.removed",
+  "agent.updated",
+  "agent.removed",
+  "session.created",
+  "session.updated",
+  "session.deleted",
   "session.output",
+  "session.replay_complete",
+  "session.output_gap",
   "session.status_changed",
+  "session.exited",
+  "worktree.updated",
+  "worktree.removed",
+  "git.status_changed",
+  "daemon.shutting_down",
 ] as const;
 
 export type IpcEvent = (typeof IPC_EVENTS)[number];
 
 export type RequestPayloadMap = {
   "system.hello": HelloRequest;
-  "state.snapshot": EmptyPayload;
-  "project.list": EmptyPayload;
+  "state.snapshot": EmptyRequest;
   "project.add": ProjectAddRequest;
-  "project.remove": ProjectIdRequest;
+  "project.list": EmptyRequest;
   "project.rename": ProjectRenameRequest;
-  "agent.list": EmptyPayload;
-  "agent.detect": EmptyPayload;
-  "agent.create_custom": AgentCreateCustomRequest;
-  "agent.update_custom": AgentUpdateCustomRequest;
-  "agent.delete_custom": AgentDeleteCustomRequest;
-  "session.list": SessionListRequest;
+  "project.remove": ProjectRemoveRequest;
+  "agent.list": EmptyRequest;
+  "agent.detect": AgentDetectRequest;
+  "agent.set_enabled": AgentSetEnabledRequest;
+  "agent.custom.create": AgentCustomCreateRequest;
+  "agent.custom.update": AgentCustomUpdateRequest;
+  "agent.custom.remove": AgentCustomRemoveRequest;
   "session.create": SessionCreateRequest;
+  "session.list": SessionListRequest;
+  "session.rename": SessionRenameRequest;
   "session.start": SessionIdRequest;
+  "session.restart": SessionIdRequest;
+  "session.stop": SessionIdRequest;
+  "session.delete": SessionIdRequest;
   "session.write": SessionWriteRequest;
   "session.resize": SessionResizeRequest;
-  "session.stop": SessionIdRequest;
-  "session.restart": SessionIdRequest;
-  "session.delete": SessionIdRequest;
-  "worktree.list": WorktreeListRequest;
-  "worktree.create": WorktreeCreateRequest;
+  "session.subscribe": SessionSubscribeRequest;
+  "session.unsubscribe": SessionIdRequest;
+  "git.status": GitStatusRequest;
+  "git.diff": GitDiffRequest;
+  "worktree.prepare_remove": WorktreePrepareRemoveRequest;
   "worktree.remove": WorktreeRemoveRequest;
-  "git.status": GitObserveRequest;
-  "git.diff": GitObserveRequest;
-  "diagnostics.get": EmptyPayload;
+  "diagnostics.get": EmptyRequest;
 };
 
 export type ResponsePayloadMap = {
   "system.hello": HelloResponse;
-  "state.snapshot": StateSnapshot;
-  "project.list": ProjectListResponse;
+  "state.snapshot": StateSnapshotResponse;
   "project.add": Project;
-  "project.remove": EmptyPayload;
+  "project.list": ProjectListResponse;
   "project.rename": Project;
+  "project.remove": EmptyResponse;
   "agent.list": AgentListResponse;
   "agent.detect": AgentDetectResponse;
-  "agent.create_custom": CustomAgent;
-  "agent.update_custom": CustomAgent;
-  "agent.delete_custom": EmptyPayload;
-  "session.list": SessionListResponse;
+  "agent.set_enabled": AgentRecord;
+  "agent.custom.create": AgentRecord;
+  "agent.custom.update": AgentRecord;
+  "agent.custom.remove": EmptyResponse;
   "session.create": Session;
+  "session.list": SessionListResponse;
+  "session.rename": Session;
   "session.start": Session;
-  "session.write": EmptyPayload;
-  "session.resize": EmptyPayload;
-  "session.stop": Session;
   "session.restart": Session;
-  "session.delete": EmptyPayload;
-  "worktree.list": WorktreeListResponse;
-  "worktree.create": Worktree;
-  "worktree.remove": WorktreeRemoveResponse;
-  "git.status": GitStatus;
-  "git.diff": GitDiff;
-  "diagnostics.get": DiagnosticsSnapshot;
+  "session.stop": Session;
+  "session.delete": EmptyResponse;
+  "session.write": EmptyResponse;
+  "session.resize": EmptyResponse;
+  "session.subscribe": EmptyResponse;
+  "session.unsubscribe": EmptyResponse;
+  "git.status": GitStatusResponse;
+  "git.diff": GitDiffResponse;
+  "worktree.prepare_remove": WorktreePrepareRemoveResponse;
+  "worktree.remove": EmptyResponse;
+  "diagnostics.get": DiagnosticsResponse;
 };
 
 export type EventPayloadMap = {
+  "project.updated": ProjectChangedEvent;
+  "project.removed": ProjectRemovedEvent;
+  "agent.updated": AgentChangedEvent;
+  "agent.removed": AgentRemovedEvent;
+  "session.created": SessionChangedEvent;
+  "session.updated": SessionChangedEvent;
+  "session.deleted": SessionDeletedEvent;
   "session.output": SessionOutputEvent;
+  "session.replay_complete": SessionReplayCompleteEvent;
+  "session.output_gap": SessionOutputGapEvent;
   "session.status_changed": SessionStatusChangedEvent;
   "session.exited": SessionExitedEvent;
-  "project.changed": ProjectChangedEvent;
+  "worktree.updated": WorktreeChangedEvent;
+  "worktree.removed": WorktreeRemovedEvent;
   "git.status_changed": GitStatusChangedEvent;
-  "daemon.status_changed": DaemonStatusChangedEvent;
+  "daemon.shutting_down": DaemonShuttingDownEvent;
 };
 
 export type TypedRequest<M extends IpcMethod> = {
   kind: "request";
   version: typeof PROTOCOL_V1;
-  requestId: string;
+  requestId: RequestId;
   method: M;
   payload: RequestPayloadMap[M];
 };
@@ -161,7 +204,7 @@ export type TypedRequest<M extends IpcMethod> = {
 export type TypedSuccess<M extends IpcMethod> = {
   kind: "response";
   version: typeof PROTOCOL_V1;
-  requestId: string;
+  requestId: RequestId;
   status: "success";
   data: ResponsePayloadMap[M];
 };
@@ -169,9 +212,9 @@ export type TypedSuccess<M extends IpcMethod> = {
 export type TypedFailure = {
   kind: "response";
   version: typeof PROTOCOL_V1;
-  requestId: string;
+  requestId: RequestId;
   status: "error";
-  error: import("./domain").ApplicationError;
+  error: ApiError;
 };
 
 export type TypedEvent<E extends IpcEvent> = {
@@ -192,20 +235,17 @@ export type CompleteRequestMap = AssertComplete<RequestPayloadMap>;
 export type CompleteResponseMap = AssertComplete<ResponsePayloadMap>;
 export type CompleteEventMap = AssertEventsComplete<EventPayloadMap>;
 
-/** Returns whether `value` is a v1 request method. */
+/** Returns whether `value` is a Beta v1 request method. */
 export function isIpcMethod(value: string): value is IpcMethod {
   return METHOD_SET.has(value);
 }
 
-/** Returns whether `value` is a v1 daemon event. */
+/** Returns whether `value` is a Beta v1 daemon event. */
 export function isIpcEvent(value: string): value is IpcEvent {
   return EVENT_SET.has(value);
 }
 
-/**
- * Desktop IPC client contract. The Tauri bridge forwards these methods to
- * `cli-masterd`. React code must not spawn processes or open SQLite.
- */
+/** Typed daemon IPC boundary used by the desktop bridge. */
 export type IpcClient = {
   request<M extends IpcMethod>(
     method: M,

@@ -14,7 +14,7 @@ mod error;
 mod lock;
 mod server;
 
-pub use cli_master_core::{HelloResponse, StateSnapshot};
+pub use cli_master_core::wire::{HelloResponse, StateSnapshotResponse};
 pub use config::DaemonConfig;
 pub use error::DaemonError;
 pub use server::{Daemon, MAX_FRAME_LENGTH};

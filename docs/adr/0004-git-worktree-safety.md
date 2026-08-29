@@ -26,15 +26,16 @@ Worktree lifecycle is `creating | active | remove_pending | orphaned`
 because Git and SQLite cannot share a transaction. Partial failure has to
 be visible.
 
-Removal is two-step even though the v1 catalog currently exposes one
-`worktree.remove` method. Omitting `confirmationToken` inspects state and
-returns a token. Sending the token performs the delete after a recheck.
-`allowDirty` defaults to false. Dirty removal is explicit.
+Removal is two-step in the v1 contract. `worktree.prepare_remove` re-inspects
+daemon-owned state and returns either explicit blockers or a short-lived token
+bound to that exact clean state. `worktree.remove` requires the token and
+rechecks before deletion. No request field can bypass dirty, ignored, locked,
+or in-use blockers.
 
-`GitStatus` is observed runtime data. It is not stored on `Project`. The
-project path is the canonical repository root. Branch names live on
-worktrees and on Git status snapshots, not as a stale field on the project
-row.
+Structured Git status is observed runtime data. The public project DTO may
+carry the latest daemon-observed repository root and branch for display, but
+destructive operations never trust those client-returned fields. Branch names
+also live on worktrees and structured status snapshots.
 
 Generated branches use a slug plus a short suffix. Collisions create a new
 name. They do not reuse an existing branch.

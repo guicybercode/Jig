@@ -207,6 +207,7 @@ pub struct AgentDefinition {
     pub id: AgentId,
     pub display_name: String,
     pub source: AgentSource, // BuiltIn | Custom
+    pub command: CommandSpec,
 }
 
 pub struct CommandSpec {
@@ -217,9 +218,9 @@ pub struct CommandSpec {
 }
 ```
 
-Built-in adapter IDs are stable catalog keys: `codex`, `claude`, `gemini`, and
-`opencode`. They are not UUIDs. Custom agents use a UUIDv7 string. `AgentId`
-is a validated string newtype for that reason.
+Persisted built-in and custom definitions both receive UUIDv7 `AgentId` values.
+Adapter registry keys such as `codex`, `claude`, `gemini`, and `opencode`
+identify discovery implementations; they are not wire or database entity IDs.
 Adapters do not guess optional vendor flags. In v0.1 they resolve the executable
 and launch the CLI in its normal interactive mode. Flags are added only after
 validation against the installed CLI version.
@@ -260,7 +261,7 @@ SessionManager
 2. If isolation is requested, reserve a worktree record as `creating`.
 3. Create the branch/worktree through `GitService`; mark it `active`, or perform
    a safe compensating cleanup and record the actionable failure.
-4. Insert the session with `starting` status before spawning.
+4. Insert the session metadata before spawning and report `starting` while launch proceeds.
 5. Build a `CommandSpec`, open a PTY, set its initial size, and spawn the child
    in its own process group with the worktree/project as `cwd`.
 6. Attach output and exit readers, record volatile PID/daemon instance data,
@@ -289,32 +290,29 @@ atomic.
 ### 6.3 Status state machine
 
 ```text
-create ──> created ──> starting ──> running <──> idle ──> stopping ──> exited
-                           │            │          │          │
-                           └────────────┴──────────┴──────────┴──> failed
+start/restart ──> starting ──> running <──> idle ──> exited
+                         │          │          │
+                         └──────────┴──────────┴──> failed
 
 daemon recovery of a formerly live row ──> unknown
 unknown ── restart ──> starting
 exited | failed ── restart ──> starting
 ```
 
-- `created`: metadata exists. No process has been spawned.
 - `starting`: launch is in progress.
 - `running`: the process exists and recent PTY input/output indicates activity.
 - `idle`: the process exists but no PTY activity occurred for the configured
   heuristic interval (10 seconds initially). This is not an LLM semantic state.
-- `stopping`: stop was requested. The process group is being signaled.
 - `exited`: the process ended; the exit code is recorded.
 - `failed`: validation, spawn, PTY, or abnormal exit failed with an actionable
   error.
 - `unknown`: metadata claims a live session from another daemon instance, but
   v0.1 cannot safely prove or reattach its PTY.
 
-Only `SessionManager` in the daemon may change status. The UI sends commands.
-It cannot write `Session.status`. Legal edges are
-`SessionStatus::can_transition_to` in `crates/core`. Invalid examples:
-`created -> running`, `running -> starting`, `stopping -> running`,
-`exited -> idle`.
+Only `SessionManager` in the daemon may change status. The UI sends commands
+and cannot write `Session.status`. The frozen wire enum defines public values;
+the daemon owns transition and stop-in-progress policy without adding a second
+wire-only state.
 
 Persisted status is a snapshot. On `session.list` / `state.snapshot` the
 daemon reconciles each row with the live map. After a daemon crash, live
@@ -327,9 +325,9 @@ fallback to exit notification.
 
 ### 6.4 Stop, restart, and delete
 
-Stop and delete are separate commands. Stop sends an interrupt/termination to
-the session process group, waits a short grace period, then offers a separately
-confirmed force-kill. Restart reuses session metadata and the same working
+Stop and delete are separate commands. Stop applies the daemon's bounded
+graceful process-group policy; there is no generic signal or force-kill IPC.
+Restart reuses session metadata and the same working
 directory but creates a new PTY and PID. Delete is allowed only after the
 process stops; it removes metadata, never repository files. A worktree remains
 a separately managed resource.
@@ -360,7 +358,7 @@ minute idle timeout. The desktop offers distinct actions for **Close window**,
 action terminates agent processes.
 
 On a clean daemon shutdown, all child process groups are stopped before the PTY
-masters close. On daemon startup, rows left in `starting`, `running`, `idle`, or `stopping`
+masters close. On daemon startup, rows left in `starting`, `running`, or `idle`
 by a different daemon instance become `unknown`; stale PIDs are never signaled
 because PID reuse makes that unsafe. A daemon crash will normally close PTY
 masters and cause children to receive hangup, but v0.1 documents that orphaned
@@ -368,9 +366,9 @@ processes may require manual inspection.
 
 ## 8. SQLite schema and migrations
 
-All timestamps are UTC RFC 3339 strings. IDs for projects, sessions, worktrees,
-and requests are UUIDv7 strings. Agent IDs are catalog keys or custom UUIDv7
-strings as above. Paths are stored as canonical absolute paths after
+All timestamps are Unix epoch milliseconds. IDs for projects, agents, sessions,
+worktrees, requests, and daemon instances are UUIDv7 strings. Adapter keys are
+not entity IDs. Paths are stored as canonical absolute paths after
 validation; the UI may separately abbreviate them for display. The first
 migration creates:
 
@@ -405,7 +403,7 @@ CREATE TABLE sessions (
     cwd                 TEXT NOT NULL,
     status              TEXT NOT NULL CHECK (
                             status IN (
-                                'created','starting','running','idle','stopping',
+                                'starting','running','idle',
                                 'exited','failed','unknown'
                             )
                         ),
@@ -443,6 +441,11 @@ CREATE INDEX sessions_by_project_updated
 CREATE INDEX sessions_by_status ON sessions(status);
 CREATE INDEX worktrees_by_project ON worktrees(project_id);
 ```
+
+Migration `0002` adds the persisted `worktrees.is_dirty` boolean used by the
+public worktree DTO and conservative removal checks. Historical timestamp
+columns keep their original SQLite declarations, but repository adapters read
+and write Unix epoch millisecond values.
 
 Built-in agent rows are idempotently seeded/upserted at startup. A user can
 disable but not mutate their executable/argument defaults; custom rows are
@@ -501,15 +504,16 @@ binary frame type can be added without changing domain commands.
   "requestId": "019...",
   "status": "error",
   "error": {
-    "code": "AGENT_EXECUTABLE_NOT_FOUND",
-    "message": "Could not start Codex because executable 'codex' was not found.",
-    "action": "Install Codex or configure an executable search path.",
+    "code": "executable_not_found",
+    "message": "Could not start the selected agent.",
+    "action": "Install the executable or update the custom agent.",
     "details": { "searchedPath": ["/usr/local/bin", "/usr/bin"] }
   }
 }
 ```
 
-Supported v0.1 requests. Names are locked in `protocol/catalog.json`.
+Supported v0.1 requests. Names are authoritative in
+`crates/core/src/wire/method.rs`; `protocol/catalog.json` is a tested mirror.
 
 | Method | Purpose |
 |---|---|
@@ -517,13 +521,14 @@ Supported v0.1 requests. Names are locked in `protocol/catalog.json`.
 | `state.snapshot` | projects, agents, sessions, worktrees, current statuses |
 | `project.list`, `project.add` | validate/canonicalize and register repositories |
 | `project.rename`, `project.remove` | update app metadata; never delete the directory |
-| `agent.list`, `agent.detect` | definitions and installation status |
-| `agent.create_custom`, `agent.update_custom`, `agent.delete_custom` | structured custom commands |
-| `session.list`, `session.create`, `session.start` | metadata create is separate from spawn |
+| `agent.list`, `agent.detect`, `agent.set_enabled` | definitions, installation status, enablement |
+| `agent.custom.create`, `agent.custom.update`, `agent.custom.remove` | structured custom commands |
+| `session.list`, `session.create`, `session.rename`, `session.start` | daemon-derived cwd/worktree and metadata lifecycle |
 | `session.write`, `session.resize` | PTY byte input and dimensions |
 | `session.stop`, `session.restart`, `session.delete` | stop is not delete; restart goes through `starting` |
+| `session.subscribe`, `session.unsubscribe` | bounded replay followed by live terminal events |
 | `git.status`, `git.diff` | branch, changed files, counts, bounded textual diff |
-| `worktree.list`, `worktree.create`, `worktree.remove` | isolation; remove is two-step via confirmation token |
+| `worktree.prepare_remove`, `worktree.remove` | re-inspect then remove with a state-bound token |
 | `diagnostics.get` | sanitized versions, paths, and live session count |
 
 Supported v0.1 events:
@@ -531,16 +536,19 @@ Supported v0.1 events:
 | Event | Payload notes |
 |---|---|
 | `session.output` | session ID, sequence, base64 bytes |
+| `session.replay_complete`, `session.output_gap` | replay/live-stream boundary and retained-output gaps |
 | `session.status_changed` | previous/new state, timestamp, optional reason |
 | `session.exited` | exit code and final status |
-| `project.changed` | added/updated/removed plus public project DTO |
+| `project.updated`, `project.removed` | current public DTO or removed ID |
+| `agent.updated`, `agent.removed` | current public agent record or removed ID |
+| `session.created`, `session.updated`, `session.deleted` | session metadata lifecycle |
+| `worktree.updated`, `worktree.removed` | managed worktree lifecycle |
 | `git.status_changed` | emitted only after an explicit/low-rate refresh in v0.1 |
-| `daemon.status_changed` | lifecycle, instance id, protocol version |
+| `daemon.shutting_down` | safe reason and count of still-active sessions |
 
-`session.subscribe` / `session.kill` / `diagnostics.export` are deferred.
-v0.1 snapshot-on-connect plus live events cover reload. Force-kill can wait
-until graceful stop is real. Extra methods need a catalog change, not a
-side channel.
+`session.kill` / `diagnostics.export` are deferred. Snapshot-on-connect,
+cursor-based replay, and live events cover reload. Force-kill can wait until
+graceful stop is real. Extra methods need a catalog change, not a side channel.
 
 Every error has a stable machine code, a safe user-facing message, and a
 suggested action when available. Internal causes appear in structured logs with
@@ -571,12 +579,11 @@ The suffix prevents collisions without silently reusing an existing branch or
 directory. The daemon validates that generated worktree paths remain below its
 managed worktree root after path normalization.
 
-Worktree removal is two-step on one method. `worktree.remove` without
-`confirmationToken` inspects process use, tracked changes, staged changes,
-untracked files, and Git's worktree registry, then returns a short-lived
-token. The same method with that token rechecks state and deletes. Dirty
-removal requires `allowDirty: true`. `prepare_remove` is not a separate
-catalog name in v1.
+Worktree removal uses two distinct methods. `worktree.prepare_remove` inspects
+process use, tracked, staged, untracked, ignored and special index state, plus
+Git's worktree registry. It returns explicit blockers or a short-lived token
+bound to the exact clean state. `worktree.remove` requires that token, rechecks
+state, and deletes. No dirty or force bypass exists in the v1 request shape.
 
 The backend never performs `git reset --hard`, discards changes, deletes the
 main repository, or recursively deletes an unvalidated path. A running session

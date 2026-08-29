@@ -372,25 +372,6 @@ mod tests {
         assert!(expected_indexes.is_subset(&indexes));
     }
 
-    #[test]
-    fn session_status_accepts_created_and_stopping() {
-        let storage = migrated_memory_storage();
-        insert_project(&storage);
-        insert_agent(&storage);
-
-        for status in ["created", "stopping"] {
-            storage
-                .connection
-                .execute(
-                    "INSERT INTO sessions (
-                        id, project_id, agent_id, name, cwd, status, created_at, updated_at
-                     ) VALUES (?1, 'project-1', 'agent-1', 'Session', '/tmp/project', ?2, ?3, ?3)",
-                    params![format!("session-{status}"), status, TIMESTAMP],
-                )
-                .unwrap_or_else(|_| panic!("{status} should be a legal session status"));
-        }
-    }
-
     fn migrated_memory_storage() -> Storage {
         let mut storage = Storage::open_in_memory().expect("in-memory database should open");
         storage.migrate().expect("database should migrate");

@@ -13,7 +13,7 @@ use crate::models::{
     MAX_COMMAND_JSON_BYTES, StoredAgent, agent_source_from_database, agent_source_to_database,
     validate_timestamp,
 };
-use crate::values::{timestamp_from_sql_value, timestamp_to_sql_value};
+use crate::values::timestamp_from_sql_value;
 
 const AGENT_COLUMNS: &str =
     "id, source, name, executable, args_json, env_json, enabled, created_at, updated_at";
@@ -33,8 +33,6 @@ impl Storage {
         agent.validate()?;
         let args_json = encode_json(&agent.args, "agent args")?;
         let env_json = encode_json(&agent.env, "agent env")?;
-        let created_at = timestamp_to_sql_value(agent.created_at_ms, "agent", "created_at")?;
-        let updated_at = timestamp_to_sql_value(agent.updated_at_ms, "agent", "updated_at")?;
         self.connection
             .execute(
                 "INSERT INTO agents (
@@ -49,8 +47,8 @@ impl Storage {
                     args_json,
                     env_json,
                     agent.enabled,
-                    created_at,
-                    updated_at,
+                    agent.created_at_ms,
+                    agent.updated_at_ms,
                 ],
             )
             .map_err(|error| map_write_error(error, "agent"))?;
@@ -81,7 +79,7 @@ impl Storage {
     /// # Errors
     ///
     /// Returns an error if the row cannot be loaded or decoded.
-    pub fn get_agent(&self, id: &AgentId) -> Result<Option<StoredAgent>, StorageError> {
+    pub fn get_agent(&self, id: AgentId) -> Result<Option<StoredAgent>, StorageError> {
         let sql = format!("SELECT {AGENT_COLUMNS} FROM agents WHERE id = ?1");
         let mut statement = self.connection.prepare(&sql)?;
         let mut rows = statement.query([id.to_string()])?;
@@ -105,7 +103,6 @@ impl Storage {
         agent.validate()?;
         let args_json = encode_json(&agent.args, "agent args")?;
         let env_json = encode_json(&agent.env, "agent env")?;
-        let updated_at = timestamp_to_sql_value(agent.updated_at_ms, "agent", "updated_at")?;
         let changed = self.connection.execute(
             "UPDATE agents
              SET name = ?1, executable = ?2, args_json = ?3,
@@ -117,11 +114,11 @@ impl Storage {
                 args_json,
                 env_json,
                 agent.enabled,
-                updated_at,
+                agent.updated_at_ms,
                 agent.id.to_string(),
             ],
         )?;
-        require_custom_agent_changed(self, changed, &agent.id)
+        require_custom_agent_changed(self, changed, agent.id)
     }
 
     /// Enables or disables any built-in or custom agent definition.
@@ -131,15 +128,14 @@ impl Storage {
     /// Returns an error for an invalid timestamp, a missing agent, or database failures.
     pub fn set_agent_enabled(
         &self,
-        id: &AgentId,
+        id: AgentId,
         enabled: bool,
         updated_at_ms: i64,
     ) -> Result<(), StorageError> {
         validate_timestamp("agent updated_at_ms", updated_at_ms)?;
-        let updated_at = timestamp_to_sql_value(updated_at_ms, "agent", "updated_at")?;
         let changed = self.connection.execute(
             "UPDATE agents SET enabled = ?1, updated_at = ?2 WHERE id = ?3",
-            params![enabled, updated_at, id.to_string()],
+            params![enabled, updated_at_ms, id.to_string()],
         )?;
         require_changed(changed, id)
     }
@@ -151,7 +147,7 @@ impl Storage {
     /// # Errors
     ///
     /// Returns an error if the agent is missing, still referenced, or deletion fails.
-    pub fn remove_agent_metadata(&self, id: &AgentId) -> Result<(), StorageError> {
+    pub fn remove_agent_metadata(&self, id: AgentId) -> Result<(), StorageError> {
         let changed = self
             .connection
             .execute("DELETE FROM agents WHERE id = ?1", [id.to_string()])
@@ -210,7 +206,7 @@ fn decode_json<T: serde::de::DeserializeOwned>(
     serde_json::from_str(encoded).map_err(|error| corrupt_data("agent", field, error.to_string()))
 }
 
-fn require_changed(changed: usize, id: &AgentId) -> Result<(), StorageError> {
+fn require_changed(changed: usize, id: AgentId) -> Result<(), StorageError> {
     if changed == 0 {
         Err(StorageError::NotFound {
             entity: "agent",
@@ -224,7 +220,7 @@ fn require_changed(changed: usize, id: &AgentId) -> Result<(), StorageError> {
 fn require_custom_agent_changed(
     storage: &Storage,
     changed: usize,
-    id: &AgentId,
+    id: AgentId,
 ) -> Result<(), StorageError> {
     if changed > 0 {
         return Ok(());

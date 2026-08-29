@@ -4,10 +4,10 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use cli_master_core::wire::{self, EmptyRequest, HelloResponse, StateSnapshotResponse};
 use cli_master_core::{
-    ApplicationError, DaemonInstanceId, DaemonLifecycle, DaemonStatus, EmptyPayload, EnvelopeKind,
-    HelloRequest, HelloResponse, IpcMethod, PROTOCOL_V1, RequestEnvelope, RequestId,
-    ResponseEnvelope, StateSnapshot, error_codes,
+    ApiError, DaemonInstanceId, EnvelopeKind, PROTOCOL_V1, RequestEnvelope, RequestId,
+    ResponseEnvelope,
 };
 use cli_master_storage::Storage;
 use futures_util::{SinkExt, StreamExt};
@@ -28,7 +28,7 @@ pub const MAX_FRAME_LENGTH: usize = 1024 * 1024;
 #[derive(Debug)]
 struct ServerState {
     hello: HelloResponse,
-    daemon: DaemonStatus,
+    schema_version: u32,
 }
 
 /// Bound, single-instance local daemon.
@@ -70,22 +70,13 @@ impl Daemon {
         )?;
         let socket_owner = SocketOwner::new(config.socket_path())?;
         let instance_id = DaemonInstanceId::new();
-        let app_version = env!("CARGO_PKG_VERSION").to_owned();
-        let platform = std::env::consts::OS.to_owned();
         let state = Arc::new(ServerState {
             hello: HelloResponse {
                 protocol_version: PROTOCOL_V1,
-                daemon_instance_id: instance_id,
-                app_version: app_version.clone(),
-                platform: platform.clone(),
-            },
-            daemon: DaemonStatus {
+                daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
                 instance_id,
-                lifecycle: DaemonLifecycle::Ready,
-                protocol_version: PROTOCOL_V1,
-                app_version,
-                platform,
             },
+            schema_version,
         });
 
         info!(
@@ -109,7 +100,7 @@ impl Daemon {
     /// Returns the daemon lifetime identifier clients receive in `system.hello`.
     #[must_use]
     pub fn instance_id(&self) -> DaemonInstanceId {
-        self.state.hello.daemon_instance_id
+        self.state.hello.instance_id
     }
 
     /// Returns the bound socket path.
@@ -130,7 +121,7 @@ impl Daemon {
         loop {
             tokio::select! {
                 () = cancellation.cancelled() => {
-                    info!(instance_id = %self.state.hello.daemon_instance_id, "daemon shutdown requested");
+                    info!(instance_id = %self.state.hello.instance_id, "daemon shutdown requested");
                     break;
                 }
                 accepted = self.listener.accept() => {
@@ -158,7 +149,7 @@ impl Daemon {
             }
         }
         self.socket_owner.remove_if_owned();
-        info!(instance_id = %self.state.hello.daemon_instance_id, "daemon stopped");
+        info!(instance_id = %self.state.hello.instance_id, "daemon stopped");
         Ok(())
     }
 }
@@ -247,8 +238,8 @@ fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> ResponseEnv
     if request.kind != EnvelopeKind::Request {
         return ResponseEnvelope::failure(
             request.request_id,
-            ApplicationError::new(
-                error_codes::PROTOCOL_INVALID_PAYLOAD,
+            ApiError::new(
+                "invalid_envelope_kind",
                 "Daemon commands must use the request envelope kind",
             )
             .with_detail("receivedKind", format!("{:?}", request.kind).to_lowercase())
@@ -258,8 +249,8 @@ fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> ResponseEnv
     if request.version != PROTOCOL_V1 {
         return ResponseEnvelope::failure(
             request.request_id,
-            ApplicationError::new(
-                error_codes::PROTOCOL_UNSUPPORTED,
+            ApiError::new(
+                "unsupported_protocol_version",
                 "The requested IPC protocol version is not supported",
             )
             .with_action("Update CLI Master so the desktop and daemon versions match")
@@ -268,94 +259,79 @@ fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> ResponseEnv
         );
     }
 
-    let result = match request.method {
-        IpcMethod::SystemHello => {
-            decode_payload::<HelloRequest>(request.payload).and_then(|hello| {
-                if hello.protocol_version != PROTOCOL_V1 {
-                    return Err(ApplicationError::new(
-                        error_codes::PROTOCOL_UNSUPPORTED,
-                        "The requested IPC protocol version is not supported",
-                    )
-                    .with_action("Update CLI Master so the desktop and daemon versions match")
-                    .with_detail("receivedVersion", hello.protocol_version)
-                    .with_detail("supportedVersion", PROTOCOL_V1));
-                }
-                if hello.client.trim().is_empty() {
-                    return Err(ApplicationError::new(
-                        error_codes::PROTOCOL_INVALID_PAYLOAD,
-                        "The handshake client name must not be blank",
-                    ));
-                }
-                serde_json::to_value(&state.hello).map_err(|error| response_encoding_error(&error))
+    let result = match request.method.as_str() {
+        wire::method::SYSTEM_HELLO => {
+            if let Err(error) = decode_payload::<EmptyRequest>(request.payload) {
+                return invalid_payload(request.request_id, &error);
+            }
+            serde_json::to_value(&state.hello)
+        }
+        wire::method::STATE_SNAPSHOT => {
+            if let Err(error) = decode_payload::<EmptyRequest>(request.payload) {
+                return invalid_payload(request.request_id, &error);
+            }
+            serde_json::to_value(StateSnapshotResponse {
+                schema_version: state.schema_version,
+                projects: Vec::new(),
+                agents: Vec::new(),
+                sessions: Vec::new(),
+                worktrees: Vec::new(),
             })
         }
-        IpcMethod::StateSnapshot => {
-            decode_payload::<EmptyPayload>(request.payload).and_then(|_| {
-                serde_json::to_value(StateSnapshot {
-                    daemon: state.daemon.clone(),
-                    projects: Vec::new(),
-                    agents: Vec::new(),
-                    custom_agents: Vec::new(),
-                    sessions: Vec::new(),
-                    worktrees: Vec::new(),
-                })
-                .map_err(|error| response_encoding_error(&error))
-            })
-        }
-        IpcMethod::Unknown => {
+        method if wire::method::is_supported(method) => {
             return ResponseEnvelope::failure(
                 request.request_id,
-                ApplicationError::new(
-                    error_codes::PROTOCOL_UNKNOWN_METHOD,
-                    "The requested daemon method is unknown",
-                ),
+                ApiError::new(
+                    "method_not_implemented",
+                    "The requested daemon method is part of the Beta contract but is not implemented",
+                )
+                .with_detail("method", method),
             );
         }
-        method => Err(ApplicationError::new(
-            error_codes::DAEMON_UNAVAILABLE,
-            "The requested method is not available in this daemon build",
-        )
-        .with_action("Update CLI Master so the desktop and daemon versions match")
-        .with_detail("method", method.as_str())),
+        _ => {
+            return ResponseEnvelope::failure(
+                request.request_id,
+                ApiError::new("method_not_found", "The requested daemon method is unknown")
+                    .with_detail("method", request.method),
+            );
+        }
     };
 
     match result {
         Ok(value) => ResponseEnvelope::success(request.request_id, value),
-        Err(error) => ResponseEnvelope::failure(request.request_id, error),
+        Err(error) => ResponseEnvelope::failure(
+            request.request_id,
+            ApiError::new("internal_error", "The daemon could not encode its response")
+                .with_detail("reason", error.to_string()),
+        ),
     }
 }
 
-fn decode_payload<T: DeserializeOwned>(payload: Value) -> Result<T, ApplicationError> {
-    serde_json::from_value(payload).map_err(|error| {
-        ApplicationError::new(
-            error_codes::PROTOCOL_INVALID_PAYLOAD,
-            "Request payload does not match the method schema",
-        )
-        .with_detail("reason", error.to_string())
-    })
+fn decode_payload<T: DeserializeOwned>(payload: Value) -> Result<T, serde_json::Error> {
+    serde_json::from_value(payload)
 }
 
-fn response_encoding_error(error: &serde_json::Error) -> ApplicationError {
-    ApplicationError::new(
-        error_codes::DAEMON_UNAVAILABLE,
-        "The daemon could not encode its response",
+fn invalid_payload(request_id: RequestId, error: &serde_json::Error) -> ResponseEnvelope<Value> {
+    ResponseEnvelope::failure(
+        request_id,
+        ApiError::new(
+            "invalid_payload",
+            "Request payload does not match the method contract",
+        )
+        .with_detail("reason", error.to_string()),
     )
-    .with_detail("reason", error.to_string())
 }
 
 struct RequestFailure {
     request_id: Option<RequestId>,
-    error: ApplicationError,
+    error: ApiError,
 }
 
 fn decode_request(bytes: &[u8]) -> Result<RequestEnvelope<Value>, RequestFailure> {
     let value: Value = serde_json::from_slice(bytes).map_err(|error| RequestFailure {
         request_id: None,
-        error: ApplicationError::new(
-            error_codes::PROTOCOL_INVALID_PAYLOAD,
-            "Request frame is not valid JSON",
-        )
-        .with_detail("reason", error.to_string()),
+        error: ApiError::new("invalid_json", "Request frame is not valid JSON")
+            .with_detail("reason", error.to_string()),
     })?;
     let request_id = value
         .get("requestId")
@@ -364,8 +340,8 @@ fn decode_request(bytes: &[u8]) -> Result<RequestEnvelope<Value>, RequestFailure
 
     serde_json::from_value(value).map_err(|error| RequestFailure {
         request_id,
-        error: ApplicationError::new(
-            error_codes::PROTOCOL_INVALID_PAYLOAD,
+        error: ApiError::new(
+            "invalid_request",
             "Request does not match the IPC envelope schema",
         )
         .with_detail("reason", error.to_string()),
@@ -462,36 +438,22 @@ mod tests {
                 kind: EnvelopeKind::Event,
                 version: PROTOCOL_V1,
                 request_id,
-                method: IpcMethod::SystemHello,
+                method: "system.hello".to_owned(),
                 payload: json!({}),
             },
-            &test_server_state(),
+            &ServerState {
+                hello: HelloResponse {
+                    protocol_version: PROTOCOL_V1,
+                    daemon_version: "test".to_owned(),
+                    instance_id: DaemonInstanceId::new(),
+                },
+                schema_version: 1,
+            },
         );
 
         match response.payload {
-            ResponsePayload::Error { error } => {
-                assert_eq!(error.code, error_codes::PROTOCOL_INVALID_PAYLOAD);
-            }
+            ResponsePayload::Error { error } => assert_eq!(error.code, "invalid_envelope_kind"),
             ResponsePayload::Success { .. } => panic!("wrong kind must fail"),
-        }
-    }
-
-    fn test_server_state() -> ServerState {
-        let instance_id = DaemonInstanceId::new();
-        ServerState {
-            hello: HelloResponse {
-                protocol_version: PROTOCOL_V1,
-                daemon_instance_id: instance_id,
-                app_version: "test".to_owned(),
-                platform: std::env::consts::OS.to_owned(),
-            },
-            daemon: DaemonStatus {
-                instance_id,
-                lifecycle: DaemonLifecycle::Ready,
-                protocol_version: PROTOCOL_V1,
-                app_version: "test".to_owned(),
-                platform: std::env::consts::OS.to_owned(),
-            },
         }
     }
 }

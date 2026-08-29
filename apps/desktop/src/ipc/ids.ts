@@ -10,7 +10,6 @@ export type AgentId = Brand<string, "AgentId">;
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const AGENT_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 
 function requireNonEmpty(value: string, label: string): string {
   if (value.length === 0) {
@@ -52,20 +51,7 @@ export function parseDaemonInstanceId(value: string): DaemonInstanceId {
   return requireUuid(value, "daemon instance id") as DaemonInstanceId;
 }
 
-/** Parses a built-in catalog key or custom-agent identifier. */
+/** Parses an agent identifier from an untrusted string. */
 export function parseAgentId(value: string): AgentId {
-  const trimmed = requireNonEmpty(value, "agent id");
-  if (!AGENT_ID_PATTERN.test(trimmed)) {
-    throw new Error(
-      "agent id must use only ASCII letters, digits, '.', '-' or '_'",
-    );
-  }
-  return trimmed as AgentId;
+  return requireUuid(value, "agent id") as AgentId;
 }
-
-export const BUILTIN_AGENT_IDS = {
-  codex: parseAgentId("codex"),
-  claude: parseAgentId("claude"),
-  gemini: parseAgentId("gemini"),
-  opencode: parseAgentId("opencode"),
-} as const;

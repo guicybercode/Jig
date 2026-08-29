@@ -4,7 +4,7 @@ use cli_master_core::{AgentSource, ProjectId, SessionStatus};
 use cli_master_storage::{SessionRuntimeUpdate, Storage, StorageError};
 use tempfile::TempDir;
 
-use common::{CREATED_AT_MS, OPENED_AT, agent, project, session};
+use common::{CREATED_AT_MS, agent, project, session};
 
 #[test]
 fn project_and_session_survive_database_reopen() {
@@ -15,7 +15,7 @@ fn project_and_session_survive_database_reopen() {
     let agent = agent(AgentSource::BuiltIn, "Codex");
     let session = session(
         project.id,
-        &agent.id,
+        agent.id,
         SessionStatus::Starting,
         Some("daemon-before-reopen"),
         None,
@@ -63,7 +63,7 @@ fn project_and_session_mutations_are_persisted() {
     let agent = agent(AgentSource::BuiltIn, "Codex");
     let session = session(
         project.id,
-        &agent.id,
+        agent.id,
         SessionStatus::Starting,
         Some("daemon-before-update"),
         None,
@@ -80,7 +80,7 @@ fn project_and_session_mutations_are_persisted() {
         .rename_project(project.id, "Renamed project")
         .expect("project should rename");
     storage
-        .touch_project(project.id, OPENED_AT)
+        .touch_project(project.id, CREATED_AT_MS + 10)
         .expect("project timestamp should update");
     storage
         .rename_session(session.id, "Renamed session", CREATED_AT_MS + 20)
@@ -120,7 +120,7 @@ fn project_and_session_mutations_are_persisted() {
         .expect("project should load")
         .expect("project should exist");
     assert_eq!(renamed_project.name, "Renamed project");
-    assert_eq!(renamed_project.last_opened_at, OPENED_AT);
+    assert_eq!(renamed_project.last_opened_at_ms, CREATED_AT_MS + 10);
     let running_session = storage
         .get_session(session.id)
         .expect("session should load")
@@ -136,7 +136,7 @@ fn project_and_session_mutations_are_persisted() {
         .remove_session_metadata(session.id)
         .expect("session metadata should delete");
     storage
-        .remove_agent_metadata(&agent.id)
+        .remove_agent_metadata(agent.id)
         .expect("agent metadata should delete");
     storage
         .remove_project_metadata(project.id)
@@ -167,7 +167,7 @@ fn foreign_keys_and_missing_rows_are_actionable() {
     ));
     let missing_project_session = session(
         ProjectId::new(),
-        &agent.id,
+        agent.id,
         SessionStatus::Starting,
         Some("daemon"),
         None,
@@ -201,21 +201,21 @@ fn daemon_restart_only_recovers_stale_live_sessions() {
     storage.insert_agent(&agent).expect("agent should insert");
     let stale = session(
         project.id,
-        &agent.id,
+        agent.id,
         SessionStatus::Running,
         Some("old-daemon"),
         Some(100),
     );
     let current = session(
         project.id,
-        &agent.id,
+        agent.id,
         SessionStatus::Idle,
         Some("current-daemon"),
         Some(101),
     );
     let exited = session(
         project.id,
-        &agent.id,
+        agent.id,
         SessionStatus::Exited,
         Some("old-daemon"),
         None,
@@ -293,7 +293,7 @@ fn persisted_paths_must_be_absolute_and_nul_free() {
         .expect("agent should insert");
     let mut relative_session = session(
         valid_project.id,
-        &stored_agent.id,
+        stored_agent.id,
         SessionStatus::Starting,
         Some("daemon-path"),
         None,

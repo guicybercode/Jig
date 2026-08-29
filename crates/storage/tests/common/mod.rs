@@ -9,27 +9,22 @@ use cli_master_core::{
 use cli_master_storage::{StoredAgent, StoredSession, StoredWorktree, WorktreeState};
 
 pub const CREATED_AT_MS: i64 = 1_787_941_200_000;
-pub const CREATED_AT: &str = "2026-08-28T18:20:00Z";
-pub const OPENED_AT: &str = "2026-08-28T18:20:00.010Z";
 
 pub fn project(name: &str, path: impl Into<PathBuf>) -> Project {
     Project {
         id: ProjectId::new(),
         name: name.to_owned(),
         path: path.into(),
-        created_at: CREATED_AT.to_owned(),
-        last_opened_at: CREATED_AT.to_owned(),
+        repository_root: None,
+        current_branch: None,
+        created_at_ms: CREATED_AT_MS,
+        last_opened_at_ms: CREATED_AT_MS,
     }
 }
 
 pub fn agent(source: AgentSource, name: &str) -> StoredAgent {
     StoredAgent {
-        id: match source {
-            AgentSource::BuiltIn => {
-                AgentId::parse_str(AgentId::CODEX).expect("built-in ID should be valid")
-            }
-            AgentSource::Custom => AgentId::new_custom(),
-        },
+        id: AgentId::new(),
         source,
         display_name: name.to_owned(),
         executable: "codex".to_owned(),
@@ -43,7 +38,7 @@ pub fn agent(source: AgentSource, name: &str) -> StoredAgent {
 
 pub fn session(
     project_id: ProjectId,
-    agent_id: &AgentId,
+    agent_id: AgentId,
     status: SessionStatus,
     daemon_instance_id: Option<&str>,
     runtime_pid: Option<u32>,
@@ -51,7 +46,7 @@ pub fn session(
     StoredSession {
         id: SessionId::new(),
         project_id,
-        agent_id: agent_id.clone(),
+        agent_id,
         name: "Session".to_owned(),
         cwd: PathBuf::from("/tmp/cli-master-session"),
         status,

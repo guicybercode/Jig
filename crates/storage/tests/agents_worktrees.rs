@@ -51,7 +51,7 @@ fn built_in_and_custom_agent_crud_preserves_structured_commands() {
         .expect("custom agent should insert");
 
     let loaded = storage
-        .get_agent(&custom.id)
+        .get_agent(custom.id)
         .expect("custom agent should load")
         .expect("custom agent should exist");
     assert_eq!(loaded, custom);
@@ -61,7 +61,9 @@ fn built_in_and_custom_agent_crud_preserves_structured_commands() {
     assert_eq!(command.executable(), "/opt/internal agent/bin/agent");
     assert_eq!(command.args(), ["--profile", "review mode"]);
     assert_eq!(command.env()["AGENT_MODE"], "strict");
-    let definition = loaded.definition();
+    let definition = loaded
+        .definition_for_cwd("/tmp/project with spaces")
+        .expect("core definition should build");
     assert_eq!(definition.id, custom.id);
     assert_eq!(definition.source, AgentSource::Custom);
     assert!(matches!(
@@ -85,7 +87,7 @@ fn built_in_and_custom_agent_crud_preserves_structured_commands() {
         .expect("custom agent should update");
     assert_eq!(
         storage
-            .get_agent(&custom.id)
+            .get_agent(custom.id)
             .expect("custom agent should load")
             .expect("custom agent should exist"),
         custom
@@ -93,11 +95,11 @@ fn built_in_and_custom_agent_crud_preserves_structured_commands() {
     custom.enabled = true;
     custom.updated_at_ms += 1;
     storage
-        .set_agent_enabled(&custom.id, true, custom.updated_at_ms)
+        .set_agent_enabled(custom.id, true, custom.updated_at_ms)
         .expect("custom enabled state should update");
     assert_eq!(
         storage
-            .get_agent(&custom.id)
+            .get_agent(custom.id)
             .expect("custom agent should load")
             .expect("custom agent should exist"),
         custom
@@ -107,11 +109,11 @@ fn built_in_and_custom_agent_crud_preserves_structured_commands() {
         Err(StorageError::AlreadyExists { entity: "agent" })
     ));
     storage
-        .remove_agent_metadata(&custom.id)
+        .remove_agent_metadata(custom.id)
         .expect("custom agent should delete");
     assert!(
         storage
-            .get_agent(&custom.id)
+            .get_agent(custom.id)
             .expect("agent lookup should work")
             .is_none()
     );
@@ -185,10 +187,10 @@ fn built_in_command_is_immutable_but_enabled_state_can_change() {
         Err(StorageError::InvalidInput { .. })
     ));
     storage
-        .set_agent_enabled(&built_in.id, false, CREATED_AT_MS + 1)
+        .set_agent_enabled(built_in.id, false, CREATED_AT_MS + 1)
         .expect("built-in enabled state should update");
     let reloaded = storage
-        .get_agent(&built_in.id)
+        .get_agent(built_in.id)
         .expect("built-in agent should load")
         .expect("built-in agent should exist");
     assert_eq!(reloaded.executable, built_in.executable);
@@ -287,7 +289,7 @@ fn foreign_keys_protect_worktree_parents_and_session_delete_disassociates() {
     );
     let agent_removal_error = scenario
         .storage
-        .remove_agent_metadata(&scenario.agent_id)
+        .remove_agent_metadata(scenario.agent_id)
         .expect_err("referenced agent should be protected");
     assert!(
         matches!(
@@ -349,14 +351,14 @@ fn seeded_worktree_scenario() -> WorktreeScenario {
     storage.insert_agent(&agent).expect("agent should insert");
     let first_session = session(
         first_project.id,
-        &agent.id,
+        agent.id,
         SessionStatus::Starting,
         Some("daemon"),
         None,
     );
     let second_session = session(
         second_project.id,
-        &agent.id,
+        agent.id,
         SessionStatus::Starting,
         Some("daemon"),
         None,

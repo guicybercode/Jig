@@ -1,5 +1,9 @@
 # Session 01 report: architecture contracts
 
+> Historical implementation report. Its proposed ID, status, and catalog
+> decisions were superseded by the authoritative Beta wire contract in
+> `crates/core/src/wire` and the updated ADRs. Keep it only as session history.
+
 ## Diagnosis
 
 The repo already had a serious architecture document and a `cli-master-core`

@@ -1,4 +1,4 @@
-# ADR 0002: IPC protocol
+# ADR 0002: Authoritative Beta IPC contract
 
 ## Status
 
@@ -6,53 +6,59 @@ Accepted for Beta v0.1.
 
 ## Context
 
-Frontend and backend were already drifting. `ARCHITECTURE.md` sketched
-envelopes with `ok: false`. `crates/core` implemented a tagged
-`status: success | error` body. Methods were free strings. The Tauri
-template shipped `greet`. The agents crate used catalog keys (`codex`)
-while core used UUID `AgentId` values. None of that can survive two
-parallel Codex sessions.
+Frontend, daemon, and backend crates need one stable local protocol. Earlier
+work modeled the catalog as Rust enums plus a separate payload module, while
+the finalized Beta contract needs validated request values, bounded terminal
+payloads, replay semantics, and state-bound destructive operations.
 
 ## Decision
 
-One domain protocol, version 1, owned by `crates/core`.
+`crates/core/src/wire` is the authoritative Beta v1 contract. Its `method` and
+`event_name` modules define names; request, response, event, and validated value
+modules define their payloads. `protocol/catalog.json` and
+`apps/desktop/src/ipc` are tested mirrors for the desktop boundary.
 
-Requests, responses, and events share an envelope with `kind`, `version`,
-and camelCase field names. Success and failure are a tagged union:
+Requests, responses, and events share versioned camelCase envelopes. Success
+and failure are a tagged union:
 
 ```json
-{ "kind": "response", "version": 1, "requestId": "...", "status": "error", "error": { "code": "AGENT_EXECUTABLE_NOT_FOUND", "message": "..." } }
+{ "kind": "response", "version": 1, "requestId": "...", "status": "error", "error": { "code": "executable_not_found", "message": "..." } }
 ```
 
-That shape is stricter than a boolean `ok` field. TypeScript can narrow on
-`status`. We kept the implementation and changed the docs to match it.
+Envelope names remain strings for forward compatibility. The daemon checks
+known methods against `wire::method`; clients ignore event names they do not
+recognize. Payload structs reject unknown fields where accepting them would
+hide client/server drift.
 
-Method and event names are Rust enums with serde renames (`session.create`,
-`session.status_changed`). Unknown names decode as `Unknown`. The daemon
-must fail unknown methods. Clients must ignore unknown events.
+Filesystem paths, session cwd, branch names, and destructive bypass flags are
+not generic client inputs. Git inspection targets registered project/session
+IDs. Worktree deletion requires `worktree.prepare_remove` followed by
+`worktree.remove` with a short-lived state-bound token.
 
-The catalog is locked in three artifacts that tests compare:
+Terminal input/output uses canonical padded base64 with explicit decoded-size
+limits. Subscriptions carry an output cursor and events make replay completion
+or retention gaps explicit.
 
-- `IpcMethod` / `IpcEvent` in Rust
-- `protocol/catalog.json`
-- `apps/desktop/src/ipc/methods.ts`
-
-Payload structs live in `crates/core/src/payloads.rs`. TypeScript mirrors
-them by hand. We did not add a codegen crate. Codegen would have been
-another moving part before a daemon exists. The shared JSON catalog is
-enough to catch a renamed method.
-
-PTY bytes travel as standard base64 in `dataBase64`. JSON is UTF-8. Raw
-terminal bytes are not.
-
-The desktop `protocol_info` Tauri command only echoes the catalog. It is
-not `system.hello`. Hello still belongs to the daemon handshake.
+The desktop `protocol_info` Tauri command only exposes the Rust catalog. It is
+not `system.hello`; negotiation remains a daemon request.
 
 ## Consequences
 
-Adding a command is a cross-crate change, which is the point. A session
-that needs `session.kill` or `session.subscribe` must extend the catalog
-instead of opening a side channel.
+Adding or changing a command is an intentional cross-boundary change: update
+Rust first, then the JSON and TypeScript mirrors and their contract tests.
+Validated newtypes make invalid payloads harder to construct, at the cost of
+explicit conversion at storage, Git, daemon, and desktop adapters.
 
-Error codes are additive string constants in `error_codes`. Do not rename
-them. Do not put env values, tokens, or terminal contents in `details`.
+The earlier parallel `IpcMethod`/`IpcEvent` enums and `payloads.rs` DTOs are
+removed so there is no second authority. Error codes remain stable strings in
+responses but are owned by implementing services rather than a duplicate
+catalog in core.
+
+## Alternatives considered
+
+- Generate TypeScript from Rust immediately: deferred until schema generation
+  can be added without weakening the validated Rust API.
+- Keep both catalogs during migration: rejected because both compiled and could
+  disagree while claiming to be authoritative.
+- Accept arbitrary paths or a dirty-removal override: rejected because the
+  daemon must derive and revalidate destructive targets from owned state.

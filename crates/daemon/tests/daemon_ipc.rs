@@ -4,13 +4,13 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::Duration;
 
+use cli_master_core::wire::{HelloResponse, StateSnapshotResponse, method};
 use cli_master_core::{
-    DaemonInstanceId, EnvelopeKind, IpcMethod, PROTOCOL_V1, RequestEnvelope, RequestId,
-    ResponseEnvelope, ResponsePayload, error_codes,
+    DaemonInstanceId, EnvelopeKind, PROTOCOL_V1, RequestEnvelope, RequestId, ResponseEnvelope,
+    ResponsePayload,
 };
-use cli_master_daemon::{
-    Daemon, DaemonConfig, DaemonError, HelloResponse, MAX_FRAME_LENGTH, StateSnapshot,
-};
+use cli_master_daemon::{Daemon, DaemonConfig, DaemonError, MAX_FRAME_LENGTH};
+use cli_master_storage::LATEST_SCHEMA_VERSION;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -92,23 +92,13 @@ fn failure_code(response: ResponseEnvelope<Value>) -> String {
     }
 }
 
-fn hello_request() -> RequestEnvelope<Value> {
-    RequestEnvelope::v1(
-        IpcMethod::SystemHello,
-        json!({
-            "protocolVersion": PROTOCOL_V1,
-            "client": "daemon-integration-test",
-        }),
-    )
-}
-
 #[tokio::test]
 async fn handshake_is_exact_and_connection_accepts_multiple_requests() {
     let temporary = TempDir::new().expect("temporary directory should exist");
     let daemon = RunningDaemon::start(temporary.path());
     let mut client = connect(daemon.config.socket_path()).await;
 
-    let request = hello_request();
+    let request = RequestEnvelope::v1(method::SYSTEM_HELLO, json!({}));
     let response = exchange(&mut client, &request).await;
     assert_eq!(response.kind, EnvelopeKind::Response);
     assert_eq!(response.version, PROTOCOL_V1);
@@ -120,42 +110,45 @@ async fn handshake_is_exact_and_connection_accepts_multiple_requests() {
         data,
         json!({
             "protocolVersion": PROTOCOL_V1,
-            "daemonInstanceId": daemon.instance_id,
-            "appVersion": env!("CARGO_PKG_VERSION"),
-            "platform": std::env::consts::OS,
+            "daemonVersion": env!("CARGO_PKG_VERSION"),
+            "instanceId": daemon.instance_id,
         })
     );
     let hello: HelloResponse = serde_json::from_value(data).expect("typed hello should decode");
-    assert_eq!(hello.daemon_instance_id, daemon.instance_id);
+    assert_eq!(hello.instance_id, daemon.instance_id);
 
-    let second = hello_request();
+    let second = RequestEnvelope::v1(method::SYSTEM_HELLO, json!({}));
     assert!(matches!(
         exchange(&mut client, &second).await.payload,
         ResponsePayload::Success { .. }
     ));
+    let invalid = RequestEnvelope::v1(method::SYSTEM_HELLO, json!({ "unexpected": true }));
+    assert_eq!(
+        failure_code(exchange(&mut client, &invalid).await),
+        "invalid_payload"
+    );
     daemon.stop().await;
 }
 
 #[tokio::test]
-async fn snapshot_reports_daemon_identity_and_typed_empty_collections() {
+async fn snapshot_reports_applied_migration_and_typed_empty_collections() {
     let temporary = TempDir::new().expect("temporary directory should exist");
     let daemon = RunningDaemon::start(temporary.path());
     let mut client = connect(daemon.config.socket_path()).await;
 
     let response = exchange(
         &mut client,
-        &RequestEnvelope::v1(IpcMethod::StateSnapshot, json!({})),
+        &RequestEnvelope::v1(method::STATE_SNAPSHOT, json!({})),
     )
     .await;
     let ResponsePayload::Success { data } = response.payload else {
         panic!("snapshot should succeed");
     };
-    let snapshot: StateSnapshot = serde_json::from_value(data).expect("snapshot should decode");
-    assert_eq!(snapshot.daemon.instance_id, daemon.instance_id);
-    assert_eq!(snapshot.daemon.protocol_version, PROTOCOL_V1);
+    let snapshot: StateSnapshotResponse =
+        serde_json::from_value(data).expect("snapshot should decode");
+    assert_eq!(snapshot.schema_version, LATEST_SCHEMA_VERSION);
     assert!(snapshot.projects.is_empty());
     assert!(snapshot.agents.is_empty());
-    assert!(snapshot.custom_agents.is_empty());
     assert!(snapshot.sessions.is_empty());
     assert!(snapshot.worktrees.is_empty());
 
@@ -172,43 +165,36 @@ async fn invalid_kind_version_and_method_return_correlated_errors() {
         kind: EnvelopeKind::Event,
         version: PROTOCOL_V1,
         request_id: RequestId::new(),
-        method: IpcMethod::SystemHello,
-        payload: hello_request().payload,
+        method: method::SYSTEM_HELLO.to_owned(),
+        payload: json!({}),
     };
     assert_eq!(
         failure_code(exchange(&mut client, &wrong_kind).await),
-        error_codes::PROTOCOL_INVALID_PAYLOAD
+        "invalid_envelope_kind"
     );
 
     let wrong_version = RequestEnvelope {
         kind: EnvelopeKind::Request,
         version: PROTOCOL_V1 + 1,
         request_id: RequestId::new(),
-        method: IpcMethod::SystemHello,
-        payload: hello_request().payload,
+        method: method::SYSTEM_HELLO.to_owned(),
+        payload: json!({}),
     };
     assert_eq!(
         failure_code(exchange(&mut client, &wrong_version).await),
-        error_codes::PROTOCOL_UNSUPPORTED
+        "unsupported_protocol_version"
     );
 
-    let invalid_hello = RequestEnvelope::v1(IpcMethod::SystemHello, json!({}));
+    let known = RequestEnvelope::v1(method::PROJECT_LIST, json!({}));
     assert_eq!(
-        failure_code(exchange(&mut client, &invalid_hello).await),
-        error_codes::PROTOCOL_INVALID_PAYLOAD
+        failure_code(exchange(&mut client, &known).await),
+        "method_not_implemented"
     );
 
-    let unknown: RequestEnvelope<Value> = serde_json::from_value(json!({
-        "kind": "request",
-        "version": PROTOCOL_V1,
-        "requestId": RequestId::new(),
-        "method": "unknown.method",
-        "payload": {},
-    }))
-    .expect("unknown method should decode to the sentinel variant");
+    let unknown = RequestEnvelope::v1("unknown.method", json!({}));
     assert_eq!(
         failure_code(exchange(&mut client, &unknown).await),
-        error_codes::PROTOCOL_UNKNOWN_METHOD
+        "method_not_found"
     );
     daemon.stop().await;
 }
@@ -239,7 +225,11 @@ async fn oversized_frame_only_disconnects_the_offending_client() {
     );
 
     let mut reconnected = connect(daemon.config.socket_path()).await;
-    let response = exchange(&mut reconnected, &hello_request()).await;
+    let response = exchange(
+        &mut reconnected,
+        &RequestEnvelope::v1(method::SYSTEM_HELLO, json!({})),
+    )
+    .await;
     assert!(matches!(response.payload, ResponsePayload::Success { .. }));
     daemon.stop().await;
 }
@@ -263,7 +253,12 @@ async fn lock_rejects_a_second_daemon_then_allows_sequential_reconnect() {
     let task = tokio::spawn(async move { second.run(child).await });
     let mut client = connect(config.socket_path()).await;
     assert!(matches!(
-        exchange(&mut client, &hello_request()).await.payload,
+        exchange(
+            &mut client,
+            &RequestEnvelope::v1(method::SYSTEM_HELLO, json!({})),
+        )
+        .await
+        .payload,
         ResponsePayload::Success { .. }
     ));
     drop(client);

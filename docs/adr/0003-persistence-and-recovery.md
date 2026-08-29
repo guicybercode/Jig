@@ -6,48 +6,48 @@ Accepted for Beta v0.1.
 
 ## Context
 
-Session metadata has to survive an app restart. Live terminals cannot, once
-the process that holds the PTY master is gone. Mixing those two facts into
-one "the session is running" bit is how you get UIs that think a dead PID
-is still Codex.
-
-SQLite already stored `starting|running|idle|exited|failed|unknown`. The
-product also needs `created` (metadata, no process yet) and `stopping`
-(stop requested, process group still being signaled).
+Session metadata must survive desktop and daemon restarts, while PTY masters
+and child-process ownership are tied to one daemon lifetime. Persisted runtime
+metadata cannot prove that a reused PID still belongs to CLI Master.
 
 ## Decision
 
-SQLite is authoritative for metadata. `SessionManager` memory is
-authoritative for PTY handles, child process groups, and the replay buffer.
-Status in SQLite is a snapshot written on transitions, not on every output
-chunk.
+SQLite is authoritative for durable metadata. `SessionManager` memory is
+authoritative for PTY handles, process groups, subscribers, and bounded replay.
+Status is persisted on meaningful lifecycle changes, not for each output chunk.
 
-Wire timestamps are RFC 3339 UTC strings, matching the SQL schema. Epoch
-milliseconds leaked JavaScript convenience into the protocol and are gone
-from public DTOs.
+The public and persisted timestamp representation is Unix epoch milliseconds.
+Repository adapters also accept compatible legacy SQLite values during schema
+upgrade, but emit the current representation.
 
-On daemon start, any row still in a live status (`starting`, `running`,
-`idle`, `stopping`) from another instance id becomes `unknown`. Created,
-exited, and failed rows stay as they are. The new daemon never signals a
-PID it did not spawn.
+The frozen public session statuses are `starting`, `running`, `idle`, `exited`,
+`failed`, and `unknown`. On daemon start, rows that claim a process-bearing
+state from another daemon lifetime are reconciled to `unknown`; the new daemon
+never signals a PID it did not spawn. Stop-in-progress is daemon-owned runtime
+state and does not add an unversioned wire status.
 
-Closing the UI does not change session status. With no clients and no live
-sessions, the daemon may idle-exit after five minutes. That is a later
-implementation detail. The rule is already: UI disconnect is not stop.
+Closing the UI does not change session status. Client reconnect uses
+`state.snapshot`, then `session.subscribe` with an output cursor. Replay
+completion and retention gaps are explicit events.
 
-Schema check constraints now accept `created` and `stopping`. This is still
-migration version 1. Nothing has shipped. We edited `0001_initial.sql`
-instead of rebuilding the table in a second migration. After this freeze,
-schema changes are additive numbered files.
+Schema changes after the initial migration are additive numbered files. The
+worktree dirty-state addition is migration `0002`, rather than a silent rewrite
+of `0001`.
 
 ## Consequences
 
-`session.create` can persist without spawning. `session.start` is a real
-transition. Restart is `exited|failed|unknown -> starting`, never a jump
-to `running`.
+Restart from `exited`, `failed`, or `unknown` goes through `starting`; it never
+jumps directly to `running`. A daemon crash cannot preserve the PTY, and the UI
+offers recovery instead of claiming stale ownership.
 
-A crash mid-stop still lands in `unknown`. The UI should offer restart or
-delete, not pretend the process is stopping.
+Terminal scrollback remains bounded and in memory. A desktop reload while the
+daemon remains alive can replay retained output; a daemon restart cannot.
 
-Terminal scrollback remains in-memory and bounded. Reloading the UI after
-the daemon is still up can replay. Reloading after the daemon died cannot.
+## Alternatives considered
+
+- Persist PTY bytes or handles: rejected because handles are process-local and
+  unbounded output would turn SQLite into a terminal log.
+- Trust stored PIDs after restart: rejected because PID reuse can target an
+  unrelated process.
+- Add `created` and `stopping` wire states: rejected by the finalized Beta
+  contract in favor of daemon-owned transition state and six stable statuses.

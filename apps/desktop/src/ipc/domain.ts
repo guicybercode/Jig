@@ -2,90 +2,29 @@ import type {
   AgentId,
   DaemonInstanceId,
   ProjectId,
+  RequestId,
   SessionId,
   WorktreeId,
 } from "./ids";
 
 export const SESSION_STATUSES = [
-  "created",
   "starting",
   "running",
   "idle",
-  "stopping",
   "exited",
   "failed",
   "unknown",
 ] as const;
 
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
-
-export const LIVE_SESSION_STATUSES = [
-  "starting",
-  "running",
-  "idle",
-  "stopping",
-] as const satisfies readonly SessionStatus[];
-
-export type LiveSessionStatus = (typeof LIVE_SESSION_STATUSES)[number];
-
-const SESSION_TRANSITIONS: ReadonlyArray<readonly [SessionStatus, SessionStatus]> =
-  [
-    ["created", "starting"],
-    ["created", "failed"],
-    ["starting", "running"],
-    ["starting", "failed"],
-    ["starting", "stopping"],
-    ["running", "idle"],
-    ["running", "stopping"],
-    ["running", "exited"],
-    ["running", "failed"],
-    ["idle", "running"],
-    ["idle", "stopping"],
-    ["idle", "exited"],
-    ["idle", "failed"],
-    ["stopping", "exited"],
-    ["stopping", "failed"],
-    ["exited", "starting"],
-    ["failed", "starting"],
-    ["unknown", "starting"],
-    ["unknown", "failed"],
-  ];
-
-const SESSION_TRANSITION_SET = new Set(
-  SESSION_TRANSITIONS.map(([from, to]) => `${from}->${to}`),
-);
-
-/** Returns whether a session may currently own a process group. */
-export function isLiveSessionStatus(
-  status: SessionStatus,
-): status is LiveSessionStatus {
-  return (LIVE_SESSION_STATUSES as readonly string[]).includes(status);
-}
-
-/** Returns whether `next` is a legal daemon-side status change. */
-export function canTransitionSessionStatus(
-  from: SessionStatus,
-  to: SessionStatus,
-): boolean {
-  return SESSION_TRANSITION_SET.has(`${from}->${to}`);
-}
-
-/** Status after a new daemon instance loads a persisted row. */
-export function recoveredSessionStatus(status: SessionStatus): SessionStatus {
-  return isLiveSessionStatus(status) ? "unknown" : status;
-}
-
 export type AgentSource = "built_in" | "custom";
 export type WorktreeState =
   | "creating"
   | "active"
   | "remove_pending"
   | "orphaned";
-export type DetectionStatus = "found" | "not_found" | "not_executable";
-export type DaemonLifecycle = "starting" | "ready" | "shutting_down";
-export type MetadataChange = "added" | "updated" | "removed";
 
-export type ApplicationError = {
+export type ApiError = {
   code: string;
   message: string;
   action?: string;
@@ -99,37 +38,44 @@ export type CommandSpec = {
   env: Record<string, string>;
 };
 
+export type AgentCommand = {
+  executable: string;
+  args: string[];
+  env: Record<string, string>;
+};
+
 export type AgentDefinition = {
   id: AgentId;
   displayName: string;
   description?: string;
   source: AgentSource;
-  enabled: boolean;
+  command: CommandSpec;
 };
 
-export type CustomAgent = {
+export type AgentRecord = {
   id: AgentId;
   displayName: string;
-  executable: string;
-  args: string[];
-  env: Record<string, string>;
+  description?: string;
+  source: AgentSource;
+  command: AgentCommand;
   enabled: boolean;
-  createdAt: string;
-  updatedAt: string;
 };
 
 export type AgentDetection = {
   agentId: AgentId;
-  status: DetectionStatus;
-  executable?: string;
+  available: boolean;
+  executablePath?: string;
+  errorCode?: string;
 };
 
 export type Project = {
   id: ProjectId;
   name: string;
   path: string;
-  createdAt: string;
-  lastOpenedAt: string;
+  repositoryRoot?: string;
+  currentBranch?: string;
+  createdAtMs: number;
+  lastOpenedAtMs: number;
 };
 
 export type Session = {
@@ -138,13 +84,17 @@ export type Session = {
   name: string;
   agentId: AgentId;
   cwd: string;
+  pid?: number;
+  ptyId?: string;
+  branch?: string;
   worktreeId?: WorktreeId;
+  worktreePath?: string;
   status: SessionStatus;
   exitCode?: number;
+  createdAtMs: number;
+  updatedAtMs: number;
+  lastActivityAtMs?: number;
   errorCode?: string;
-  createdAt: string;
-  updatedAt: string;
-  lastActivityAt?: string;
 };
 
 export type Worktree = {
@@ -153,59 +103,26 @@ export type Worktree = {
   sessionId?: SessionId;
   path: string;
   branch: string;
-  state: WorktreeState;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type GitStatus = {
-  projectId: ProjectId;
-  worktreeId?: WorktreeId;
-  branch?: string;
-  upstream?: string;
-  ahead: number;
-  behind: number;
-  changedFiles: number;
-  stagedFiles: number;
-  untrackedFiles: number;
   isDirty: boolean;
-  observedAt: string;
+  state: WorktreeState;
+  createdAtMs: number;
+  updatedAtMs: number;
 };
 
-export type GitDiff = {
-  projectId: ProjectId;
-  worktreeId?: WorktreeId;
-  text: string;
-  truncated: boolean;
-};
-
-export type DaemonStatus = {
-  instanceId: DaemonInstanceId;
-  lifecycle: DaemonLifecycle;
-  protocolVersion: number;
-  appVersion: string;
-  platform: "linux" | "macos";
-};
-
-export type EmptyPayload = Record<string, never>;
-
-export type HelloRequest = {
-  protocolVersion: number;
-  client: string;
-};
+export type EmptyRequest = Record<string, never>;
+export type EmptyResponse = Record<string, never>;
+export type HelloRequest = EmptyRequest;
 
 export type HelloResponse = {
   protocolVersion: number;
-  daemonInstanceId: DaemonInstanceId;
-  appVersion: string;
-  platform: "linux" | "macos";
+  daemonVersion: string;
+  instanceId: DaemonInstanceId;
 };
 
-export type StateSnapshot = {
-  daemon: DaemonStatus;
+export type StateSnapshotResponse = {
+  schemaVersion: number;
   projects: Project[];
-  agents: AgentDefinition[];
-  customAgents: CustomAgent[];
+  agents: AgentRecord[];
   sessions: Session[];
   worktrees: Worktree[];
 };
@@ -215,13 +132,13 @@ export type ProjectAddRequest = {
   name?: string;
 };
 
-export type ProjectIdRequest = {
-  projectId: ProjectId;
-};
-
 export type ProjectRenameRequest = {
   projectId: ProjectId;
   name: string;
+};
+
+export type ProjectRemoveRequest = {
+  projectId: ProjectId;
 };
 
 export type ProjectListResponse = {
@@ -229,138 +146,214 @@ export type ProjectListResponse = {
 };
 
 export type AgentListResponse = {
-  agents: AgentDefinition[];
+  agents: AgentRecord[];
+};
+
+export type AgentDetectRequest = {
+  agentIds?: AgentId[];
 };
 
 export type AgentDetectResponse = {
   detections: AgentDetection[];
 };
 
-export type AgentCreateCustomRequest = {
-  id?: AgentId;
+export type AgentCustomCreateRequest = {
   displayName: string;
-  executable: string;
-  args?: string[];
-  env?: Record<string, string>;
+  command: AgentCommand;
 };
 
-export type AgentUpdateCustomRequest = {
-  id: AgentId;
-  displayName?: string;
-  executable?: string;
-  args?: string[];
-  env?: Record<string, string>;
-  enabled?: boolean;
+export type AgentCustomUpdateRequest = {
+  agentId: AgentId;
+  displayName: string;
+  command: AgentCommand;
 };
 
-export type AgentDeleteCustomRequest = {
-  id: AgentId;
+export type AgentSetEnabledRequest = {
+  agentId: AgentId;
+  enabled: boolean;
+};
+
+export type AgentCustomRemoveRequest = {
+  agentId: AgentId;
+};
+
+export type SessionIsolation = "current" | "new_worktree";
+
+export type SessionCreateRequest = {
+  projectId: ProjectId;
+  name: string;
+  agentId: AgentId;
+  isolation: SessionIsolation;
+  relativeDirectory?: string;
 };
 
 export type SessionListRequest = {
   projectId?: ProjectId;
 };
 
-export type SessionListResponse = {
-  sessions: Session[];
-};
-
-export type SessionCreateRequest = {
-  projectId: ProjectId;
-  agentId: AgentId;
-  name: string;
-  worktreeId?: WorktreeId;
-};
-
 export type SessionIdRequest = {
   sessionId: SessionId;
 };
 
-export type SessionWriteRequest = {
-  sessionId: SessionId;
-  dataBase64: string;
+export type SessionRenameRequest = SessionIdRequest & {
+  name: string;
 };
 
-export type SessionResizeRequest = {
-  sessionId: SessionId;
-  cols: number;
+export type SessionWriteRequest = SessionIdRequest & {
+  base64: string;
+};
+
+export type SessionResizeRequest = SessionIdRequest & {
+  columns: number;
   rows: number;
 };
 
-export type WorktreeListRequest = {
-  projectId: ProjectId;
+export type SessionSubscribeRequest = SessionIdRequest & {
+  cursor?: number;
 };
 
-export type WorktreeListResponse = {
-  worktrees: Worktree[];
+export type SessionListResponse = {
+  sessions: Session[];
 };
 
-export type WorktreeCreateRequest = {
-  projectId: ProjectId;
+export type GitTarget =
+  | { kind: "project"; projectId: ProjectId }
+  | { kind: "session"; sessionId: SessionId };
+
+export type GitStatusRequest = { target: GitTarget };
+export type GitDiffRequest = { target: GitTarget };
+export type GitChangeKind = "modified" | "added" | "deleted" | "untracked";
+
+export type GitChangedFile = {
+  path: string;
+  originalPath?: string;
+  kind: GitChangeKind;
+  staged: boolean;
+  unstaged: boolean;
+};
+
+export type GitStatusCounts = {
+  modified: number;
+  added: number;
+  deleted: number;
+  untracked: number;
+};
+
+export type GitStatusResponse = {
   branch?: string;
-  name?: string;
+  files: GitChangedFile[];
+  counts: GitStatusCounts;
+  hasStaged: boolean;
+  hasTrackedChanges: boolean;
+  hasUntracked: boolean;
+  isDirty: boolean;
 };
+
+export type GitDiffResponse = { text: string; truncated: boolean };
+
+export type WorktreePrepareRemoveRequest = { worktreeId: WorktreeId };
 
 export type WorktreeRemoveRequest = {
   worktreeId: WorktreeId;
-  confirmationToken?: string;
-  allowDirty?: boolean;
+  confirmationToken: string;
 };
 
-export type WorktreeRemoveResponse = {
-  removed: boolean;
-  isDirty: boolean;
-  inUse: boolean;
-  confirmationToken?: string;
+export type WorktreeRemovalBlocker =
+  | "staged_changes"
+  | "tracked_changes"
+  | "untracked_files"
+  | "ignored_files"
+  | "assume_unchanged"
+  | "skip_worktree"
+  | "locked"
+  | "running"
+  | "in_use"
+  | "unknown";
+
+export type WorktreePrepareRemoveResponse =
+  | {
+      status: "ready";
+      worktreeId: WorktreeId;
+      confirmationToken: string;
+      expiresAtMs: number;
+    }
+  | {
+      status: "blocked";
+      worktreeId: WorktreeId;
+      isDirty: boolean;
+      blockers: WorktreeRemovalBlocker[];
+    };
+
+export type DiagnosticIssue = {
+  code: string;
+  message: string;
+  action?: string;
 };
 
-export type GitObserveRequest = {
-  projectId: ProjectId;
-  worktreeId?: WorktreeId;
-};
-
-export type DiagnosticsSnapshot = {
-  appVersion: string;
+export type DiagnosticsResponse = {
+  daemonVersion: string;
   protocolVersion: number;
-  platform: "linux" | "macos";
-  dataDir: string;
   schemaVersion: number;
-  liveSessionCount: number;
+  daemonInstanceId: DaemonInstanceId;
+  dataPath: string;
+  runtimePath: string;
+  logPath: string;
+  effectivePath: string[];
+  recentIssues: DiagnosticIssue[];
 };
+
+export type ProjectChangedEvent = { project: Project };
+export type ProjectRemovedEvent = { projectId: ProjectId };
+export type AgentChangedEvent = { agent: AgentRecord };
+export type AgentRemovedEvent = { agentId: AgentId };
+export type SessionChangedEvent = { session: Session };
+export type SessionDeletedEvent = { sessionId: SessionId };
 
 export type SessionOutputEvent = {
   sessionId: SessionId;
-  sequence: number;
-  dataBase64: string;
+  base64: string;
+  outputSequence: number;
+  replay: boolean;
+};
+
+export type SessionReplayCompleteEvent = {
+  sessionId: SessionId;
+  outputSequence: number;
+};
+
+export type SessionOutputGapEvent = {
+  sessionId: SessionId;
+  requestedCursor: number;
+  firstAvailableSequence: number;
+  latestSequence: number;
 };
 
 export type SessionStatusChangedEvent = {
   sessionId: SessionId;
-  from: SessionStatus;
-  to: SessionStatus;
-  changedAt: string;
-  reason?: string;
+  previousStatus: SessionStatus;
+  status: SessionStatus;
+  changedAtMs: number;
+  reasonCode?: string;
 };
 
 export type SessionExitedEvent = {
   sessionId: SessionId;
-  status: SessionStatus;
   exitCode?: number;
-  error?: ApplicationError;
+  status: SessionStatus;
+  exitedAtMs: number;
 };
 
-export type ProjectChangedEvent = {
-  change: MetadataChange;
-  project?: Project;
-  projectId?: ProjectId;
-};
+export type WorktreeChangedEvent = { worktree: Worktree };
+export type WorktreeRemovedEvent = { worktreeId: WorktreeId };
 
 export type GitStatusChangedEvent = {
-  status: GitStatus;
+  target: GitTarget;
+  status: GitStatusResponse;
 };
 
-export type DaemonStatusChangedEvent = {
-  status: DaemonStatus;
+export type DaemonShuttingDownEvent = {
+  reasonCode: string;
+  activeSessionCount: number;
 };
 
 export type EnvelopeKind = "request" | "response" | "event";
@@ -368,7 +361,7 @@ export type EnvelopeKind = "request" | "response" | "event";
 export type RequestEnvelope<T> = {
   kind: "request";
   version: 1;
-  requestId: string;
+  requestId: RequestId;
   method: string;
   payload: T;
 };
@@ -377,16 +370,16 @@ export type ResponseEnvelope<T> =
   | {
       kind: "response";
       version: 1;
-      requestId: string;
+      requestId: RequestId;
       status: "success";
       data: T;
     }
   | {
       kind: "response";
       version: 1;
-      requestId: string;
+      requestId: RequestId;
       status: "error";
-      error: ApplicationError;
+      error: ApiError;
     };
 
 export type EventEnvelope<T> = {

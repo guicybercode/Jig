@@ -22,25 +22,27 @@ It does not proxy vendor traffic. Windows is out of scope for Beta v0.1.
 | Unix socket, composition, recovery | `crates/daemon` |
 | Tauri window, dialogs, event relay | `apps/desktop/src-tauri` |
 | React views and typed IPC client | `apps/desktop/src` |
-| Shared method/event names | `protocol/catalog.json` |
+| Authoritative Beta wire contract | `crates/core/src/wire` |
+| TypeScript/catalog mirrors | `apps/desktop/src/ipc`, `protocol/catalog.json` |
 
 `crates/core` has no I/O. If you need a filesystem, you are in the wrong crate.
 
 ## IPC
 
-The v1 catalog lives in three places that must stay equal:
+The Beta v1 catalog is authoritative in Rust and mirrored in two artifacts:
 
-1. `cli_master_core::IpcMethod` and `IpcEvent`
+1. `cli_master_core::wire::method` and `wire::event_name`
 2. `protocol/catalog.json`
 3. `apps/desktop/src/ipc/methods.ts`
 
-Add a method by changing all three, plus request/response types in
-`crates/core/src/payloads.rs` and `apps/desktop/src/ipc/domain.ts`. Do not
+Add a method in `crates/core/src/wire` first, then update both mirrors and
+`apps/desktop/src/ipc/domain.ts`. Do not
 add a raw Tauri command for a domain operation. The desktop process forwards
 daemon requests. It does not own sessions.
 
-Unknown methods deserialize as `IpcMethod::Unknown` and must be rejected with
-`PROTOCOL_UNKNOWN_METHOD`. Do not invent behavior for a name you do not know.
+Envelope method/event names remain strings for forward compatibility. The
+daemon checks `wire::method::is_supported` and rejects unknown methods; clients
+ignore unknown events. Do not invent behavior for a name you do not know.
 
 ## Sessions, processes, and the UI
 
@@ -53,11 +55,8 @@ Unknown methods deserialize as `IpcMethod::Unknown` and must be rejected with
 
 React may call `session.start` / `session.stop` / `session.write`. Unmounting a
 terminal view must not stop the session. Do not store PTY bytes in React
-state. Do not kill a PID from the UI. Public session DTOs have no `ptyId`
-and no `pid` for that reason.
-
-Legal status edges are encoded in `SessionStatus::can_transition_to`. Copy
-that table; do not keep a second one in the daemon.
+state. Do not kill a PID from the UI. Although the local public session DTO
+reports daemon-observed `pid` and `ptyId`, only the daemon may act on them.
 
 ## Agents and commands
 
@@ -66,14 +65,15 @@ env overrides. Never interpolate a shell string. Never wrap the child in
 `sh -c`. Custom agent env values may cross IPC to the local owner. They must
 not appear in logs, `Debug`, or error details.
 
-Built-in IDs are `codex`, `claude`, `gemini`, and `opencode`. Those strings
-are the primary keys. Do not mint UUIDs for built-ins.
+Agent IDs, including built-in definitions persisted locally, are UUIDv7 values.
+Adapter keys such as `codex` are discovery keys, not wire or database IDs.
 
 ## Git
 
 `crates/git` will invoke the system `git` binary with an argv array. Status
 parsing uses porcelain v2 with NUL delimiters. Worktree removal is two-step
-and refuses dirty trees unless the user confirms. Deleting session metadata
+through `worktree.prepare_remove` and a state-bound confirmation token; there
+is no dirty-delete bypass. Deleting session metadata
 must not delete a worktree. Removing a project must not delete the repo
 directory.
 
@@ -82,7 +82,7 @@ directory.
 SQLite stores metadata. Memory stores PTY handles and the replay buffer.
 After a daemon crash, live rows become `unknown`. Never signal a stale PID.
 
-Timestamps on the wire and in SQLite are RFC 3339 UTC strings.
+Timestamps on the wire and in SQLite are Unix epoch milliseconds.
 
 ## Platforms
 

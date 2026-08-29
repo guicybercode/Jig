@@ -7,12 +7,9 @@ use rusqlite::{Row, params};
 
 use crate::Storage;
 use crate::error::{StorageError, corrupt_data, map_write_error, persisted_validation};
-use crate::models::{
-    StoredWorktree, WorktreeState, validate_timestamp, worktree_state_from_database,
-    worktree_state_to_database,
-};
+use crate::models::{StoredWorktree, WorktreeState, validate_timestamp};
 use crate::paths::{path_from_sql_value, path_to_sql_value};
-use crate::values::{timestamp_from_sql_value, timestamp_to_sql_value};
+use crate::values::timestamp_from_sql_value;
 
 const WORKTREE_COLUMNS: &str = "id, project_id, session_id, path, branch, state, \
     is_dirty, created_at, updated_at";
@@ -27,8 +24,6 @@ impl Storage {
     pub fn insert_worktree(&self, worktree: &StoredWorktree) -> Result<(), StorageError> {
         worktree.validate()?;
         let path = path_to_sql_value(&worktree.path, "worktree path")?;
-        let created_at = timestamp_to_sql_value(worktree.created_at_ms, "worktree", "created_at")?;
-        let updated_at = timestamp_to_sql_value(worktree.updated_at_ms, "worktree", "updated_at")?;
         self.connection
             .execute(
                 "INSERT INTO worktrees (
@@ -41,10 +36,10 @@ impl Storage {
                     worktree.session_id.map(|id| id.to_string()),
                     path,
                     worktree.branch,
-                    worktree_state_to_database(worktree.state),
+                    worktree.state.as_database_value(),
                     worktree.is_dirty,
-                    created_at,
-                    updated_at,
+                    worktree.created_at_ms,
+                    worktree.updated_at_ms,
                 ],
             )
             .map_err(|error| map_write_error(error, "worktree"))?;
@@ -59,7 +54,7 @@ impl Storage {
     pub fn list_worktrees(&self) -> Result<Vec<StoredWorktree>, StorageError> {
         let sql = format!(
             "SELECT {WORKTREE_COLUMNS} FROM worktrees
-             ORDER BY julianday(created_at) DESC, id"
+             ORDER BY CAST(created_at AS INTEGER) DESC, id"
         );
         let mut statement = self.connection.prepare(&sql)?;
         let mut rows = statement.query([])?;
@@ -77,7 +72,7 @@ impl Storage {
     ) -> Result<Vec<StoredWorktree>, StorageError> {
         let sql = format!(
             "SELECT {WORKTREE_COLUMNS} FROM worktrees WHERE project_id = ?1
-             ORDER BY julianday(created_at) DESC, id"
+             ORDER BY CAST(created_at AS INTEGER) DESC, id"
         );
         let mut statement = self.connection.prepare(&sql)?;
         let mut rows = statement.query([project_id.to_string()])?;
@@ -111,7 +106,6 @@ impl Storage {
         updated_at_ms: i64,
     ) -> Result<(), StorageError> {
         validate_timestamp("worktree updated_at_ms", updated_at_ms)?;
-        let updated_at = timestamp_to_sql_value(updated_at_ms, "worktree", "updated_at")?;
         let changed = self
             .connection
             .execute(
@@ -119,10 +113,10 @@ impl Storage {
                  SET state = ?1, is_dirty = ?2, session_id = ?3, updated_at = ?4
                  WHERE id = ?5",
                 params![
-                    worktree_state_to_database(state),
+                    state.as_database_value(),
                     is_dirty,
                     session_id.map(|session| session.to_string()),
-                    updated_at,
+                    updated_at_ms,
                     id.to_string(),
                 ],
             )
@@ -169,7 +163,7 @@ fn decode_worktree(row: &Row<'_>) -> Result<StoredWorktree, StorageError> {
             .transpose()?,
         path: path_from_sql_value(row.get_ref(3)?, "worktree", "path")?,
         branch: row.get(4)?,
-        state: worktree_state_from_database(&state_text)?,
+        state: WorktreeState::from_database_value(&state_text)?,
         is_dirty: row.get(6)?,
         created_at_ms: timestamp_from_sql_value(row.get_ref(7)?, "worktree", "created_at")?,
         updated_at_ms: timestamp_from_sql_value(row.get_ref(8)?, "worktree", "updated_at")?,

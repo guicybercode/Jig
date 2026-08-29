@@ -1,4 +1,4 @@
-use cli_master_core::{IpcEvent, IpcMethod, PROTOCOL_V1};
+use cli_master_core::{PROTOCOL_V1, wire};
 use serde::Serialize;
 
 /// Desktop-side protocol catalog. This is not `system.hello`.
@@ -18,16 +18,8 @@ struct ProtocolInfo {
 fn protocol_info() -> ProtocolInfo {
     ProtocolInfo {
         protocol_version: PROTOCOL_V1,
-        methods: IpcMethod::ALL
-            .iter()
-            .copied()
-            .map(IpcMethod::as_str)
-            .collect(),
-        events: IpcEvent::ALL
-            .iter()
-            .copied()
-            .map(IpcEvent::as_str)
-            .collect(),
+        methods: wire::method::ALL.to_vec(),
+        events: wire::event_name::ALL.to_vec(),
     }
 }
 
@@ -43,4 +35,26 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![protocol_info])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn rust_catalog_matches_desktop_mirror() {
+        let catalog: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../protocol/catalog.json"))
+                .expect("desktop protocol mirror should parse");
+
+        assert_eq!(catalog["protocolVersion"], PROTOCOL_V1);
+        assert_eq!(catalog["methods"], json!(wire::method::ALL));
+        assert_eq!(catalog["events"], json!(wire::event_name::ALL));
+
+        let exposed = protocol_info();
+        assert_eq!(exposed.methods, wire::method::ALL);
+        assert_eq!(exposed.events, wire::event_name::ALL);
+    }
 }

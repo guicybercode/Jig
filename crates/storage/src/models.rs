@@ -2,13 +2,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use chrono::DateTime;
 use cli_master_core::{
     AgentDefinition, AgentId, AgentSource, CommandSpec, ProjectId, SessionId, SessionStatus,
     WorktreeId,
 };
-
-pub use cli_master_core::WorktreeState;
 
 use crate::StorageError;
 use crate::error::{corrupt_data, invalid_input};
@@ -77,16 +74,22 @@ impl StoredAgent {
         .map_err(|error| invalid_input("agent launch command", error.to_string()))
     }
 
-    /// Builds the command-free core catalog DTO.
-    #[must_use]
-    pub fn definition(&self) -> AgentDefinition {
-        AgentDefinition {
-            id: self.id.clone(),
+    /// Builds the core agent DTO for a concrete session directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if stored command metadata violates current command validation rules.
+    pub fn definition_for_cwd(
+        &self,
+        cwd: impl Into<PathBuf>,
+    ) -> Result<AgentDefinition, StorageError> {
+        Ok(AgentDefinition {
+            id: self.id,
             display_name: self.display_name.clone(),
             description: None,
             source: self.source,
-            enabled: self.enabled,
-        }
+            command: self.command_for_cwd(cwd)?,
+        })
     }
 
     pub(crate) fn validate(&self) -> Result<(), StorageError> {
@@ -189,6 +192,44 @@ impl SessionRuntimeUpdate {
     }
 }
 
+/// Persisted lifecycle state for a managed Git worktree.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorktreeState {
+    /// Git creation is still in progress.
+    Creating,
+    /// The worktree is available for its session.
+    Active,
+    /// Removal has been requested but is not complete.
+    RemovePending,
+    /// Metadata remains but the worktree cannot be found or trusted.
+    Orphaned,
+}
+
+impl WorktreeState {
+    pub(crate) const fn as_database_value(self) -> &'static str {
+        match self {
+            Self::Creating => "creating",
+            Self::Active => "active",
+            Self::RemovePending => "remove_pending",
+            Self::Orphaned => "orphaned",
+        }
+    }
+
+    pub(crate) fn from_database_value(value: &str) -> Result<Self, StorageError> {
+        match value {
+            "creating" => Ok(Self::Creating),
+            "active" => Ok(Self::Active),
+            "remove_pending" => Ok(Self::RemovePending),
+            "orphaned" => Ok(Self::Orphaned),
+            _ => Err(corrupt_data(
+                "worktree",
+                "state",
+                format!("unsupported value {value:?}"),
+            )),
+        }
+    }
+}
+
 /// Complete metadata for one managed Git worktree.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StoredWorktree {
@@ -248,36 +289,11 @@ pub(crate) fn agent_source_from_database(value: &str) -> Result<AgentSource, Sto
     }
 }
 
-pub(crate) const fn worktree_state_to_database(state: WorktreeState) -> &'static str {
-    match state {
-        WorktreeState::Creating => "creating",
-        WorktreeState::Active => "active",
-        WorktreeState::RemovePending => "remove_pending",
-        WorktreeState::Orphaned => "orphaned",
-    }
-}
-
-pub(crate) fn worktree_state_from_database(value: &str) -> Result<WorktreeState, StorageError> {
-    match value {
-        "creating" => Ok(WorktreeState::Creating),
-        "active" => Ok(WorktreeState::Active),
-        "remove_pending" => Ok(WorktreeState::RemovePending),
-        "orphaned" => Ok(WorktreeState::Orphaned),
-        _ => Err(corrupt_data(
-            "worktree",
-            "state",
-            format!("unsupported value {value:?}"),
-        )),
-    }
-}
-
 pub(crate) const fn session_status_to_database(status: SessionStatus) -> &'static str {
     match status {
-        SessionStatus::Created => "created",
         SessionStatus::Starting => "starting",
         SessionStatus::Running => "running",
         SessionStatus::Idle => "idle",
-        SessionStatus::Stopping => "stopping",
         SessionStatus::Exited => "exited",
         SessionStatus::Failed => "failed",
         SessionStatus::Unknown => "unknown",
@@ -286,11 +302,9 @@ pub(crate) const fn session_status_to_database(status: SessionStatus) -> &'stati
 
 pub(crate) fn session_status_from_database(value: &str) -> Result<SessionStatus, StorageError> {
     match value {
-        "created" => Ok(SessionStatus::Created),
         "starting" => Ok(SessionStatus::Starting),
         "running" => Ok(SessionStatus::Running),
         "idle" => Ok(SessionStatus::Idle),
-        "stopping" => Ok(SessionStatus::Stopping),
         "exited" => Ok(SessionStatus::Exited),
         "failed" => Ok(SessionStatus::Failed),
         "unknown" => Ok(SessionStatus::Unknown),
@@ -317,30 +331,13 @@ pub(crate) fn validate_display_name(field: &'static str, name: &str) -> Result<(
 
 pub(crate) fn validate_timestamp(field: &'static str, value: i64) -> Result<(), StorageError> {
     if value < 0 {
-        return Err(invalid_input(
+        Err(invalid_input(
             field,
             "must be a non-negative Unix epoch millisecond value",
-        ));
+        ))
+    } else {
+        Ok(())
     }
-    if DateTime::<chrono::Utc>::from_timestamp_millis(value).is_none() {
-        return Err(invalid_input(
-            field,
-            "must fit in the RFC 3339 timestamp range",
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_rfc3339_timestamp(
-    field: &'static str,
-    value: &str,
-) -> Result<(), StorageError> {
-    let parsed = DateTime::parse_from_rfc3339(value)
-        .map_err(|_| invalid_input(field, "must be an RFC 3339 timestamp"))?;
-    if parsed.offset().local_minus_utc() != 0 {
-        return Err(invalid_input(field, "must use a UTC offset"));
-    }
-    Ok(())
 }
 
 fn validate_optional_timestamp(
@@ -377,20 +374,11 @@ fn validate_session_runtime(
     }
 
     match status {
-        SessionStatus::Created => {
-            if runtime_pid.is_some() || daemon_instance_id.is_some() {
-                return Err(invalid_input(
-                    "session runtime metadata",
-                    "must be empty before a session starts",
-                ));
-            }
-            require_no_terminal_result(exit_code, error_code)
-        }
         SessionStatus::Starting => {
             require_daemon_instance(daemon_instance_id)?;
             require_no_terminal_result(exit_code, error_code)
         }
-        SessionStatus::Running | SessionStatus::Idle | SessionStatus::Stopping => {
+        SessionStatus::Running | SessionStatus::Idle => {
             require_daemon_instance(daemon_instance_id)?;
             if runtime_pid.is_none() {
                 return Err(invalid_input(

@@ -12,9 +12,7 @@ use crate::models::{
     validate_daemon_instance_id, validate_display_name, validate_timestamp,
 };
 use crate::paths::{path_from_sql_value, path_to_sql_value};
-use crate::values::{
-    optional_timestamp_from_sql_value, timestamp_from_sql_value, timestamp_to_sql_value,
-};
+use crate::values::{optional_timestamp_from_sql_value, timestamp_from_sql_value};
 
 const SESSION_COLUMNS: &str = "id, project_id, agent_id, name, cwd, status, runtime_pid, \
     daemon_instance_id, exit_code, error_code, created_at, updated_at, last_activity_at";
@@ -29,12 +27,6 @@ impl Storage {
     pub fn insert_session(&self, session: &StoredSession) -> Result<(), StorageError> {
         session.validate()?;
         let cwd = path_to_sql_value(&session.cwd, "session cwd")?;
-        let created_at = timestamp_to_sql_value(session.created_at_ms, "session", "created_at")?;
-        let updated_at = timestamp_to_sql_value(session.updated_at_ms, "session", "updated_at")?;
-        let last_activity_at = session
-            .last_activity_at_ms
-            .map(|timestamp| timestamp_to_sql_value(timestamp, "session", "last_activity_at"))
-            .transpose()?;
         self.connection
             .execute(
                 "INSERT INTO sessions (
@@ -55,9 +47,9 @@ impl Storage {
                     session.daemon_instance_id,
                     session.exit_code,
                     session.error_code,
-                    created_at,
-                    updated_at,
-                    last_activity_at,
+                    session.created_at_ms,
+                    session.updated_at_ms,
+                    session.last_activity_at_ms,
                 ],
             )
             .map_err(|error| map_write_error(error, "session"))?;
@@ -72,7 +64,7 @@ impl Storage {
     pub fn list_sessions(&self) -> Result<Vec<StoredSession>, StorageError> {
         let sql = format!(
             "SELECT {SESSION_COLUMNS} FROM sessions
-             ORDER BY julianday(updated_at) DESC, id"
+             ORDER BY CAST(updated_at AS INTEGER) DESC, id"
         );
         let mut statement = self.connection.prepare(&sql)?;
         let mut rows = statement.query([])?;
@@ -90,7 +82,7 @@ impl Storage {
     ) -> Result<Vec<StoredSession>, StorageError> {
         let sql = format!(
             "SELECT {SESSION_COLUMNS} FROM sessions WHERE project_id = ?1
-             ORDER BY julianday(updated_at) DESC, id"
+             ORDER BY CAST(updated_at AS INTEGER) DESC, id"
         );
         let mut statement = self.connection.prepare(&sql)?;
         let mut rows = statement.query([project_id.to_string()])?;
@@ -122,10 +114,9 @@ impl Storage {
     ) -> Result<(), StorageError> {
         validate_display_name("session name", name)?;
         validate_timestamp("session updated_at_ms", updated_at_ms)?;
-        let updated_at = timestamp_to_sql_value(updated_at_ms, "session", "updated_at")?;
         let changed = self.connection.execute(
             "UPDATE sessions SET name = ?1, updated_at = ?2 WHERE id = ?3",
-            params![name, updated_at, id.to_string()],
+            params![name, updated_at_ms, id.to_string()],
         )?;
         require_changed(changed, id)
     }
@@ -142,11 +133,6 @@ impl Storage {
         update: &SessionRuntimeUpdate,
     ) -> Result<(), StorageError> {
         update.validate()?;
-        let updated_at = timestamp_to_sql_value(update.updated_at_ms, "session", "updated_at")?;
-        let last_activity_at = update
-            .last_activity_at_ms
-            .map(|timestamp| timestamp_to_sql_value(timestamp, "session", "last_activity_at"))
-            .transpose()?;
         let changed = self.connection.execute(
             "UPDATE sessions
              SET status = ?1, runtime_pid = ?2, daemon_instance_id = ?3,
@@ -159,8 +145,8 @@ impl Storage {
                 update.daemon_instance_id,
                 update.exit_code,
                 update.error_code,
-                updated_at,
-                last_activity_at,
+                update.updated_at_ms,
+                update.last_activity_at_ms,
                 id.to_string(),
             ],
         )?;
@@ -184,14 +170,13 @@ impl Storage {
     ) -> Result<usize, StorageError> {
         validate_daemon_instance_id(current_daemon_instance_id)?;
         validate_timestamp("session updated_at_ms", updated_at_ms)?;
-        let updated_at = timestamp_to_sql_value(updated_at_ms, "session", "updated_at")?;
         let changed = self.connection.execute(
             "UPDATE sessions
              SET status = 'unknown', runtime_pid = NULL, daemon_instance_id = NULL,
                  exit_code = NULL, error_code = 'daemon_restarted', updated_at = ?1
-             WHERE status IN ('starting', 'running', 'idle', 'stopping')
+             WHERE status IN ('starting', 'running', 'idle')
                AND (daemon_instance_id IS NULL OR daemon_instance_id <> ?2)",
-            params![updated_at, current_daemon_instance_id],
+            params![updated_at_ms, current_daemon_instance_id],
         )?;
         Ok(changed)
     }
