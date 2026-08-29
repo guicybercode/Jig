@@ -433,6 +433,7 @@ export function WorkspaceProvider({
       request: () => Promise<T>,
       applyResult?: (result: T) => void,
       affectsDaemonConnection = true,
+      reportsOperationError = true,
     ): Promise<T> => {
       const requestGeneration = requestGenerationRef.current;
       dispatch({ type: "operation/started" });
@@ -445,10 +446,12 @@ export function WorkspaceProvider({
       } catch (error) {
         const normalized = toIpcError(error);
         if (requestGeneration === requestGenerationRef.current) {
-          dispatch({
-            type: "operation/failed",
-            error: toErrorData(normalized),
-          });
+          if (reportsOperationError) {
+            dispatch({
+              type: "operation/failed",
+              error: toErrorData(normalized),
+            });
+          }
           if (
             affectsDaemonConnection &&
             (isFatalConnectionError(normalized) ||
@@ -645,7 +648,7 @@ export function WorkspaceProvider({
   );
 
   const getDiagnostics = useCallback(
-    () => execute(() => client.getDiagnostics()),
+    () => execute(() => client.getDiagnostics(), undefined, true, false),
     [client, execute],
   );
 

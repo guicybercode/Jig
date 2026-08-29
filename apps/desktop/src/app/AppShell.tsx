@@ -42,7 +42,13 @@ export function AppShell() {
     (agent) => agent.id === workspace.selectedSession?.agentId,
   );
   const usesCanvasShell =
-    workspace.view === "canvas" || workspace.view === "settings";
+    workspace.view === "canvas" ||
+    workspace.view === "settings" ||
+    workspace.view === "diagnostics";
+  const canvasSidebarView =
+    workspace.view === "settings" || workspace.view === "diagnostics"
+      ? workspace.view
+      : "canvas";
 
   const openAddProject = useCallback(() => {
     if (workspace.isConnected) {
@@ -381,7 +387,7 @@ export function AppShell() {
               projects={workspace.projects}
               sessions={workspace.sessions}
               selectedProjectId={workspace.selectedProjectId ?? undefined}
-              activeView={workspace.view === "settings" ? "settings" : "canvas"}
+              activeView={canvasSidebarView}
               canManageProjects={workspace.isConnected}
               onSelectProject={selectCanvasProject}
               onOpenCanvas={() => {

@@ -86,7 +86,7 @@ function renderSidebar(
   projects: readonly Project[],
   onSelectProject = vi.fn(),
   onHide = vi.fn(),
-  activeView: "canvas" | "settings" = "canvas",
+  activeView: "canvas" | "settings" | "diagnostics" = "canvas",
   onOpenCanvas = vi.fn(),
 ) {
   return render(

@@ -66,6 +66,7 @@ export function Workspace(props: WorkspaceProps) {
       <DiagnosticsView
         hello={props.hello}
         snapshot={props.snapshot}
+        onOpenCanvas={props.onOpenCanvas}
         onLoad={props.onLoadDiagnostics}
         onRetryConnection={props.onRetry}
       />

@@ -42,6 +42,40 @@ describe("AppShell project and session workflows", () => {
     expect(screen.getByRole("main")).toHaveClass("canvas-workspace");
   });
 
+  it("keeps diagnostics inside the minimal canvas shell", async () => {
+    const client = createMockIpcClient({
+      bootstrap: EMPTY_BOOTSTRAP,
+      handlers: {
+        getDiagnostics: async () => ({
+          daemonVersion: "0.1.0-test",
+          protocolVersion: 1,
+          schemaVersion: 1,
+          daemonInstanceId: "daemon-test",
+          dataPath: "/data/cli-master",
+          runtimePath: "/run/cli-master",
+          logPath: "/data/cli-master/logs",
+          effectivePath: ["/usr/bin"],
+          recentIssues: [],
+        }),
+      },
+    });
+    const user = await renderApp(client);
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "Back to canvas" }));
+    await user.click(screen.getByRole("button", { name: "Open diagnostics" }));
+
+    expect(document.querySelector(".app-shell")).toHaveClass(
+      "app-shell--canvas",
+    );
+    expect(await screen.findByText("/data/cli-master")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Open diagnostics" }),
+    ).toHaveAttribute("aria-current", "page");
+    expect(document.querySelector(".project-rail")).not.toBeInTheDocument();
+    expect(document.querySelector(".session-pane")).not.toBeInTheDocument();
+  });
+
   it("hides and restores the canvas workspace sidebar", async () => {
     localStorage.removeItem("cli-master.canvas.sidebar-collapsed");
     const client = createMockIpcClient({ bootstrap: EMPTY_BOOTSTRAP });

@@ -13,7 +13,7 @@ interface CanvasSidebarProps {
   readonly projects: readonly Project[];
   readonly sessions: readonly Session[];
   readonly selectedProjectId?: string;
-  readonly activeView: "canvas" | "settings";
+  readonly activeView: "canvas" | "settings" | "diagnostics";
   readonly canManageProjects: boolean;
   readonly onSelectProject: (projectId: string) => void;
   readonly onOpenCanvas: () => void;
@@ -23,7 +23,7 @@ interface CanvasSidebarProps {
   readonly onOpenDiagnostics: () => void;
 }
 
-/** Compact workspace navigation used only by the spatial canvas. */
+/** Compact navigation shared by the canvas and its utility views. */
 export function CanvasSidebar({
   projects,
   sessions,
@@ -162,6 +162,7 @@ export function CanvasSidebar({
           type="button"
           aria-label="Open diagnostics"
           title="Diagnostics"
+          aria-current={activeView === "diagnostics" ? "page" : undefined}
           onClick={onOpenDiagnostics}
         >
           <Icon name="diagnostics" />
