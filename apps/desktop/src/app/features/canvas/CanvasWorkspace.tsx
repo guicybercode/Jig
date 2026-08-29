@@ -49,6 +49,18 @@ export function CanvasWorkspace({
   const selectedNode = state.nodes.find(
     (node) => node.id === state.selectedNodeId,
   );
+  const selectedConnections = selectedNode
+    ? state.connections.flatMap((connection) => {
+        const otherNodeId =
+          connection.sourceNodeId === selectedNode.id
+            ? connection.targetNodeId
+            : connection.targetNodeId === selectedNode.id
+              ? connection.sourceNodeId
+              : null;
+        const otherNode = state.nodes.find((node) => node.id === otherNodeId);
+        return otherNode ? [{ connection, otherNode }] : [];
+      })
+    : [];
 
   function addNode(kind: "terminal" | "note") {
     const viewport = viewportRef.current;
@@ -365,6 +377,41 @@ export function CanvasWorkspace({
                         connection.targetNodeId === node.id,
                     ).length} connections
                   </small>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {selectedNode && selectedConnections.length > 0 && !layersOpen ? (
+        <section
+          className="canvas-connections-panel"
+          aria-label={`Connections for ${selectedNode.title}`}
+        >
+          <header>
+            <div>
+              <span>Selected item</span>
+              <h2>{selectedNode.title}</h2>
+            </div>
+            <span>{selectedConnections.length}</span>
+          </header>
+          <ul>
+            {selectedConnections.map(({ connection, otherNode }) => (
+              <li key={connection.id}>
+                <Icon name="link" />
+                <span>{otherNode.title}</span>
+                <button
+                  type="button"
+                  aria-label={`Remove connection to ${otherNode.title}`}
+                  onClick={() =>
+                    dispatch({
+                      type: "connection/delete",
+                      connectionId: connection.id,
+                    })
+                  }
+                >
+                  <Icon name="close" />
                 </button>
               </li>
             ))}

@@ -82,6 +82,12 @@ describe("canvas state", () => {
     expect(duplicateAttempt.connections).toHaveLength(1);
     expect(duplicateAttempt.connectionSourceId).toBeNull();
 
+    const disconnected = canvasReducer(duplicateAttempt, {
+      type: "connection/delete",
+      connectionId: duplicateAttempt.connections[0]?.id ?? "missing",
+    });
+    expect(disconnected.connections).toEqual([]);
+
     const deleted = canvasReducer(duplicateAttempt, {
       type: "node/delete",
       nodeId: "note-b",

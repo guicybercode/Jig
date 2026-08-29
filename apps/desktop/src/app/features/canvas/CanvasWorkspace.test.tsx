@@ -138,6 +138,34 @@ describe("CanvasWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Fit canvas to items" }));
     expect(scrollTo).toHaveBeenCalledOnce();
   });
+
+  it("removes a selected item's connection from the inspector", async () => {
+    const user = userEvent.setup();
+    const { container } = renderCanvas();
+    const terminal = screen.getByRole("article", {
+      name: "Terminal 1, terminal canvas item",
+    });
+
+    await user.click(terminal);
+    const inspector = screen.getByRole("region", {
+      name: "Connections for Terminal 1",
+    });
+    await user.click(
+      within(inspector).getByRole("button", {
+        name: "Remove connection to Notes",
+      }),
+    );
+
+    await waitFor(() => {
+      const persisted = JSON.parse(
+        localStorage.getItem(CANVAS_STORAGE_KEY) ?? "{}",
+      ) as { connections?: readonly unknown[] };
+      expect(persisted.connections).toHaveLength(1);
+    });
+    expect(
+      container.querySelectorAll("[data-connection-id]"),
+    ).toHaveLength(1);
+  });
 });
 
 function renderCanvas() {
