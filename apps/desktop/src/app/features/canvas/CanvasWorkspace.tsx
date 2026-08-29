@@ -177,16 +177,6 @@ export function CanvasWorkspace({
             <Icon name="plus" /> Add project
           </button>
         )}
-        <span
-          className={
-            isConnected
-              ? "canvas-service-state canvas-service-state--connected"
-              : "canvas-service-state"
-          }
-        >
-          <span aria-hidden="true" />
-          {isConnected ? "Daemon connected" : "Daemon offline"}
-        </span>
       </div>
 
       {state.connectionSourceId ? (

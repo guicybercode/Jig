@@ -29,6 +29,7 @@ describe("CanvasWorkspace", () => {
       "Write a note for this workspace…",
     );
     expect(screen.getByText("Canvas saved locally")).toBeVisible();
+    expect(screen.queryByText(/Daemon (connected|offline)/)).not.toBeInTheDocument();
   });
 
   it("adds notes, creates a two-click connection, and resets the layout", async () => {

@@ -210,8 +210,7 @@
   padding: 0.375rem;
 }
 
-.canvas-pill-button,
-.canvas-service-state {
+.canvas-pill-button {
   min-height: 2.25rem;
   display: inline-flex;
   align-items: center;
@@ -231,21 +230,6 @@
 .canvas-pill-button:disabled {
   color: var(--canvas-text-muted);
   background: #ececeb;
-}
-
-.canvas-service-state {
-  color: var(--canvas-text-muted);
-}
-
-.canvas-service-state > span {
-  width: 0.5rem;
-  height: 0.5rem;
-  border-radius: 50%;
-  background: #9b9da1;
-}
-
-.canvas-service-state--connected > span {
-  background: #24a55a;
 }
 
 .canvas-connect-notice {
