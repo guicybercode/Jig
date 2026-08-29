@@ -1,6 +1,9 @@
 mod support;
 
-use std::{fs, path::Path};
+use std::fs;
+
+#[cfg(target_os = "macos")]
+use std::path::Path;
 
 use cli_master_git::{Git, GitErrorKind};
 use support::{RepositoryFixture, branch_exists, command, configure_identity};
