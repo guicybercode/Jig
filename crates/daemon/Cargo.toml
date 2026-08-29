@@ -21,6 +21,7 @@ cli-master-core = { path = "../core" }
 cli-master-git = { path = "../git" }
 cli-master-session = { path = "../session" }
 cli-master-storage = { path = "../storage" }
+cli-master-agents = { path = "../agents" }
 futures-util = { version = "0.3.31", features = ["sink"] }
 rustix = { version = "1.1.4", features = ["fs", "net", "process"] }
 serde = { version = "1", features = ["derive"] }
@@ -34,3 +35,4 @@ uuid = { version = "1.26.0", features = ["v7"] }
 
 [dev-dependencies]
 tempfile = "3"
+serde_json = "1"

@@ -27,7 +27,8 @@ pub use model::{
     AgentDefinition, AgentSource, Project, Session, SessionStatus, Worktree, WorktreeState,
 };
 pub use protocol::{
-    EnvelopeKind, EventEnvelope, PROTOCOL_V1, RequestEnvelope, ResponseEnvelope, ResponsePayload,
+    APPLICATION_VERSION, EnvelopeKind, EventEnvelope, PROTOCOL_V1, RequestEnvelope,
+    ResponseEnvelope, ResponsePayload,
 };
 pub use redact::{
     REDACTED, is_sensitive_name, redact_json_value, redact_map, redact_text, redact_value,

@@ -13,11 +13,12 @@
     "clippy": "cargo clippy --workspace --all-targets --locked -- -D warnings",
     "doc:rust": "RUSTDOCFLAGS=\"-Dwarnings\" cargo doc --workspace --no-deps --locked",
     "test:rust": "cargo test --workspace --locked",
-    "tauri:build": "pnpm --filter @cli-master/desktop tauri build",
     "check": "bash scripts/check.sh",
+    "check:versions": "bash scripts/check-versions.sh",
     "dev": "pnpm --filter @cli-master/desktop dev",
     "lint": "pnpm --filter @cli-master/desktop lint",
     "tauri": "pnpm --filter @cli-master/desktop tauri",
+    "tauri:build": "bash scripts/stage-sidecar.sh && pnpm tauri build",
     "test": "pnpm test:frontend && cargo test --workspace --locked"
   }
 }
