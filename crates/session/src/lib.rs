@@ -1,22 +1,38 @@
-//! Session and managed-worktree saga.
+//! Recoverable worktree orchestration and PTY-backed session lifecycle.
 //!
-//! This crate keeps Git, SQLite, and process spawn consistent for isolated
-//! worktrees. It does not open PTYs; the daemon supplies a [`SessionSpawner`].
-//! Confirmation tokens live only in this process, so a restart invalidates them.
+//! [`SessionWorktreeSaga`] keeps Git and SQLite effects consistent and
+//! delegates process ownership through [`SessionSpawner`]. [`SessionManager`]
+//! is the production spawner and remains the only owner of PTY masters,
+//! process groups, replay buffers, and in-memory status events.
 
 #![warn(missing_docs)]
 
+#[cfg(not(unix))]
+compile_error!("cli-master-session supports Linux and macOS only");
+
+mod buffer;
+mod config;
 mod create;
 mod error;
+mod event;
 mod lock;
+mod manager;
 mod map;
+mod pty;
 mod recover;
 mod remove;
 mod spawn;
 mod token;
+mod unix;
 
+pub use config::SessionManagerConfig;
 pub use create::{CreateFaults, CreateSession, CreateStep, CreatedSession, LockHook, PlanHook};
-pub use error::{SagaError, SagaErrorKind};
+pub use error::{SagaError, SagaErrorKind, SessionError, SessionErrorKind};
+pub use event::{
+    OutputChunk, OutputSnapshot, SessionEvent, SessionSubscription, StatusReason, SubscribeError,
+};
+pub use manager::{SessionLaunchRequest, SessionManager};
+pub use pty::PtySize;
 pub use recover::RecoveryReport;
 pub use spawn::{FakeSpawner, SessionSpawner, SpawnRequest, SpawnedSession};
 pub use token::TOKEN_TTL_MS;
@@ -32,6 +48,10 @@ use crate::lock::{DestinationLocks, MutationGuards};
 use crate::token::TokenStore;
 
 /// Orchestrates worktree-backed session creation and two-step removal.
+///
+/// The generic spawner is a test seam. Production composition supplies a
+/// clone of [`SessionManager`], so every created process is registered in the
+/// same runtime table and event stream used by `session.start/stop/write`.
 pub struct SessionWorktreeSaga<S> {
     pub(crate) git: Git,
     storage: Mutex<Storage>,
@@ -53,11 +73,11 @@ impl<S: SessionSpawner> SessionWorktreeSaga<S> {
         storage: Storage,
         spawner: S,
         daemon_instance_id: impl Into<String>,
-    ) -> Result<Self, SagaError> {
+    ) -> Result<Self, SessionError> {
         let daemon_instance_id = daemon_instance_id.into();
         if daemon_instance_id.trim().is_empty() {
-            return Err(SagaError::new(
-                SagaErrorKind::InvalidInput,
+            return Err(SessionError::new(
+                SessionErrorKind::InvalidInput,
                 "daemon instance id must not be blank",
                 "Pass the current daemon lifetime identifier",
             ));
@@ -79,7 +99,7 @@ impl<S: SessionSpawner> SessionWorktreeSaga<S> {
     ///
     /// Returns an error when planning, persistence, Git, or spawn fails. A
     /// created worktree is compensated without `--force` when a later step fails.
-    pub fn create_session(&self, request: &CreateSession) -> Result<CreatedSession, SagaError> {
+    pub fn create_session(&self, request: &CreateSession) -> Result<CreatedSession, SessionError> {
         self.create_session_injected(request, &CreateFaults::default())
     }
 
@@ -87,23 +107,23 @@ impl<S: SessionSpawner> SessionWorktreeSaga<S> {
     ///
     /// # Errors
     ///
-    /// Same as [`Self::create_session`], plus [`SagaErrorKind::InjectedFailure`].
+    /// Same as [`Self::create_session`], plus [`SessionErrorKind::InjectedFailure`].
     pub fn create_session_injected(
         &self,
         request: &CreateSession,
         faults: &CreateFaults,
-    ) -> Result<CreatedSession, SagaError> {
+    ) -> Result<CreatedSession, SessionError> {
         if request.name.trim().is_empty() {
-            return Err(SagaError::new(
-                SagaErrorKind::InvalidInput,
+            return Err(SessionError::new(
+                SessionErrorKind::InvalidInput,
                 "session name must not be blank",
                 "Provide a user-facing session name",
             ));
         }
         if request.isolation == SessionIsolation::NewWorktree && !request.managed_root.is_absolute()
         {
-            return Err(SagaError::new(
-                SagaErrorKind::InvalidInput,
+            return Err(SessionError::new(
+                SessionErrorKind::InvalidInput,
                 "managed worktree root must be an absolute path",
                 "Pass the daemon-owned managed worktree root",
             )
@@ -124,7 +144,7 @@ impl<S: SessionSpawner> SessionWorktreeSaga<S> {
     pub fn prepare_remove(
         &self,
         worktree_id: WorktreeId,
-    ) -> Result<WorktreePrepareRemoveResponse, SagaError> {
+    ) -> Result<WorktreePrepareRemoveResponse, SessionError> {
         remove::prepare_remove(self, worktree_id)
     }
 
@@ -140,7 +160,7 @@ impl<S: SessionSpawner> SessionWorktreeSaga<S> {
         &self,
         worktree_id: WorktreeId,
         confirmation_token: &ConfirmationToken,
-    ) -> Result<(), SagaError> {
+    ) -> Result<(), SessionError> {
         remove::remove(self, worktree_id, confirmation_token)
     }
 
@@ -148,8 +168,8 @@ impl<S: SessionSpawner> SessionWorktreeSaga<S> {
     ///
     /// # Errors
     ///
-    /// Returns [`SagaErrorKind::SessionInUse`] while the session is live.
-    pub fn delete_session(&self, session_id: SessionId) -> Result<(), SagaError> {
+    /// Returns [`SessionErrorKind::SessionInUse`] while the session is live.
+    pub fn delete_session(&self, session_id: SessionId) -> Result<(), SessionError> {
         remove::delete_session(self, session_id)
     }
 
@@ -162,7 +182,7 @@ impl<S: SessionSpawner> SessionWorktreeSaga<S> {
         &self,
         session_id: SessionId,
         exit_code: Option<i32>,
-    ) -> Result<(), SagaError> {
+    ) -> Result<(), SessionError> {
         remove::record_session_exit(self, session_id, exit_code)
     }
 
@@ -172,19 +192,23 @@ impl<S: SessionSpawner> SessionWorktreeSaga<S> {
     ///
     /// Returns an error if the project is missing or still referenced by sessions
     /// or worktrees.
-    pub fn remove_project(&self, project_id: ProjectId) -> Result<std::path::PathBuf, SagaError> {
+    pub fn remove_project(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<std::path::PathBuf, SessionError> {
         remove::remove_project(self, project_id)
     }
 
     /// Reconciles `creating` and `remove_pending` rows after a daemon restart.
     ///
     /// In-memory confirmation tokens do not survive this process, so pending
-    /// removals cannot complete automatically.
+    /// removals cannot complete automatically. Session runtime recovery remains
+    /// owned by `Storage::reconcile_sessions` during daemon startup.
     ///
     /// # Errors
     ///
     /// Returns an error when SQLite cannot list or update worktree rows.
-    pub fn recover(&self) -> Result<RecoveryReport, SagaError> {
+    pub fn recover(&self) -> Result<RecoveryReport, SessionError> {
         recover::recover(self)
     }
 
@@ -196,10 +220,10 @@ impl<S: SessionSpawner> SessionWorktreeSaga<S> {
 pub(crate) fn require_project<S: SessionSpawner>(
     saga: &SessionWorktreeSaga<S>,
     project_id: ProjectId,
-) -> Result<Project, SagaError> {
+) -> Result<Project, SessionError> {
     saga.storage().get_project(project_id)?.ok_or_else(|| {
-        SagaError::new(
-            SagaErrorKind::NotFound,
+        SessionError::new(
+            SessionErrorKind::NotFound,
             format!("Project metadata was not found for id {project_id}"),
             "Register the project before creating a session",
         )
@@ -209,17 +233,17 @@ pub(crate) fn require_project<S: SessionSpawner>(
 pub(crate) fn require_agent<S: SessionSpawner>(
     saga: &SessionWorktreeSaga<S>,
     agent_id: AgentId,
-) -> Result<StoredAgent, SagaError> {
+) -> Result<StoredAgent, SessionError> {
     let agent = saga.storage().get_agent(agent_id)?.ok_or_else(|| {
-        SagaError::new(
-            SagaErrorKind::NotFound,
+        SessionError::new(
+            SessionErrorKind::NotFound,
             format!("Agent metadata was not found for id {agent_id}"),
             "Choose an enabled agent definition",
         )
     })?;
     if !agent.enabled {
-        return Err(SagaError::new(
-            SagaErrorKind::InvalidInput,
+        return Err(SessionError::new(
+            SessionErrorKind::InvalidInput,
             format!("Agent {agent_id} is disabled"),
             "Enable the agent before creating a session",
         ));

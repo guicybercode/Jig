@@ -201,36 +201,57 @@ pub trait AgentAdapter: Send + Sync {
     fn definition(&self) -> AgentDefinition;
     fn detect(&self, environment: &LaunchEnvironment) -> DetectionResult;
     fn build_command(&self, context: &LaunchContext) -> Result<CommandSpec, AgentError>;
+    fn diagnostics(&self, environment: &LaunchEnvironment) -> AgentDiagnostics;
+    fn capabilities(&self) -> AgentCapabilities;
 }
 
 pub struct AgentDefinition {
-    pub id: AgentId,
+    pub id: String, // adapter discovery key, not the persisted AgentId
     pub display_name: String,
+    pub executable: String,
+    pub default_args: Vec<String>,
     pub source: AgentSource, // BuiltIn | Custom
-    pub command: CommandSpec,
+    pub installed: bool,
+    pub resolved_path: Option<PathBuf>,
+    pub version: Option<String>,
+    pub capabilities: AgentCapabilities,
+    pub warning: Option<String>,
 }
 
 pub struct CommandSpec {
-    pub executable: PathBuf,
-    pub args: Vec<OsString>,
+    pub executable: String,
+    pub args: Vec<String>,
     pub cwd: PathBuf,
     pub env: BTreeMap<String, String>,
+    pub env_removals: Vec<String>,
+    pub terminal_title: Option<String>,
+    pub startup_input: Option<String>,
 }
 ```
+
+The adapter crate's `AgentDefinition` (also exported as `AdapterDefinition`) is
+a runtime discovery snapshot keyed by the adapter registry key. It is distinct
+from the persisted `cli_master_core::AgentDefinition`, whose `id` is an
+`AgentId` and whose structured default launch is a `CommandSpec`.
 
 Persisted built-in and custom definitions both receive UUIDv7 `AgentId` values.
 Adapter registry keys such as `codex`, `claude`, `gemini`, and `opencode`
 identify discovery implementations; they are not wire or database entity IDs.
 Adapters do not guess optional vendor flags. In v0.1 they resolve the executable
 and launch the CLI in its normal interactive mode. Flags are added only after
-validation against the installed CLI version.
+validation against the installed CLI version. User-configured extra arguments
+remain a structured array on `LaunchContext`.
 
-Custom agents store a display name, executable, ordered argument array, and
-non-secret environment overrides. The daemon rejects NUL bytes, empty
-executables, and an invalid working directory. An executable may be absolute or
-resolved from the effective PATH. Arguments are never parsed as a shell string.
-Secret values and agent authentication tokens are not stored; agents inherit
-their already configured local authentication environment.
+Custom agents store a display name, executable, ordered argument array,
+non-secret environment additions, optional default directory, optional icon or
+color metadata, and whether a PTY is required. The daemon rejects NUL bytes,
+empty names or executables, `~user` paths, relative executables that are not a
+bare PATH name, and an invalid working directory. An executable may be absolute,
+`~/…`, a controlled placeholder, or resolved from the effective PATH. Arguments
+are never parsed as a shell string. Placeholders (`${PROJECT_PATH}`,
+`${WORKTREE_PATH}`, `${SESSION_ID}`, `${SESSION_NAME}`) expand in a single pass
+with no `eval`. Secret values and agent authentication tokens are not stored;
+agents inherit their already configured local authentication environment.
 
 GUI applications often receive an incomplete PATH. `LaunchEnvironment`
 combines the daemon's inherited PATH, standard Linux/macOS executable paths,
@@ -275,7 +296,7 @@ atomic.
 
 - `session.write` accepts bytes, not a command string, and writes them to the
   PTY master. Ctrl+C is ordinary terminal input (`0x03`).
-- Reader tasks batch output for up to 8 ms or 32 KiB, whichever happens first.
+- Reader tasks batch output for up to 8 ms or 8 KiB, whichever happens first.
   Each chunk has a monotonically increasing per-session sequence number.
 - A live session retains a configurable bounded replay buffer (default 8 MiB).
   On subscription the daemon sends a snapshot followed by chunks after the
@@ -446,6 +467,10 @@ Migration `0002` adds the persisted `worktrees.is_dirty` boolean used by the
 public worktree DTO and conservative removal checks. Historical timestamp
 columns keep their original SQLite declarations, but repository adapters read
 and write Unix epoch millisecond values.
+
+Migration `0003` adds optional session branch/worktree association fields,
+integer `started_at`/`exited_at` history, and project, agent, and session lookup
+indexes. These fields do not make a persisted PID or PTY reattachable.
 
 Built-in agent rows are idempotently seeded/upserted at startup. A user can
 disable but not mutate their executable/argument defaults; custom rows are

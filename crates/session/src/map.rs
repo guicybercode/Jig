@@ -10,7 +10,11 @@ pub(crate) fn core_worktree_state(state: StoredWorktreeState) -> WorktreeState {
     }
 }
 
-pub(crate) fn session_dto(stored: StoredSession, worktree: Option<&StoredWorktree>) -> Session {
+pub(crate) fn session_dto(
+    stored: StoredSession,
+    worktree: Option<&StoredWorktree>,
+    pty_id: Option<String>,
+) -> Session {
     Session {
         id: stored.id,
         project_id: stored.project_id,
@@ -18,7 +22,7 @@ pub(crate) fn session_dto(stored: StoredSession, worktree: Option<&StoredWorktre
         agent_id: stored.agent_id,
         cwd: stored.cwd,
         pid: stored.runtime_pid,
-        pty_id: None,
+        pty_id,
         branch: worktree.map(|item| item.branch.clone()),
         worktree_id: worktree.map(|item| item.id),
         worktree_path: worktree.map(|item| item.path.clone()),

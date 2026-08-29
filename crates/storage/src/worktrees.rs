@@ -24,26 +24,28 @@ impl Storage {
     pub fn insert_worktree(&self, worktree: &StoredWorktree) -> Result<(), StorageError> {
         worktree.validate()?;
         let path = path_to_sql_value(&worktree.path, "worktree path")?;
-        self.connection
-            .execute(
-                "INSERT INTO worktrees (
+        self.with_connection("insert worktree", |connection| {
+            connection
+                .execute(
+                    "INSERT INTO worktrees (
                     id, project_id, session_id, path, branch, state,
                     is_dirty, created_at, updated_at
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    worktree.id.to_string(),
-                    worktree.project_id.to_string(),
-                    worktree.session_id.map(|id| id.to_string()),
-                    path,
-                    worktree.branch,
-                    worktree.state.as_database_value(),
-                    worktree.is_dirty,
-                    worktree.created_at_ms,
-                    worktree.updated_at_ms,
-                ],
-            )
-            .map_err(|error| map_write_error(error, "worktree"))?;
-        Ok(())
+                    params![
+                        worktree.id.to_string(),
+                        worktree.project_id.to_string(),
+                        worktree.session_id.map(|id| id.to_string()),
+                        path,
+                        worktree.branch,
+                        worktree.state.as_database_value(),
+                        worktree.is_dirty,
+                        worktree.created_at_ms,
+                        worktree.updated_at_ms,
+                    ],
+                )
+                .map_err(|error| map_write_error(error, "worktree"))?;
+            Ok(())
+        })
     }
 
     /// Lists all managed worktrees, newest first.
@@ -52,13 +54,15 @@ impl Storage {
     ///
     /// Returns an error if rows cannot be loaded or decoded.
     pub fn list_worktrees(&self) -> Result<Vec<StoredWorktree>, StorageError> {
-        let sql = format!(
-            "SELECT {WORKTREE_COLUMNS} FROM worktrees
-             ORDER BY CAST(created_at AS INTEGER) DESC, id"
-        );
-        let mut statement = self.connection.prepare(&sql)?;
-        let mut rows = statement.query([])?;
-        collect_worktrees(&mut rows)
+        self.with_connection("list worktrees", |connection| {
+            let sql = format!(
+                "SELECT {WORKTREE_COLUMNS} FROM worktrees
+                 ORDER BY CAST(created_at AS INTEGER) DESC, id"
+            );
+            let mut statement = connection.prepare(&sql)?;
+            let mut rows = statement.query([])?;
+            collect_worktrees(&mut rows)
+        })
     }
 
     /// Lists managed worktrees for one project, newest first.
@@ -70,13 +74,15 @@ impl Storage {
         &self,
         project_id: ProjectId,
     ) -> Result<Vec<StoredWorktree>, StorageError> {
-        let sql = format!(
-            "SELECT {WORKTREE_COLUMNS} FROM worktrees WHERE project_id = ?1
-             ORDER BY CAST(created_at AS INTEGER) DESC, id"
-        );
-        let mut statement = self.connection.prepare(&sql)?;
-        let mut rows = statement.query([project_id.to_string()])?;
-        collect_worktrees(&mut rows)
+        self.with_connection("list project worktrees", |connection| {
+            let sql = format!(
+                "SELECT {WORKTREE_COLUMNS} FROM worktrees WHERE project_id = ?1
+                 ORDER BY CAST(created_at AS INTEGER) DESC, id"
+            );
+            let mut statement = connection.prepare(&sql)?;
+            let mut rows = statement.query([project_id.to_string()])?;
+            collect_worktrees(&mut rows)
+        })
     }
 
     /// Loads one managed worktree by ID.
@@ -85,10 +91,12 @@ impl Storage {
     ///
     /// Returns an error if the row cannot be loaded or decoded.
     pub fn get_worktree(&self, id: WorktreeId) -> Result<Option<StoredWorktree>, StorageError> {
-        let sql = format!("SELECT {WORKTREE_COLUMNS} FROM worktrees WHERE id = ?1");
-        let mut statement = self.connection.prepare(&sql)?;
-        let mut rows = statement.query([id.to_string()])?;
-        rows.next()?.map(decode_worktree).transpose()
+        self.with_connection("get worktree", |connection| {
+            let sql = format!("SELECT {WORKTREE_COLUMNS} FROM worktrees WHERE id = ?1");
+            let mut statement = connection.prepare(&sql)?;
+            let mut rows = statement.query([id.to_string()])?;
+            rows.next()?.map(decode_worktree).transpose()
+        })
     }
 
     /// Atomically updates lifecycle state, dirty status, and session association.
@@ -106,22 +114,23 @@ impl Storage {
         updated_at_ms: i64,
     ) -> Result<(), StorageError> {
         validate_timestamp("worktree updated_at_ms", updated_at_ms)?;
-        let changed = self
-            .connection
-            .execute(
-                "UPDATE worktrees
+        self.with_connection("update worktree", |connection| {
+            let changed = connection
+                .execute(
+                    "UPDATE worktrees
                  SET state = ?1, is_dirty = ?2, session_id = ?3, updated_at = ?4
                  WHERE id = ?5",
-                params![
-                    state.as_database_value(),
-                    is_dirty,
-                    session_id.map(|session| session.to_string()),
-                    updated_at_ms,
-                    id.to_string(),
-                ],
-            )
-            .map_err(|error| map_write_error(error, "worktree"))?;
-        require_changed(changed, id)
+                    params![
+                        state.as_database_value(),
+                        is_dirty,
+                        session_id.map(|session| session.to_string()),
+                        updated_at_ms,
+                        id.to_string(),
+                    ],
+                )
+                .map_err(|error| map_write_error(error, "worktree"))?;
+            require_changed(changed, id)
+        })
     }
 
     /// Removes only worktree metadata; no Git or filesystem operation is performed.
@@ -130,10 +139,11 @@ impl Storage {
     ///
     /// Returns an error if the worktree is missing or deletion fails.
     pub fn remove_worktree_metadata(&self, id: WorktreeId) -> Result<(), StorageError> {
-        let changed = self
-            .connection
-            .execute("DELETE FROM worktrees WHERE id = ?1", [id.to_string()])?;
-        require_changed(changed, id)
+        self.with_connection("remove worktree", |connection| {
+            let changed =
+                connection.execute("DELETE FROM worktrees WHERE id = ?1", [id.to_string()])?;
+            require_changed(changed, id)
+        })
     }
 }
 

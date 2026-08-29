@@ -1,6 +1,8 @@
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
+use std::io;
 
+use cli_master_core::ApiError;
 use rusqlite::{ErrorCode, ffi};
 
 use crate::LATEST_SCHEMA_VERSION;
@@ -14,6 +16,20 @@ pub enum StorageError {
     UnsupportedSchemaVersion(u32),
     /// A migration version stored in `SQLite` cannot be represented by this crate.
     InvalidSchemaVersion(i64),
+    /// A recorded migration version has a name that does not match this binary.
+    IncompatibleMigration {
+        /// Recorded migration version.
+        version: u32,
+        /// Immutable name expected by this binary.
+        expected: &'static str,
+        /// Name stored in the database.
+        found: String,
+    },
+    /// The schema version is known but a required object is missing.
+    IncompatibleSchema {
+        /// Table, column, index, or trigger that failed verification.
+        object: &'static str,
+    },
     /// A caller supplied a value that cannot be persisted safely.
     InvalidInput {
         /// Input field that failed validation.
@@ -49,12 +65,97 @@ pub enum StorageError {
         /// Decode failure without secret-bearing payloads.
         reason: String,
     },
+    /// A filesystem operation required by storage failed.
+    Io {
+        /// Short operation name without user-controlled content.
+        operation: &'static str,
+        /// Underlying filesystem error.
+        source: io::Error,
+    },
+    /// Another thread panicked while holding the database connection lock.
+    LockPoisoned,
+}
+
+impl StorageError {
+    /// Converts this failure to a stable IPC error without SQL or bind values.
+    #[must_use]
+    pub fn to_api_error(&self) -> ApiError {
+        let (code, action) = match self {
+            Self::UnsupportedSchemaVersion(_)
+            | Self::InvalidSchemaVersion(_)
+            | Self::IncompatibleMigration { .. }
+            | Self::IncompatibleSchema { .. } => (
+                "STORAGE_SCHEMA_INCOMPATIBLE",
+                "Upgrade CLI Master or restore a database backup created by this version",
+            ),
+            Self::InvalidInput { .. } => ("STORAGE_INVALID_INPUT", "Correct the input and retry"),
+            Self::NotFound { .. } => (
+                "STORAGE_NOT_FOUND",
+                "Reload the current snapshot and select an existing item",
+            ),
+            Self::AlreadyExists { .. } => (
+                "STORAGE_CONFLICT",
+                "Reload the current snapshot and retry with a unique value",
+            ),
+            Self::RelationshipViolation { .. } => (
+                "STORAGE_RELATIONSHIP",
+                "Resolve dependent metadata before retrying",
+            ),
+            Self::CorruptData { .. } => (
+                "STORAGE_CORRUPT_DATA",
+                "Restore the latest known-good database backup",
+            ),
+            Self::Io { .. } => (
+                "STORAGE_IO",
+                "Check filesystem permissions and available disk space, then retry",
+            ),
+            Self::LockPoisoned => ("STORAGE_LOCK_POISONED", "Restart the daemon"),
+            Self::Database(error)
+                if matches!(
+                    error.sqlite_error_code(),
+                    Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+                ) =>
+            {
+                (
+                    "STORAGE_BUSY",
+                    "Retry after the current database write completes",
+                )
+            }
+            Self::Database(_) => (
+                "STORAGE_DATABASE",
+                "Restart the daemon; restore a backup if the error persists",
+            ),
+        };
+
+        ApiError::new(code, self.to_string()).with_action(action)
+    }
+
+    /// Returns whether retrying or correcting caller input can recover safely.
+    #[must_use]
+    pub fn is_recoverable(&self) -> bool {
+        !matches!(
+            self,
+            Self::UnsupportedSchemaVersion(_)
+                | Self::InvalidSchemaVersion(_)
+                | Self::IncompatibleMigration { .. }
+                | Self::IncompatibleSchema { .. }
+                | Self::CorruptData { .. }
+                | Self::LockPoisoned
+        )
+    }
+
+    pub(crate) fn io(operation: &'static str, source: io::Error) -> Self {
+        Self::Io { operation, source }
+    }
 }
 
 impl Display for StorageError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Database(error) => write!(formatter, "SQLite storage error: {error}"),
+            Self::Database(error) => match error.sqlite_error_code() {
+                Some(code) => write!(formatter, "SQLite storage operation failed ({code:?})"),
+                None => formatter.write_str("SQLite storage operation failed"),
+            },
             Self::UnsupportedSchemaVersion(version) => write!(
                 formatter,
                 "database schema version {version} is newer than supported version {LATEST_SCHEMA_VERSION}"
@@ -64,6 +165,17 @@ impl Display for StorageError {
                     formatter,
                     "database contains invalid schema version {version}"
                 )
+            }
+            Self::IncompatibleMigration {
+                version,
+                expected,
+                found,
+            } => write!(
+                formatter,
+                "database migration {version} is named {found:?}; expected {expected:?}"
+            ),
+            Self::IncompatibleSchema { object } => {
+                write!(formatter, "database schema is missing required {object}")
             }
             Self::InvalidInput { field, reason } => {
                 write!(formatter, "invalid {field}: {reason}")
@@ -92,6 +204,10 @@ impl Display for StorageError {
                 formatter,
                 "stored {entity} metadata has invalid {field}: {reason}"
             ),
+            Self::Io { operation, source } => {
+                write!(formatter, "could not {operation} storage: {source}")
+            }
+            Self::LockPoisoned => formatter.write_str("database connection lock was poisoned"),
         }
     }
 }
@@ -100,13 +216,17 @@ impl Error for StorageError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Database(error) => Some(error),
+            Self::Io { source, .. } => Some(source),
             Self::UnsupportedSchemaVersion(_)
             | Self::InvalidSchemaVersion(_)
+            | Self::IncompatibleMigration { .. }
+            | Self::IncompatibleSchema { .. }
             | Self::InvalidInput { .. }
             | Self::NotFound { .. }
             | Self::AlreadyExists { .. }
             | Self::RelationshipViolation { .. }
-            | Self::CorruptData { .. } => None,
+            | Self::CorruptData { .. }
+            | Self::LockPoisoned => None,
         }
     }
 }

@@ -44,7 +44,7 @@ impl Fixture {
 
         let project_id = ProjectId::new();
         let agent_id = AgentId::new();
-        let mut storage = Storage::open(&database).expect("database should open");
+        let storage = Storage::open(&database).expect("database should open");
         storage.migrate().expect("database should migrate");
         storage
             .insert_project(&Project {
@@ -83,7 +83,7 @@ impl Fixture {
     }
 
     pub fn saga(&self, spawner: FakeSpawner) -> SessionWorktreeSaga<FakeSpawner> {
-        let mut storage = Storage::open(&self.database).expect("database should reopen");
+        let storage = Storage::open(&self.database).expect("database should reopen");
         storage.migrate().expect("database should migrate");
         SessionWorktreeSaga::new(
             Git::discover().expect("Git should be discovered"),
@@ -92,6 +92,26 @@ impl Fixture {
             DAEMON_ID,
         )
         .expect("saga should construct")
+    }
+
+    pub fn replace_agent_command(&self, executable: &str, args: Vec<String>) {
+        let storage = Storage::open(&self.database).expect("database should reopen");
+        storage
+            .remove_agent_metadata(self.agent_id)
+            .expect("unused fixture agent should be removable");
+        storage
+            .insert_agent(&StoredAgent {
+                id: self.agent_id,
+                source: AgentSource::BuiltIn,
+                display_name: "Codex".to_owned(),
+                executable: executable.to_owned(),
+                args,
+                env: std::collections::BTreeMap::new(),
+                enabled: true,
+                created_at_ms: CREATED_AT_MS,
+                updated_at_ms: CREATED_AT_MS,
+            })
+            .expect("replacement fixture agent should insert");
     }
 
     pub fn request(&self, name: &str, short_id: Option<&str>) -> CreateSession {

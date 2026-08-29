@@ -15,6 +15,9 @@ use crate::spawn::{SessionSpawner, SpawnRequest};
 use crate::token::now_ms;
 use crate::{SessionWorktreeSaga, require_agent, require_project};
 
+const DEFAULT_PTY_COLS: u16 = 80;
+const DEFAULT_PTY_ROWS: u16 = 24;
+
 /// Named saga effect after which tests may inject a failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CreateStep {
@@ -121,19 +124,32 @@ fn create_current<S: SessionSpawner>(
         .spawner
         .spawn(SpawnRequest {
             session_id,
+            project_id: request.project_id,
+            agent_id: request.agent_id,
+            name: &request.name,
             command: &command,
+            branch: None,
+            worktree_id: None,
+            worktree_path: None,
+            cols: DEFAULT_PTY_COLS,
+            rows: DEFAULT_PTY_ROWS,
         })
         .inspect_err(|_| discard_session(saga, session_id))?;
-    maybe_fail(faults, CreateStep::Spawn).inspect_err(|_| {
-        discard_session(saga, session_id);
-    })?;
-    persist_running(saga, session_id, spawned.pid, now)?;
-    maybe_fail(faults, CreateStep::PersistRunning).inspect_err(|_| {
-        discard_session(saga, session_id);
-    })?;
+    if let Err(error) = maybe_fail(faults, CreateStep::Spawn) {
+        rollback_spawned(saga, session_id);
+        return Err(error);
+    }
+    if let Err(error) = persist_running(saga, session_id, spawned.pid, now) {
+        rollback_spawned(saga, session_id);
+        return Err(error);
+    }
+    if let Err(error) = maybe_fail(faults, CreateStep::PersistRunning) {
+        rollback_spawned(saga, session_id);
+        return Err(error);
+    }
     let stored = require_session(saga, session_id)?;
     Ok(CreatedSession {
-        session: session_dto(stored, None),
+        session: session_dto(stored, None, spawned.pty_id),
         worktree: None,
         plan: None,
     })
@@ -232,7 +248,15 @@ fn persist_spawn_and_run<S: SessionSpawner>(
         .map_err(SagaError::from)?;
     let spawned = match saga.spawner.spawn(SpawnRequest {
         session_id,
+        project_id: request.project_id,
+        agent_id: request.agent_id,
+        name: &request.name,
         command: &command,
+        branch: Some(plan.branch()),
+        worktree_id: Some(worktree_id),
+        worktree_path: Some(plan.destination()),
+        cols: DEFAULT_PTY_COLS,
+        rows: DEFAULT_PTY_ROWS,
     }) {
         Ok(spawned) => spawned,
         Err(error) => {
@@ -252,7 +276,7 @@ fn persist_spawn_and_run<S: SessionSpawner>(
     let stored_session = require_session(saga, session_id)?;
     let stored_worktree = require_worktree(saga, worktree_id)?;
     Ok(CreatedSession {
-        session: session_dto(stored_session, Some(&stored_worktree)),
+        session: session_dto(stored_session, Some(&stored_worktree), spawned.pty_id),
         worktree: Some(worktree_dto(stored_worktree)),
         plan: Some(plan.clone()),
     })
@@ -369,6 +393,7 @@ fn compensate<S: SessionSpawner>(
     original: SagaError,
 ) -> SagaError {
     if let Some(session_id) = session_id {
+        let _ = saga.spawner.rollback(session_id);
         discard_session(saga, session_id);
     }
     match saga.git.remove_worktree(
@@ -393,6 +418,11 @@ fn compensate<S: SessionSpawner>(
                 .with_worktree_id(worktree_id)
         }
     }
+}
+
+fn rollback_spawned<S: SessionSpawner>(saga: &SessionWorktreeSaga<S>, session_id: SessionId) {
+    let _ = saga.spawner.rollback(session_id);
+    discard_session(saga, session_id);
 }
 
 fn discard_worktree<S: SessionSpawner>(saga: &SessionWorktreeSaga<S>, worktree_id: WorktreeId) {

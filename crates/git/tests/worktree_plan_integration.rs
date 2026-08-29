@@ -2,9 +2,6 @@ mod support;
 
 use std::fs;
 
-#[cfg(target_os = "macos")]
-use std::path::Path;
-
 use cli_master_git::{Git, GitErrorKind};
 use support::{RepositoryFixture, branch_exists, command, configure_identity};
 #[cfg(target_os = "linux")]
@@ -288,7 +285,7 @@ fn macos_var_alias_is_canonicalized_before_prefix_checks() {
     let Ok(relative) = canonical_temp.strip_prefix("/private/var") else {
         return;
     };
-    let logical_temp = Path::new("/var").join(relative);
+    let logical_temp = std::path::PathBuf::from("/var").join(relative);
     let git = Git::discover().unwrap();
     let plan = git
         .plan_worktree(

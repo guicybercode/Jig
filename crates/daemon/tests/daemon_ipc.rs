@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
@@ -6,11 +7,12 @@ use std::time::Duration;
 
 use cli_master_core::wire::{HelloResponse, StateSnapshotResponse, method};
 use cli_master_core::{
-    DaemonInstanceId, EnvelopeKind, PROTOCOL_V1, RequestEnvelope, RequestId, ResponseEnvelope,
-    ResponsePayload,
+    AgentId, AgentSource, DaemonInstanceId, EnvelopeKind, EventEnvelope, PROTOCOL_V1, Project,
+    ProjectId, RequestEnvelope, RequestId, ResponseEnvelope, ResponsePayload, SessionId,
+    SessionStatus,
 };
 use cli_master_daemon::{Daemon, DaemonConfig, DaemonError, MAX_FRAME_LENGTH};
-use cli_master_storage::LATEST_SCHEMA_VERSION;
+use cli_master_storage::{LATEST_SCHEMA_VERSION, Storage, StoredAgent, StoredSession};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -23,6 +25,7 @@ use tokio_util::sync::CancellationToken;
 struct RunningDaemon {
     config: DaemonConfig,
     instance_id: DaemonInstanceId,
+    events: cli_master_daemon::EventBus,
     cancellation: CancellationToken,
     task: JoinHandle<Result<(), DaemonError>>,
 }
@@ -32,12 +35,14 @@ impl RunningDaemon {
         let config = DaemonConfig::from_paths(root.join("data"), root.join("run"));
         let daemon = Daemon::bind(config.clone()).expect("daemon should bind");
         let instance_id = daemon.instance_id();
+        let events = daemon.events().clone();
         let cancellation = CancellationToken::new();
         let task_cancellation = cancellation.clone();
         let task = tokio::spawn(async move { daemon.run(task_cancellation).await });
         Self {
             config,
             instance_id,
+            events,
             cancellation,
             task,
         }
@@ -90,6 +95,49 @@ fn failure_code(response: ResponseEnvelope<Value>) -> String {
         ResponsePayload::Error { error } => error.code,
         ResponsePayload::Success { data } => panic!("expected failure, received {data}"),
     }
+}
+
+async fn next_event(client: &mut Framed<UnixStream, LengthDelimitedCodec>) -> EventEnvelope<Value> {
+    let bytes = client
+        .next()
+        .await
+        .expect("event frame should arrive")
+        .expect("event frame should be valid");
+    serde_json::from_slice(&bytes).expect("event should decode")
+}
+
+#[tokio::test]
+async fn subscribe_replays_then_follows_live_output() {
+    let temporary = TempDir::new().expect("temporary directory should exist");
+    let daemon = RunningDaemon::start(temporary.path());
+    let session = SessionId::new();
+    daemon.events.open_session(session);
+    daemon.events.publish_output(session, b"ab");
+
+    let mut client = connect(daemon.config.socket_path()).await;
+    let response = exchange(
+        &mut client,
+        &RequestEnvelope::v1(method::SESSION_SUBSCRIBE, json!({ "sessionId": session })),
+    )
+    .await;
+    assert!(matches!(response.payload, ResponsePayload::Success { .. }));
+
+    let replay = next_event(&mut client).await;
+    assert_eq!(replay.kind, EnvelopeKind::Event);
+    assert_eq!(replay.event, "session.output");
+    assert_eq!(replay.payload["replay"], true);
+    assert_eq!(replay.payload["outputSequence"], 1);
+
+    let complete = next_event(&mut client).await;
+    assert_eq!(complete.event, "session.replay_complete");
+
+    daemon.events.publish_output(session, b"c");
+    let live = next_event(&mut client).await;
+    assert_eq!(live.event, "session.output");
+    assert_eq!(live.payload["replay"], false);
+    assert_eq!(live.payload["outputSequence"], 2);
+
+    daemon.stop().await;
 }
 
 #[tokio::test]
@@ -266,6 +314,75 @@ async fn lock_rejects_a_second_daemon_then_allows_sequential_reconnect() {
     task.await
         .expect("daemon task should join")
         .expect("daemon should stop");
+}
+
+#[tokio::test]
+async fn bind_reconciles_stale_runtime_before_accepting_clients() {
+    let temporary = TempDir::new().expect("temporary directory should exist");
+    let config =
+        DaemonConfig::from_paths(temporary.path().join("data"), temporary.path().join("run"));
+    fs::create_dir_all(config.data_directory()).expect("data directory should exist");
+    let project_id = ProjectId::new();
+    let agent_id = AgentId::new();
+    let session_id = SessionId::new();
+    {
+        let storage =
+            Storage::open_migrated(config.database_path()).expect("storage should migrate");
+        storage
+            .insert_project(&Project {
+                id: project_id,
+                name: "Recovery".to_owned(),
+                path: temporary.path().to_path_buf(),
+                repository_root: None,
+                current_branch: None,
+                created_at_ms: 1,
+                last_opened_at_ms: 1,
+            })
+            .expect("project should insert");
+        storage
+            .insert_agent(&StoredAgent {
+                id: agent_id,
+                source: AgentSource::BuiltIn,
+                display_name: "Codex".to_owned(),
+                executable: "codex".to_owned(),
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                enabled: true,
+                created_at_ms: 1,
+                updated_at_ms: 1,
+            })
+            .expect("agent should insert");
+        storage
+            .insert_session(&StoredSession {
+                id: session_id,
+                project_id,
+                agent_id,
+                name: "Stale".to_owned(),
+                cwd: temporary.path().to_path_buf(),
+                status: SessionStatus::Running,
+                runtime_pid: Some(1),
+                daemon_instance_id: Some("previous-daemon".to_owned()),
+                exit_code: None,
+                error_code: None,
+                created_at_ms: 1,
+                updated_at_ms: 1,
+                last_activity_at_ms: Some(1),
+            })
+            .expect("stale session should insert");
+    }
+
+    let daemon = RunningDaemon::start(temporary.path());
+    daemon.stop().await;
+
+    let storage = Storage::open_migrated(config.database_path()).expect("storage should reopen");
+    let recovered = storage
+        .get_session(session_id)
+        .expect("session should load")
+        .expect("session should exist");
+    assert_eq!(recovered.status, SessionStatus::Unknown);
+    assert_eq!(recovered.runtime_pid, None);
+    assert_eq!(recovered.daemon_instance_id, None);
+    assert_eq!(recovered.error_code.as_deref(), Some("daemon_restarted"));
 }
 
 #[tokio::test]

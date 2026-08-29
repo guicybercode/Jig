@@ -4,7 +4,10 @@ use std::fs;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
-use cli_master_session::{CreateFaults, CreateStep, FakeSpawner, SagaErrorKind};
+use cli_master_session::{
+    CreateFaults, CreateStep, FakeSpawner, SagaErrorKind, SessionEvent, SessionManager,
+    SessionManagerConfig, SessionWorktreeSaga,
+};
 use cli_master_storage::{Storage, WorktreeState};
 use support::{Fixture, branch_exists, git};
 
@@ -216,6 +219,84 @@ fn stale_plan_is_rejected_when_the_branch_appears_after_planning() {
         .create_session_injected(&fixture.request("Stale Branch", Some("57a1eb00")), &faults)
         .expect_err("stale plan");
     assert_eq!(error.kind(), SagaErrorKind::InvalidInput);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn production_spawner_registers_the_saga_session_in_the_pty_manager() {
+    let fixture = Fixture::new();
+    fixture.replace_agent_command("/bin/cat", Vec::new());
+    let manager = SessionManager::new(SessionManagerConfig::for_tests());
+    let mut events = manager.subscribe_events();
+    let storage = Storage::open_migrated(&fixture.database).unwrap();
+    let saga = SessionWorktreeSaga::new(
+        cli_master_git::Git::discover().unwrap(),
+        storage,
+        manager.clone(),
+        support::DAEMON_ID,
+    )
+    .unwrap();
+
+    let created = saga
+        .create_session(&fixture.request("Managed PTY", Some("manager1")))
+        .expect("manager-backed create should succeed");
+    let runtime = manager
+        .get(created.session.id)
+        .expect("runtime should use the saga session id");
+
+    assert_eq!(runtime.id, created.session.id);
+    assert_eq!(runtime.pid, created.session.pid);
+    assert_eq!(runtime.pty_id, created.session.pty_id);
+    assert_eq!(runtime.worktree_id, created.session.worktree_id);
+    assert_eq!(runtime.worktree_path, created.session.worktree_path);
+    assert_eq!(runtime.branch, created.session.branch);
+    assert!(matches!(
+        events.recv().await.unwrap(),
+        SessionEvent::Created(_)
+    ));
+
+    manager
+        .kill(created.session.id)
+        .await
+        .expect("manager should stop the process group");
+    saga.record_session_exit(created.session.id, None)
+        .expect("durable runtime should record exit");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn saga_failure_after_spawn_rolls_back_the_pty_runtime() {
+    let fixture = Fixture::new();
+    fixture.replace_agent_command("/bin/cat", Vec::new());
+    let manager = SessionManager::new(SessionManagerConfig::for_tests());
+    let storage = Storage::open_migrated(&fixture.database).unwrap();
+    let saga = SessionWorktreeSaga::new(
+        cli_master_git::Git::discover().unwrap(),
+        storage,
+        manager.clone(),
+        support::DAEMON_ID,
+    )
+    .unwrap();
+    let faults = CreateFaults {
+        fail_after: Some(CreateStep::Spawn),
+        ..CreateFaults::default()
+    };
+
+    let error = saga
+        .create_session_injected(&fixture.request("Rollback PTY", Some("manager2")), &faults)
+        .expect_err("injected post-spawn failure");
+
+    assert_eq!(error.kind(), SagaErrorKind::InjectedFailure);
+    assert!(
+        manager.list().is_empty(),
+        "rollback must forget the PTY runtime"
+    );
+    assert!(
+        Storage::open(&fixture.database)
+            .unwrap()
+            .list_sessions()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(git_worktree_count(&fixture.repository), 1);
 }
 
 fn git_worktree_count(repository: &std::path::Path) -> usize {

@@ -1,6 +1,9 @@
-use cli_master_core::{CommandSpec, SessionId};
+use std::path::Path;
 
-use crate::error::{SagaError, SagaErrorKind};
+use cli_master_core::{AgentId, CommandSpec, ProjectId, SessionId, WorktreeId};
+
+use crate::SessionManager;
+use crate::error::{SessionError, SessionErrorKind};
 
 /// Result of spawning an agent process for a prepared session.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -16,8 +19,24 @@ pub struct SpawnedSession {
 pub struct SpawnRequest<'a> {
     /// Session whose runtime state will be updated after spawn.
     pub session_id: SessionId,
+    /// Project that owns the durable and in-memory session records.
+    pub project_id: ProjectId,
+    /// Agent definition used to build `command`.
+    pub agent_id: AgentId,
+    /// Canonical user-facing session name.
+    pub name: &'a str,
     /// Structured launch command. Never a shell string.
     pub command: &'a CommandSpec,
+    /// Managed branch, when worktree isolation is enabled.
+    pub branch: Option<&'a str>,
+    /// Managed worktree identifier, when isolation is enabled.
+    pub worktree_id: Option<WorktreeId>,
+    /// Managed worktree path, when isolation is enabled.
+    pub worktree_path: Option<&'a Path>,
+    /// Initial PTY columns.
+    pub cols: u16,
+    /// Initial PTY rows.
+    pub rows: u16,
 }
 
 /// Process launcher used by the create saga. The daemon supplies a real PTY
@@ -29,7 +48,16 @@ pub trait SessionSpawner: Send + Sync {
     ///
     /// Returns an error when the process cannot be started. The saga then
     /// compensates the Git worktree if one was created.
-    fn spawn(&self, request: SpawnRequest<'_>) -> Result<SpawnedSession, SagaError>;
+    fn spawn(&self, request: SpawnRequest<'_>) -> Result<SpawnedSession, SessionError>;
+
+    /// Stops and forgets a process that was spawned by an uncommitted saga.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the runtime cannot find or tear down the session.
+    fn rollback(&self, _session_id: SessionId) -> Result<(), SessionError> {
+        Ok(())
+    }
 }
 
 /// Test double that records spawn attempts and can fail on demand.
@@ -57,19 +85,18 @@ impl FakeSpawner {
 }
 
 impl SessionSpawner for FakeSpawner {
-    fn spawn(&self, request: SpawnRequest<'_>) -> Result<SpawnedSession, SagaError> {
-        let _ = request;
+    fn spawn(&self, request: SpawnRequest<'_>) -> Result<SpawnedSession, SessionError> {
         if self.fail {
-            return Err(SagaError::new(
-                SagaErrorKind::InjectedFailure,
+            return Err(SessionError::new(
+                SessionErrorKind::InjectedFailure,
                 "Fake session spawner refused to start a process",
                 "Use FakeSpawner::succeeding in tests that need a running session",
             )
             .with_session_id(request.session_id));
         }
         if self.pid == 0 {
-            return Err(SagaError::new(
-                SagaErrorKind::InvalidInput,
+            return Err(SessionError::new(
+                SessionErrorKind::InvalidInput,
                 "Fake session spawner pid must be greater than zero",
                 "Construct FakeSpawner::succeeding with a non-zero pid",
             ));
@@ -78,5 +105,33 @@ impl SessionSpawner for FakeSpawner {
             pid: self.pid,
             pty_id: Some(format!("pty-{}", request.session_id.as_uuid().simple())),
         })
+    }
+}
+
+impl SessionSpawner for SessionManager {
+    fn spawn(&self, request: SpawnRequest<'_>) -> Result<SpawnedSession, SessionError> {
+        let session_id = request.session_id;
+        match self.create_prepared(request) {
+            Ok(session) => {
+                let Some(pid) = session.pid else {
+                    let _ = self.rollback_created(session_id);
+                    return Err(SessionError::Spawn(
+                        "process exited before session creation committed".to_owned(),
+                    ));
+                };
+                Ok(SpawnedSession {
+                    pid,
+                    pty_id: session.pty_id,
+                })
+            }
+            Err(error) => {
+                let _ = self.rollback_created(session_id);
+                Err(error)
+            }
+        }
+    }
+
+    fn rollback(&self, session_id: SessionId) -> Result<(), SessionError> {
+        self.rollback_created(session_id)
     }
 }
