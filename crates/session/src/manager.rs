@@ -528,15 +528,18 @@ impl Drop for Inner {
 
 impl LiveSession {
     fn force_cleanup(&self) {
-        let (pgid, master) = {
+        let (pgid, mut killer, master) = {
             let mut state = lock(&self.state);
             let pgid = state.pgid;
+            let killer = state.killer.take();
             let master = state.master.take();
-            state.killer.take();
-            (pgid, master)
+            (pgid, killer, master)
         };
         if let Some(pgid) = pgid {
             let _ = crate::unix::signal_group(pgid, crate::unix::kill_signal());
+        }
+        if let Some(killer) = killer.as_mut() {
+            let _ = killer.kill();
         }
         if let Some(sender) = lock(&self.writer_tx).take() {
             let _ = sender.send(WriteOp::Shutdown);
@@ -909,4 +912,89 @@ fn unix_now_ms() -> i64 {
 fn short_id(id: SessionId) -> String {
     let rendered = id.to_string();
     rendered.chars().take(8).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    #[derive(Clone, Debug)]
+    struct TrackingKiller {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ChildKiller for TrackingKiller {
+        fn kill(&mut self) -> io::Result<()> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    fn force_cleanup_uses_child_killer_without_a_process_group() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let id = SessionId::new();
+        let cwd = std::env::current_dir().expect("current directory should be available");
+        let command = CommandSpec::try_from_parts(
+            "unused",
+            Vec::<String>::new(),
+            cwd.clone(),
+            BTreeMap::new(),
+        )
+        .expect("test command should be valid");
+        let record = Session {
+            id,
+            project_id: ProjectId::new(),
+            name: "cleanup-test".to_owned(),
+            agent_id: AgentId::new(),
+            cwd,
+            pid: Some(42),
+            pty_id: Some("test-pty".to_owned()),
+            branch: None,
+            worktree_id: None,
+            worktree_path: None,
+            status: SessionStatus::Running,
+            exit_code: None,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        };
+        let (output, _) = broadcast::channel(1);
+        let (events, _) = broadcast::channel(1);
+        let live = LiveSession {
+            id,
+            config: SessionManagerConfig::for_tests(),
+            state: Mutex::new(LiveState {
+                record,
+                command,
+                buffer: ReplayBuffer::new(1),
+                master: None,
+                killer: Some(Box::new(TrackingKiller {
+                    calls: Arc::clone(&calls),
+                })),
+                pid: Some(42),
+                pgid: None,
+                generation: 0,
+                last_activity: Instant::now(),
+                cols: 80,
+                rows: 24,
+                stop_requested: false,
+                kill_requested: false,
+            }),
+            output,
+            writer_tx: Mutex::new(None),
+            events,
+        };
+
+        live.force_cleanup();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(lock(&live.state).killer.is_none());
+    }
 }

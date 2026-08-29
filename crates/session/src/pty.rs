@@ -110,6 +110,31 @@ fn redact_spawn_error(message: &str) -> String {
     if message.len() <= KEEP {
         message.to_owned()
     } else {
-        format!("{}…", &message[..KEEP])
+        let mut end = KEEP;
+        while !message.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &message[..end])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_spawn_error;
+
+    #[test]
+    fn redacts_long_spawn_errors_at_a_utf8_boundary() {
+        let message = format!("{}é{}", "a".repeat(179), "b".repeat(8));
+        assert!(!message.is_char_boundary(180));
+
+        let redacted = redact_spawn_error(&message);
+
+        assert_eq!(redacted, format!("{}…", "a".repeat(179)));
+    }
+
+    #[test]
+    fn preserves_spawn_errors_within_the_limit() {
+        let message = "falha ao iniciar: caminho inválido";
+        assert_eq!(redact_spawn_error(message), message);
     }
 }

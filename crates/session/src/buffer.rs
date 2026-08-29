@@ -51,21 +51,20 @@ impl ReplayBuffer {
 
     fn evict(&mut self) {
         while self.bytes > self.max_bytes {
-            let Some(removed) = self.chunks.pop_front() else {
+            let overflow = self.bytes - self.max_bytes;
+            let Some(front_len) = self.chunks.front().map(|chunk| chunk.data.len()) else {
+                self.bytes = 0;
                 break;
             };
-            self.bytes = self.bytes.saturating_sub(removed.data.len());
-            self.dropped = true;
-        }
 
-        if self.bytes > self.max_bytes {
-            if let Some(front) = self.chunks.front_mut() {
-                let overflow = self.bytes - self.max_bytes;
-                if overflow < front.data.len() {
-                    front.data.drain(..overflow);
-                    self.bytes = self.max_bytes;
-                }
+            if front_len <= overflow {
+                self.chunks.pop_front();
+                self.bytes -= front_len;
+            } else if let Some(front) = self.chunks.front_mut() {
+                front.data.drain(..overflow);
+                self.bytes -= overflow;
             }
+            self.dropped = true;
         }
     }
 }
@@ -99,5 +98,19 @@ mod tests {
         assert_eq!(buffer.push(Vec::new()), 0);
         assert_eq!(buffer.push(b"x".to_vec()), 1);
         assert_eq!(buffer.snapshot().next_sequence, 2);
+    }
+
+    #[test]
+    fn keeps_the_tail_of_a_chunk_larger_than_capacity() {
+        let mut buffer = ReplayBuffer::new(4);
+        assert_eq!(buffer.push(b"oversized".to_vec()), 0);
+
+        let snapshot = buffer.snapshot();
+
+        assert!(snapshot.truncated);
+        assert_eq!(snapshot.first_sequence, 0);
+        assert_eq!(snapshot.next_sequence, 1);
+        assert_eq!(snapshot.chunks.len(), 1);
+        assert_eq!(snapshot.concatenated(), b"ized");
     }
 }
