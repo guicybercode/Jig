@@ -2,7 +2,7 @@ mod sidecar;
 
 use cli_master_core::{APPLICATION_VERSION, PROTOCOL_V1, wire};
 use serde::Serialize;
-use sidecar::{DAEMON_SIDECAR_NAME, resolve_bundled_daemon};
+use sidecar::{DAEMON_SIDECAR_EXTERNAL_BIN, DAEMON_SIDECAR_NAME, resolve_bundled_daemon};
 
 /// Desktop-side protocol catalog. This is not `system.hello`.
 ///
@@ -15,6 +15,7 @@ struct ProtocolInfo {
     application_version: &'static str,
     protocol_version: u16,
     daemon_sidecar: &'static str,
+    sidecar_external_bin: &'static str,
     methods: Vec<&'static str>,
     events: Vec<&'static str>,
 }
@@ -25,6 +26,7 @@ fn protocol_info() -> ProtocolInfo {
         application_version: APPLICATION_VERSION,
         protocol_version: PROTOCOL_V1,
         daemon_sidecar: DAEMON_SIDECAR_NAME,
+        sidecar_external_bin: DAEMON_SIDECAR_EXTERNAL_BIN,
         methods: wire::method::ALL.to_vec(),
         events: wire::event_name::ALL.to_vec(),
     }
@@ -75,7 +77,7 @@ mod tests {
             serde_json::from_str(include_str!("../../../../package.json"))
                 .expect("root package.json should parse");
         let desktop_package: serde_json::Value =
-            serde_json::from_str(include_str!("../../../package.json"))
+            serde_json::from_str(include_str!("../../package.json"))
                 .expect("desktop package.json should parse");
         let tauri_config: serde_json::Value =
             serde_json::from_str(include_str!("../tauri.conf.json"))
@@ -88,6 +90,10 @@ mod tests {
         let exposed = protocol_info();
         assert_eq!(exposed.application_version, APPLICATION_VERSION);
         assert_eq!(exposed.daemon_sidecar, sidecar::DAEMON_SIDECAR_NAME);
+        assert_eq!(
+            exposed.sidecar_external_bin,
+            sidecar::DAEMON_SIDECAR_EXTERNAL_BIN
+        );
         assert_eq!(exposed.methods, wire::method::ALL);
         assert_eq!(exposed.events, wire::event_name::ALL);
 

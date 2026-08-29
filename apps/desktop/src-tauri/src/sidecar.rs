@@ -1,7 +1,7 @@
 //! Locate the bundled `cli-masterd` sidecar next to the desktop executable.
 //!
 //! Tauri copies `bundle.externalBin` beside the packaged app binary on Linux
-//! AppImage and inside `Contents/MacOS` on macOS. This module does not start
+//! `AppImage` and inside `Contents/MacOS` on macOS. This module does not start
 //! the daemon or speak the IPC protocol.
 
 use std::path::{Path, PathBuf};
@@ -24,7 +24,10 @@ pub fn daemon_candidates(current_exe: &Path) -> Vec<PathBuf> {
     let Some(directory) = current_exe.parent() else {
         return Vec::new();
     };
-    vec![directory.join(DAEMON_SIDECAR_NAME)]
+    vec![
+        directory.join(DAEMON_SIDECAR_NAME),
+        directory.join(sidecar_artifact_name(env!("TAURI_ENV_TARGET_TRIPLE"))),
+    ]
 }
 
 /// Returns the first candidate that exists as a regular file.
@@ -70,7 +73,12 @@ mod tests {
         let exe = root.join("CLI Master");
         let daemon = root.join(DAEMON_SIDECAR_NAME);
         std::fs::write(&exe, []).expect("desktop placeholder");
-        assert_eq!(daemon_candidates(&exe), vec![daemon.clone()]);
+        let candidates = daemon_candidates(&exe);
+        assert_eq!(candidates[0], daemon);
+        assert!(candidates.iter().any(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(DAEMON_SIDECAR_NAME))
+        }));
         assert_eq!(resolve_bundled_daemon(&exe), None);
         std::fs::write(&daemon, []).expect("daemon placeholder");
         assert_eq!(
