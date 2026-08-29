@@ -32,7 +32,8 @@ completion and retention gaps are explicit events.
 
 Schema changes after the initial migration are additive numbered files. The
 worktree dirty-state addition is migration `0002`, rather than a silent rewrite
-of `0001`.
+of `0001`. Migration `0003` adds optional recovery history and lookup indexes;
+it does not broaden the public status or wire contracts.
 
 ## Consequences
 

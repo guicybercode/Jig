@@ -2,7 +2,9 @@ use cli_master_core::{AgentId, AgentSource, ProjectId, SessionId, SessionStatus,
 use rusqlite::{ErrorCode, params};
 use tempfile::TempDir;
 
-use crate::{LATEST_SCHEMA_VERSION, MIGRATIONS, Storage, StorageError, WorktreeState};
+use crate::{
+    LATEST_SCHEMA_VERSION, Storage, StorageError, WorktreeState, connection_for_tests, migrate,
+};
 
 const RFC3339_TIMESTAMP: &str = "2026-08-28T18:00:00.123Z";
 const RFC3339_TIMESTAMP_MS: i64 = 1_787_940_000_123;
@@ -21,7 +23,7 @@ fn v1_rfc3339_rows_upgrade_and_load_through_typed_apis() {
         insert_v1_graph(&storage, project_id, agent_id, session_id, worktree_id);
     }
 
-    let mut storage = Storage::open(&database_path).expect("v1 database should reopen");
+    let storage = Storage::open(&database_path).expect("v1 database should reopen");
     storage.migrate().expect("v1 database should upgrade");
 
     let project = storage
@@ -63,7 +65,7 @@ fn v1_rfc3339_rows_upgrade_and_load_through_typed_apis() {
 
 #[test]
 fn migration_triggers_reject_cross_project_insert_and_update() {
-    let mut storage = Storage::open_in_memory().expect("database should open");
+    let storage = Storage::open_in_memory().expect("database should open");
     storage.migrate().expect("database should migrate");
     let first_project_id = ProjectId::new();
     let second_project_id = ProjectId::new();
@@ -96,8 +98,8 @@ fn migration_triggers_reject_cross_project_insert_and_update() {
         first_session_id,
     )
     .expect("same-project worktree should insert");
-    let update_error = storage
-        .connection
+    let connection = connection_for_tests(&storage).expect("connection lock should be available");
+    let update_error = connection
         .execute(
             "UPDATE worktrees SET session_id = ?1 WHERE id = ?2",
             params![second_session_id.to_string(), valid_worktree_id.to_string()],
@@ -108,15 +110,15 @@ fn migration_triggers_reject_cross_project_insert_and_update() {
 
 #[test]
 fn session_decoder_rejects_pid_outside_u32() {
-    let mut storage = Storage::open_in_memory().expect("database should open");
+    let storage = Storage::open_in_memory().expect("database should open");
     storage.migrate().expect("database should migrate");
     let project_id = ProjectId::new();
     let agent_id = AgentId::new();
     let session_id = SessionId::new();
     insert_raw_project(&storage, project_id, "/tmp/pid-project");
     insert_raw_agent(&storage, agent_id);
-    storage
-        .connection
+    connection_for_tests(&storage)
+        .expect("connection lock should be available")
         .execute(
             "INSERT INTO sessions (
                 id, project_id, agent_id, name, cwd, status, runtime_pid,
@@ -144,15 +146,12 @@ fn session_decoder_rejects_pid_outside_u32() {
 }
 
 fn install_v1_schema(storage: &Storage) {
-    storage
-        .ensure_migration_table()
-        .expect("migration table should exist");
-    storage
-        .connection
-        .execute_batch(MIGRATIONS[0].sql)
+    let connection = connection_for_tests(storage).expect("connection lock should be available");
+    migrate::ensure_migration_table(&connection).expect("migration table should exist");
+    connection
+        .execute_batch(include_str!("../migrations/0001_initial.sql"))
         .expect("initial schema should apply");
-    storage
-        .connection
+    connection
         .execute(
             "INSERT INTO schema_migrations (version, name) VALUES (1, 'initial')",
             [],
@@ -168,8 +167,8 @@ fn insert_v1_graph(
     worktree_id: WorktreeId,
 ) {
     insert_raw_project(storage, project_id, "/tmp/v1-project");
-    storage
-        .connection
+    connection_for_tests(storage)
+        .expect("connection lock should be available")
         .execute(
             "INSERT INTO agents (
                 id, source, name, executable, args_json, env_json,
@@ -179,8 +178,8 @@ fn insert_v1_graph(
             params![agent_id.to_string(), RFC3339_TIMESTAMP],
         )
         .expect("v1 agent should insert");
-    storage
-        .connection
+    connection_for_tests(storage)
+        .expect("connection lock should be available")
         .execute(
             "INSERT INTO sessions (
                 id, project_id, agent_id, name, cwd, status, runtime_pid,
@@ -195,8 +194,8 @@ fn insert_v1_graph(
             ],
         )
         .expect("v1 session should insert");
-    storage
-        .connection
+    connection_for_tests(storage)
+        .expect("connection lock should be available")
         .execute(
             "INSERT INTO worktrees (
                 id, project_id, session_id, path, branch, state, created_at, updated_at
@@ -227,8 +226,8 @@ fn insert_runtime_graph(
 }
 
 fn insert_raw_project(storage: &Storage, id: ProjectId, path: &str) {
-    storage
-        .connection
+    connection_for_tests(storage)
+        .expect("connection lock should be available")
         .execute(
             "INSERT INTO projects (id, name, path, created_at, last_opened_at)
              VALUES (?1, 'Project', ?2, ?3, ?3)",
@@ -238,8 +237,8 @@ fn insert_raw_project(storage: &Storage, id: ProjectId, path: &str) {
 }
 
 fn insert_raw_agent(storage: &Storage, id: AgentId) {
-    storage
-        .connection
+    connection_for_tests(storage)
+        .expect("connection lock should be available")
         .execute(
             "INSERT INTO agents (id, source, name, executable, created_at, updated_at)
              VALUES (?1, 'built_in', 'Agent', 'codex', ?2, ?2)",
@@ -249,8 +248,8 @@ fn insert_raw_agent(storage: &Storage, id: AgentId) {
 }
 
 fn insert_raw_session(storage: &Storage, id: SessionId, project_id: ProjectId, agent_id: AgentId) {
-    storage
-        .connection
+    connection_for_tests(storage)
+        .expect("connection lock should be available")
         .execute(
             "INSERT INTO sessions (
                 id, project_id, agent_id, name, cwd, status,
@@ -273,19 +272,21 @@ fn insert_raw_worktree(
     project_id: ProjectId,
     session_id: SessionId,
 ) -> rusqlite::Result<usize> {
-    storage.connection.execute(
-        "INSERT INTO worktrees (
+    connection_for_tests(storage)
+        .expect("connection lock should be available")
+        .execute(
+            "INSERT INTO worktrees (
             id, project_id, session_id, path, branch, state, created_at, updated_at
          ) VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?6)",
-        params![
-            id.to_string(),
-            project_id.to_string(),
-            session_id.to_string(),
-            format!("/tmp/worktree-{id}"),
-            format!("agent/{id}"),
-            RFC3339_TIMESTAMP,
-        ],
-    )
+            params![
+                id.to_string(),
+                project_id.to_string(),
+                session_id.to_string(),
+                format!("/tmp/worktree-{id}"),
+                format!("agent/{id}"),
+                RFC3339_TIMESTAMP,
+            ],
+        )
 }
 
 fn assert_trigger_constraint(error: &rusqlite::Error) {

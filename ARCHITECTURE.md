@@ -447,6 +447,10 @@ public worktree DTO and conservative removal checks. Historical timestamp
 columns keep their original SQLite declarations, but repository adapters read
 and write Unix epoch millisecond values.
 
+Migration `0003` adds optional session branch/worktree association fields,
+integer `started_at`/`exited_at` history, and project, agent, and session lookup
+indexes. These fields do not make a persisted PID or PTY reattachable.
+
 Built-in agent rows are idempotently seeded/upserted at startup. A user can
 disable but not mutate their executable/argument defaults; custom rows are
 editable. Removing an agent definition referenced by a session is rejected;
