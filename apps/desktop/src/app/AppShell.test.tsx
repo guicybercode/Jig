@@ -1116,6 +1116,36 @@ describe("AppShell project and session workflows", () => {
       ).not.toBeInTheDocument();
     });
   });
+
+  it("routes the agents command to the catalog's custom-agent flow", async () => {
+    const user = userEvent.setup();
+    render(<AppShell />);
+
+    await user.click(screen.getByRole("button", { name: "Commands" }));
+    const palette = screen.getByRole("dialog", { name: "Command palette" });
+    await user.click(within(palette).getByRole("button", { name: "Open Agents" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Agents", level: 1 })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Codex" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Add custom agent" }));
+    const agentDialog = screen.getByRole("dialog", { name: "Add custom agent" });
+    expect(agentDialog).toBeVisible();
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+
+    const addArgument = within(agentDialog).getByRole("button", {
+      name: "Add argument",
+    });
+    addArgument.focus();
+    await user.keyboard("{Control>}k{/Control}");
+
+    expect(
+      screen.queryByRole("dialog", { name: "Command palette" }),
+    ).not.toBeInTheDocument();
+    expect(agentDialog).toBeVisible();
+    expect(addArgument).toHaveFocus();
+  });
 });
 
 async function renderApp(client: MockIpcClient) {

@@ -62,9 +62,9 @@ describe("createTerminalOutputWriter", () => {
     expect(requirePending(pending, 2).data).toContain(
       "output unavailable; output 3",
     );
-    expect(requirePending(pending, 2).data).toMatch(
-      /^\u0018\u001b\[0m/,
-    );
+    expect(
+      String(requirePending(pending, 2).data).startsWith("\u0018\u001b[0m"),
+    ).toBe(true);
     expect(requirePending(pending, 3).data).toBe("after gap");
 
     flushPending(pending);
