@@ -1,20 +1,20 @@
 import { Icon } from "./Icon";
 
 interface AppHeaderProps {
-  canCreateSession: boolean;
-  onNewSession: () => void;
-  onOpenCommandPalette: () => void;
+  readonly newSessionDisabledReason: string | null;
+  readonly onNewSession: () => void;
+  readonly onOpenCommandPalette: () => void;
 }
 
 /** Renders global product identity and session actions. */
 export function AppHeader({
-  canCreateSession,
+  newSessionDisabledReason,
   onNewSession,
   onOpenCommandPalette,
 }: AppHeaderProps) {
   return (
     <header className="app-header">
-      <div className="app-header__brand" aria-label="CLI Master">
+      <div className="app-header__brand">
         <span className="app-header__mark" aria-hidden="true">
           <Icon name="terminal" />
         </span>
@@ -22,9 +22,14 @@ export function AppHeader({
         <span className="app-header__edition">Desktop</span>
       </div>
       <div className="app-header__actions">
-        <span id="new-session-requirement" className="app-header__requirement">
-          Add a project first
-        </span>
+        {newSessionDisabledReason ? (
+          <span
+            id="new-session-requirement"
+            className="app-header__requirement"
+          >
+            {newSessionDisabledReason}
+          </span>
+        ) : null}
         <button
           className="button button--secondary"
           type="button"
@@ -35,8 +40,10 @@ export function AppHeader({
         <button
           className="button button--primary"
           type="button"
-          disabled={!canCreateSession}
-          aria-describedby="new-session-requirement"
+          disabled={newSessionDisabledReason !== null}
+          aria-describedby={
+            newSessionDisabledReason ? "new-session-requirement" : undefined
+          }
           onClick={onNewSession}
         >
           <Icon name="plus" />

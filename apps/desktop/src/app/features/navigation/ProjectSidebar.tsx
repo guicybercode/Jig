@@ -4,13 +4,13 @@ import { Icon } from "../../components/Icon";
 import type { ProjectView, SessionView } from "../../../ipc/types";
 
 interface ProjectSidebarProps {
-  daemonConnected: boolean;
-  projects: ProjectView[];
-  sessions: SessionView[];
-  selectedProjectId: string | null;
-  onSelectProject: (projectId: string) => void;
-  onAddProject: () => void;
-  onSelectSession: (sessionId: string) => void;
+  readonly daemonConnected: boolean;
+  readonly projects: ProjectView[];
+  readonly sessions: SessionView[];
+  readonly selectedProjectId: string | null;
+  readonly onSelectProject: (projectId: string) => void;
+  readonly onAddProject: () => void;
+  readonly onSelectSession: (sessionId: string) => void;
 }
 
 /** Renders project and session navigation for empty and populated workspaces. */
@@ -37,7 +37,9 @@ export function ProjectSidebar({
         <span
           className="sidebar__count"
           aria-label={
-            projects.length === 0 ? "No projects" : `${projects.length} projects`
+            projects.length === 0
+              ? "No projects"
+              : `${projects.length} ${projects.length === 1 ? "project" : "projects"}`
           }
         >
           {projects.length}
@@ -80,15 +82,19 @@ export function ProjectSidebar({
             className="button button--secondary button--full"
             type="button"
             disabled={!daemonConnected}
-            aria-describedby="add-project-requirement"
+            aria-describedby={
+              daemonConnected ? undefined : "add-project-requirement"
+            }
             onClick={onAddProject}
           >
             <Icon name="plus" />
             <span>Add Project</span>
           </button>
-          <p id="add-project-requirement" className="sidebar-section__hint">
-            Available when the local daemon is connected.
-          </p>
+          {!daemonConnected ? (
+            <p id="add-project-requirement" className="sidebar-section__hint">
+              Connect the local daemon to add a project.
+            </p>
+          ) : null}
         </section>
         <section className="sidebar-section" aria-labelledby="sessions-heading">
           <div className="sidebar-section__header">
@@ -98,7 +104,11 @@ export function ProjectSidebar({
           {visibleSessions.length === 0 ? (
             <div className="sidebar-section__empty">
               <Icon name="session" />
-              <p>Sessions appear here after you select a project.</p>
+              <p>
+                {selectedProjectId
+                  ? "No sessions in this project."
+                  : "Sessions appear here after you select a project."}
+              </p>
             </div>
           ) : (
             <ul className="sidebar-list">

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import type { IpcClient } from "../ipc/client";
 import { AppHeader } from "./components/AppHeader";
@@ -32,15 +32,15 @@ export function AppShell({
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [projectAdded, setProjectAdded] = useState(false);
 
-  const selectedProject = useMemo(
-    () =>
-      workspace.projects.find(
-        (project) => project.id === workspace.selectedProjectId,
-      ) ?? null,
-    [workspace.projects, workspace.selectedProjectId],
+  const selectedProject =
+    workspace.projects.find(
+      (project) => project.id === workspace.selectedProjectId,
+    ) ?? null;
+  const newSessionDisabledReason = getNewSessionDisabledReason(
+    workspace.daemonConnected,
+    selectedProject !== null,
   );
-  const canCreateSession =
-    workspace.daemonConnected && selectedProject !== null;
+  const canCreateSession = newSessionDisabledReason === null;
 
   function runCommand(commandId: WorkspaceCommandId) {
     if (commandId === "project.add" && workspace.daemonConnected) {
@@ -60,13 +60,20 @@ export function AppShell({
         Skip to workspace
       </a>
       <AppHeader
-        canCreateSession={canCreateSession}
+        newSessionDisabledReason={newSessionDisabledReason}
         onNewSession={() => setCreateOpen(true)}
         onOpenCommandPalette={() => setPaletteOpen(true)}
       />
       <ErrorBanner error={workspace.error} />
       {projectAdded ? (
-        <p>Project picker is available from the desktop bridge.</p>
+        <p
+          className="app-notice"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          Project picker is available from the desktop bridge.
+        </p>
       ) : null}
       <div className="app-shell__body">
         <ProjectSidebar
@@ -108,12 +115,13 @@ export function AppShell({
         open={createOpen}
         projectName={selectedProject?.name ?? "this project"}
         onCancel={() => setCreateOpen(false)}
-        onCreate={(input) => {
+        onCreate={async (input) => {
           if (!ipc || !selectedProject) {
             setCreateOpen(false);
             return;
           }
-          void ipc.createSession({
+
+          await ipc.createSession({
             projectId: selectedProject.id,
             name: input.name,
             agentId: input.agentId,
@@ -125,11 +133,31 @@ export function AppShell({
       <ConfirmDialog
         open={confirmRemove}
         title="Remove worktree"
-        message="This worktree will be removed only if it is clean. Dirty trees stay until you confirm after reviewing Git status."
+        message="Remove the selected worktree from disk? CLI Master will refuse if it has uncommitted changes. This cannot be undone."
         confirmLabel="Remove worktree"
         onCancel={() => setConfirmRemove(false)}
         onConfirm={() => setConfirmRemove(false)}
       />
     </div>
   );
+}
+
+/** Explains the nearest action required before a session can be created. */
+function getNewSessionDisabledReason(
+  daemonConnected: boolean,
+  hasSelectedProject: boolean,
+): string | null {
+  if (!daemonConnected && !hasSelectedProject) {
+    return "Connect the local daemon and add a project first.";
+  }
+
+  if (!daemonConnected) {
+    return "Connect the local daemon first.";
+  }
+
+  if (!hasSelectedProject) {
+    return "Add a project first.";
+  }
+
+  return null;
 }
