@@ -1,47 +1,50 @@
-# CLI Master
+# Jig
 
-CLI Master is a local-first desktop control center for running multiple coding
-agent CLIs. It coordinates projects, interactive terminal sessions, Git
-worktrees, and agent processes without replacing the agents themselves.
+Terminals on a canvas.
 
-The Beta v0.1 target supports these installed CLIs through adapters:
+![Jig](docs/brand/social-preview.png)
 
-- OpenAI Codex
-- Claude Code
-- Gemini CLI
-- OpenCode
-- custom executables with structured argument lists
+## Install and run
 
-CLI Master does not require an account, cloud backend, telemetry service, or
-API server. Authentication remains with each CLI installed on the machine.
+Jig is a local-first desktop app for Linux and macOS. Windows is out of scope for Beta v0.1.
 
-> [!IMPORTANT]
-> Beta v0.1 packaging produces **unsigned** Linux AppImage and macOS `.app` /
-> `.dmg` artifacts. macOS notarization is not configured. Do not add
-> certificates or publishing secrets to this repository. Testers should verify
-> `SHA256SUMS` before running a download.
->
-> Install and day-two docs: [docs/install.md](docs/install.md),
-> [docs/first-use.md](docs/first-use.md),
-> [docs/backup-and-recovery.md](docs/backup-and-recovery.md),
-> [docs/troubleshooting.md](docs/troubleshooting.md),
-> [docs/uninstall.md](docs/uninstall.md).
->
-> The current Beta package has a known domain-IPC gap: its daemon returns an
-> empty snapshot and does not yet implement the project/session mutations
-> needed to add a project, create a live session, or populate `TerminalGrid`
-> through the packaged GUI. Runtime-crate acceptance is not end-to-end desktop
-> acceptance. See [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
+### Prerequisites
 
-## Supported platforms
+- Node.js 22 or newer
+- Corepack and pnpm 11
+- Rust 1.85 or newer
+- Git on PATH
+- Tauri 2 dependencies (WebKitGTK 4.1 on Linux, Xcode Command Line Tools on macOS)
 
-- Linux is a first-class target. AppImage is the initial package format; a
-  Debian package follows when the packaging path is reliable.
-- macOS is a first-class target on Apple Silicon and supported modern releases.
-  The initial artifacts are an application bundle and DMG.
-- Windows is explicitly outside the Beta v0.1 scope.
+### Development
 
-## How it works
+```bash
+# Enable package manager and install dependencies
+corepack enable
+pnpm install --frozen-lockfile
+
+# Run the desktop app
+pnpm tauri dev
+```
+
+### Build from source
+
+```bash
+# Stage daemon and build platform bundle (AppImage on Linux, .app and .dmg on macOS)
+pnpm package
+```
+
+Builds are unsigned. macOS notarization is not configured. See [docs/install.md](docs/install.md) for platform-specific installation and verification steps.
+
+## What it is
+
+Jig hosts coding-agent CLIs in real terminals with projects and Git worktrees. It coordinates OpenAI Codex, Claude Code, Gemini CLI, OpenCode, and custom executables in isolated PTY sessions.
+
+**Current status:** Beta v0.1 architecture exists. The daemon, PTY management, and storage layers are operational. The IPC protocol is defined in `crates/core/src/wire`. Session creation, worktree isolation, and the terminal canvas UI are in active development. See [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) for the current domain-IPC gap and [ARCHITECTURE.md](ARCHITECTURE.md) for accepted design decisions.
+
+This is a local-first application. No cloud account, telemetry, or vendor proxy is required. Each agent CLI keeps its own authentication.
+
+### How it works
 
 ```text
 React + xterm.js
@@ -50,67 +53,19 @@ React + xterm.js
 Tauri 2 desktop bridge
        │ versioned local IPC
        ▼
-CLI Master daemon
+jig daemon
        ├── PTY session manager ── Codex / Claude / Gemini / OpenCode
        ├── Git and worktree service
        └── SQLite metadata storage
 ```
 
-The separate daemon owns live PTYs and SQLite. Closing or reloading the desktop
-window therefore does not inherently stop active sessions. Read
-[ARCHITECTURE.md](ARCHITECTURE.md) for the protocol, schema, lifecycle, and
-safety decisions.
+The separate daemon owns live PTYs and SQLite. Closing the desktop window does not stop active sessions. Read [ARCHITECTURE.md](ARCHITECTURE.md) for protocol, schema, lifecycle, and safety decisions.
 
-## Prerequisites
+## Supported platforms
 
-Install the following development tools:
-
-- Node.js 22 or newer
-- Corepack and pnpm 11
-- Rust 1.85 or newer, including `cargo`, `rustfmt`, and `clippy`
-- Git
-- Tauri 2 operating-system dependencies
-
-Linux needs WebKitGTK and the distribution-specific packages documented in the
-[official Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
-macOS needs Xcode Command Line Tools. CLI Master itself does not require
-Homebrew.
-
-At least one supported coding-agent CLI is required only when exercising real
-agent sessions. The application foundation builds without one installed.
-
-## Set up development
-
-1. Clone the repository and enter it.
-2. Enable the package manager declared by the repository.
-3. Install JavaScript dependencies.
-
-```bash
-corepack enable
-pnpm install --frozen-lockfile
-```
-
-The dependency policy permits install scripts only for explicitly reviewed
-packages. pnpm will reject an unexpected dependency build script.
-
-## Run the desktop app
-
-```bash
-pnpm tauri dev
-```
-
-This command starts Vite and the Tauri desktop process. It does not start an
-agent automatically. The current daemon domain-IPC gap prevents the packaged
-GUI from completing project/session creation; see
-[docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
-
-For browser-only UI development:
-
-```bash
-pnpm dev
-```
-
-Browser mode cannot exercise native dialogs, PTYs, Git, or daemon IPC.
+- **Linux:** First-class. AppImage is the initial package format.
+- **macOS:** First-class on Apple Silicon and supported modern releases. `.app` and `.dmg` artifacts.
+- **Windows:** Out of scope for Beta v0.1.
 
 ## Validate changes
 
@@ -125,62 +80,30 @@ cargo test --workspace
 pnpm --filter @cli-master/desktop test:e2e
 ```
 
-`pnpm check` type-checks and builds the frontend, then checks every Rust crate.
-`pnpm check:versions` fails if Cargo, npm, Tauri, and the protocol catalog
-disagree. Packaging CI smoke-tests the AppImage / `.app` bundle, not only
-`cargo build`.
+`pnpm check` type-checks and builds the frontend, then checks every Rust crate. `pnpm check:versions` ensures Cargo, npm, Tauri, and the protocol catalog agree.
 
-Runtime acceptance for two live sessions, worktree isolation, subscription
-disconnect/reconnect, and daemon recovery lives in `crates/e2e`. Playwright
-covers the empty/disconnected desktop shell; the required project/session
-daemon mutations and a real Tauri-window harness remain explicit gaps. See
-[docs/playwright-testing.md](docs/playwright-testing.md).
-Platform-specific PTY tests run in the Linux and macOS CI jobs.
-
-## Build packages
-
-```bash
-pnpm package
-```
-
-This stages `cli-masterd`, builds the current OS bundle (AppImage on Linux,
-`.app` and `.dmg` on macOS), smoke-tests the bundled daemon, and writes
-`dist/artifacts/SHA256SUMS`.
-
-For a bundle without the smoke/checksum steps:
-
-```bash
-pnpm tauri:build
-```
-
-Code signing and macOS notarization are **not** configured. `signingIdentity`
-is `null`. See [docs/PACKAGING.md](docs/PACKAGING.md) and
-[docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
+Runtime acceptance for sessions, worktree isolation, and daemon recovery lives in `crates/e2e`. Platform-specific PTY tests run in Linux and macOS CI jobs.
 
 ## Repository layout
 
 ```text
-apps/desktop/                  React, TypeScript, Vite, Tauri bridge, Playwright
-crates/                        Rust domain, storage, Git, PTY, daemon, e2e
-crates/fake-agent              Interactive coding-agent stand-in for Beta tests
-crates/e2e                     Acceptance tests against production crates
-design-system/cli-master/      UI tokens and interaction rules
-ARCHITECTURE.md                accepted architecture and protocol design
-AGENTS.md                      crate ownership and IPC rules for agents
-protocol/catalog.json          frozen v1 names plus applicationVersion
-docs/                          install, packaging, and recovery guides
-CHANGELOG.md                   Beta packaging notes
-docs/playwright-testing.md     UI E2E scope and the Tauri window-level gap
-docs/test-coverage-review.md   Beta criteria mapped onto real tests
+apps/desktop/               React, TypeScript, Vite, Tauri bridge, Playwright
+crates/                     Rust domain, storage, Git, PTY, daemon, e2e
+crates/fake-agent           Interactive coding-agent stand-in for Beta tests
+crates/e2e                  Acceptance tests against production crates
+docs/                       Install, packaging, and recovery guides
+docs/brand/                 Jig brand assets
+ARCHITECTURE.md             Accepted architecture and protocol design
+AGENTS.md                   Crate ownership and IPC rules
+protocol/catalog.json       Frozen v1 method names
 ```
 
 ## Safety principles
 
-- Commands use an executable plus an argument array, not interpolated shell
-  strings.
-- Removing a project never removes its repository directory.
-- Worktrees with uncommitted changes are never silently deleted.
-- Stopping a process and deleting session metadata are separate actions.
-- Full environments, tokens, and terminal contents are excluded from logs.
+- Commands use an executable plus an argument array, not interpolated shell strings
+- Removing a project never removes its repository directory
+- Worktrees with uncommitted changes are never silently deleted
+- Stopping a process and deleting session metadata are separate actions
+- Full environments, tokens, and terminal contents are excluded from logs
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a change.
