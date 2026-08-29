@@ -292,7 +292,7 @@ async fn project_registration_is_validated_persisted_and_mutable() {
 }
 
 #[tokio::test]
-async fn project_registration_rejects_a_non_repository_with_recovery_guidance() {
+async fn project_registration_accepts_a_plain_folder() {
     let temporary = TempDir::new().expect("temporary directory should exist");
     let folder = temporary.path().join("plain-folder");
     fs::create_dir(&folder).expect("plain folder should exist");
@@ -304,11 +304,14 @@ async fn project_registration_rejects_a_non_repository_with_recovery_guidance() 
         &RequestEnvelope::v1("project.add", json!({ "path": folder.to_string_lossy() })),
     )
     .await;
-    let ResponsePayload::Error { error } = response.payload else {
-        panic!("a non-repository should be rejected");
+    let ResponsePayload::Success { data } = response.payload else {
+        panic!("a plain project folder should be accepted");
     };
-    assert_eq!(error.code, "not_git_repository");
-    assert!(error.action.is_some());
+    let project: Project = serde_json::from_value(data).expect("project should decode");
+    assert_eq!(project.name, "plain-folder");
+    assert_eq!(project.path, folder.canonicalize().unwrap());
+    assert_eq!(project.repository_root, None);
+    assert_eq!(project.current_branch, None);
     daemon.stop().await;
 }
 

@@ -93,7 +93,7 @@ export function AddProjectDialog({
     <Dialog
       open={open}
       title="Add Project"
-      description="Register a local Git repository with CLI Master."
+      description="Register a local project folder with CLI Master."
       size="medium"
       closeDisabled={submitting}
       initialFocusRef={browseRef}
@@ -112,7 +112,7 @@ export function AddProjectDialog({
         <section className="project-directory-picker" aria-labelledby={`${pathId}-title`}>
           <div className="project-directory-picker__heading">
             <span id={`${pathId}-title`}>Project folder <span aria-hidden="true">*</span></span>
-            <small>Local Git repository</small>
+            <small>Local project folder</small>
           </div>
 
           {selectedDirectory ? (
@@ -180,7 +180,7 @@ export function AddProjectDialog({
         </section>
         <div className="field">
           <label htmlFor={nameId}>Display name <span className="field__optional">Optional</span></label>
-          <input id={nameId} className="text-input" value={name} maxLength={120} placeholder="Defaults to the repository name" onChange={(event) => setName(event.target.value)} />
+          <input id={nameId} className="text-input" value={name} maxLength={120} placeholder="Defaults to the folder name" onChange={(event) => setName(event.target.value)} />
           <p className="field__hint">This changes only how the project appears in CLI Master.</p>
         </div>
         <div className="information-box">

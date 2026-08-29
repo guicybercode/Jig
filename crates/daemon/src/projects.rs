@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -14,20 +15,20 @@ use cli_master_storage::{Storage, StorageError};
 #[derive(Debug)]
 pub(super) struct ProjectRegistry {
     storage: Mutex<Storage>,
-    git: Result<Git, ApiError>,
+    git: Option<Git>,
 }
 
 impl ProjectRegistry {
     pub(super) fn new(storage: Storage) -> Self {
         Self {
             storage: Mutex::new(storage),
-            git: Git::discover().map_err(|error| git_error(&error)),
+            git: Git::discover().ok(),
         }
     }
 
     pub(super) fn snapshot(&self) -> Result<Vec<Project>, ApiError> {
         let mut projects = self.storage()?.list_projects().map_err(storage_error)?;
-        if let Ok(git) = &self.git {
+        if let Some(git) = &self.git {
             for project in &mut projects {
                 enrich_project(git, project);
             }
@@ -41,28 +42,30 @@ impl ProjectRegistry {
     }
 
     pub(super) fn add(&self, request: ProjectAddRequest) -> Result<Project, ApiError> {
-        let git = self.git.as_ref().map_err(Clone::clone)?;
-        let inspection = git
-            .inspect_repository(request.path.as_str())
-            .map_err(|error| git_error(&error))?;
-        let Some(repository_root) = inspection.repository_root else {
-            return Err(ApiError::new(
-                "not_git_repository",
-                "The selected folder is not inside a Git repository.",
+        let selected_path = Path::new(request.path.as_str());
+        let (path, repository_root, current_branch) = if let Some(git) = &self.git {
+            let inspection = git
+                .inspect_repository(selected_path)
+                .map_err(|error| git_error(&error))?;
+            (
+                inspection.path,
+                inspection.repository_root,
+                inspection.branch,
             )
-            .with_action("Choose a Git repository or initialize this folder with Git."));
+        } else {
+            (canonical_project_directory(selected_path)?, None, None)
         };
         let name = request.name.map_or_else(
-            || default_project_name(&repository_root),
+            || default_project_name(repository_root.as_deref().unwrap_or(&path)),
             |name| Ok(name.into_inner()),
         )?;
         let now = unix_timestamp_ms()?;
         let project = Project {
             id: ProjectId::new(),
             name,
-            path: inspection.path,
-            repository_root: Some(repository_root),
-            current_branch: inspection.branch,
+            path,
+            repository_root,
+            current_branch,
             created_at_ms: now,
             last_opened_at_ms: now,
         };
@@ -82,7 +85,7 @@ impl ProjectRegistry {
             .map_err(storage_error)?
             .ok_or_else(|| project_not_found(request.project_id))?;
         drop(storage);
-        if let Ok(git) = &self.git {
+        if let Some(git) = &self.git {
             enrich_project(git, &mut project);
         }
         Ok(project)
@@ -128,6 +131,31 @@ fn default_project_name(repository_root: &Path) -> Result<String, ApiError> {
             )
             .with_action("Enter a display name and try again.")
         })
+}
+
+fn canonical_project_directory(path: &Path) -> Result<PathBuf, ApiError> {
+    if !path.exists() {
+        return Err(ApiError::new(
+            "project_path_not_found",
+            "The selected project folder does not exist.",
+        )
+        .with_action("Choose an existing folder and try again."));
+    }
+    if !path.is_dir() {
+        return Err(ApiError::new(
+            "project_path_not_directory",
+            "The selected project path is not a folder.",
+        )
+        .with_action("Choose a folder instead of a file."));
+    }
+    fs::canonicalize(path).map_err(|error| {
+        ApiError::new(
+            "project_path_unavailable",
+            "CLI Master could not open the selected project folder.",
+        )
+        .with_action("Check the folder permissions and try again.")
+        .with_detail("reason", error.to_string())
+    })
 }
 
 fn unix_timestamp_ms() -> Result<i64, ApiError> {
