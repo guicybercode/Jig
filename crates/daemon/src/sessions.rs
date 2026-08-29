@@ -488,12 +488,9 @@ fn storage_error(error: StorageError) -> ApiError {
             format!("{entity}_already_exists"),
             format!("That {entity} is already registered."),
         ),
-        other => ApiError::new(
-            "storage_error",
-            "Jig could not update terminal metadata.",
-        )
-        .with_action("Try again or restart Jig.")
-        .with_detail("reason", other.to_string()),
+        other => ApiError::new("storage_error", "Jig could not update terminal metadata.")
+            .with_action("Try again or restart Jig.")
+            .with_detail("reason", other.to_string()),
     }
 }
 
