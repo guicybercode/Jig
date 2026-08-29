@@ -2,13 +2,16 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use cli_master_core::wire::{self, EmptyRequest, HelloResponse, StateSnapshotResponse};
+use cli_master_core::wire::{
+    self, EmptyRequest, GitDiffRequest, GitStatusRequest, HelloResponse, StateSnapshotResponse,
+};
 use cli_master_core::{
     ApiError, DaemonInstanceId, EnvelopeKind, PROTOCOL_V1, RequestEnvelope, RequestId,
     ResponseEnvelope,
 };
+use cli_master_git::Git;
 use cli_master_storage::Storage;
 use futures_util::{SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
@@ -25,10 +28,11 @@ use crate::{DaemonConfig, DaemonError};
 /// Largest accepted JSON frame, excluding the four-byte length prefix.
 pub const MAX_FRAME_LENGTH: usize = 1024 * 1024;
 
-#[derive(Debug)]
-struct ServerState {
+pub(crate) struct ServerState {
     hello: HelloResponse,
     schema_version: u32,
+    storage: Mutex<Storage>,
+    git: Option<Git>,
 }
 
 /// Bound, single-instance local daemon.
@@ -41,7 +45,6 @@ pub struct Daemon {
     listener: UnixListener,
     socket_owner: SocketOwner,
     _instance_lock: InstanceLock,
-    _storage: Storage,
     state: Arc<ServerState>,
 }
 
@@ -62,6 +65,7 @@ impl Daemon {
         let mut storage = Storage::open(config.database_path())?;
         storage.migrate()?;
         let schema_version = storage.schema_version()?;
+        let git = crate::git_inspection::discover_git();
 
         let listener = UnixListener::bind(config.socket_path())
             .map_err(|error| DaemonError::io("bind daemon socket", config.socket_path(), error))?;
@@ -77,6 +81,8 @@ impl Daemon {
                 instance_id,
             },
             schema_version,
+            storage: Mutex::new(storage),
+            git,
         });
 
         info!(
@@ -92,7 +98,6 @@ impl Daemon {
             listener,
             socket_owner,
             _instance_lock: instance_lock,
-            _storage: storage,
             state,
         })
     }
@@ -185,7 +190,7 @@ async fn serve_client(
         };
 
         let response = match decode_request(&bytes) {
-            Ok(request) => dispatch(request, &state),
+            Ok(request) => dispatch(request, &state).await,
             Err(failure) => {
                 let Some(request_id) = failure.request_id else {
                     warn!(error_code = %failure.error.code, "closing uncorrelatable invalid request");
@@ -234,7 +239,7 @@ fn validate_peer(_stream: &UnixStream) -> Result<(), io::Error> {
     Ok(())
 }
 
-fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> ResponseEnvelope<Value> {
+async fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> ResponseEnvelope<Value> {
     if request.kind != EnvelopeKind::Request {
         return ResponseEnvelope::failure(
             request.request_id,
@@ -278,6 +283,27 @@ fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> ResponseEnv
                 worktrees: Vec::new(),
             })
         }
+        wire::method::GIT_STATUS => match decode_payload::<GitStatusRequest>(request.payload) {
+            Err(error) => return invalid_payload(request.request_id, &error),
+            Ok(payload) => {
+                match crate::git_inspection::status(&state.storage, state.git.as_ref(), payload)
+                    .await
+                {
+                    Ok(value) => serde_json::to_value(value),
+                    Err(error) => return ResponseEnvelope::failure(request.request_id, error),
+                }
+            }
+        },
+        wire::method::GIT_DIFF => match decode_payload::<GitDiffRequest>(request.payload) {
+            Err(error) => return invalid_payload(request.request_id, &error),
+            Ok(payload) => {
+                match crate::git_inspection::diff(&state.storage, state.git.as_ref(), payload).await
+                {
+                    Ok(value) => serde_json::to_value(value),
+                    Err(error) => return ResponseEnvelope::failure(request.request_id, error),
+                }
+            }
+        },
         method if wire::method::is_supported(method) => {
             return ResponseEnvelope::failure(
                 request.request_id,
@@ -426,12 +452,28 @@ impl Drop for SocketOwner {
 #[cfg(test)]
 mod tests {
     use cli_master_core::ResponsePayload;
+    use cli_master_storage::Storage;
     use serde_json::json;
 
     use super::*;
 
-    #[test]
-    fn dispatch_rejects_non_request_kind() {
+    fn test_state() -> ServerState {
+        let mut storage = Storage::open_in_memory().expect("in-memory storage should open");
+        storage.migrate().expect("in-memory storage should migrate");
+        ServerState {
+            hello: HelloResponse {
+                protocol_version: PROTOCOL_V1,
+                daemon_version: "test".to_owned(),
+                instance_id: DaemonInstanceId::new(),
+            },
+            schema_version: 1,
+            storage: Mutex::new(storage),
+            git: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_rejects_non_request_kind() {
         let request_id = RequestId::new();
         let response = dispatch(
             RequestEnvelope {
@@ -441,15 +483,9 @@ mod tests {
                 method: "system.hello".to_owned(),
                 payload: json!({}),
             },
-            &ServerState {
-                hello: HelloResponse {
-                    protocol_version: PROTOCOL_V1,
-                    daemon_version: "test".to_owned(),
-                    instance_id: DaemonInstanceId::new(),
-                },
-                schema_version: 1,
-            },
-        );
+            &test_state(),
+        )
+        .await;
 
         match response.payload {
             ResponsePayload::Error { error } => assert_eq!(error.code, "invalid_envelope_kind"),

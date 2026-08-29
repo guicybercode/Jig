@@ -490,6 +490,7 @@ name = "cli-master-daemon"
 version = "0.1.0"
 dependencies = [
  "cli-master-core",
+ "cli-master-git",
  "cli-master-storage",
  "futures-util",
  "rustix",
