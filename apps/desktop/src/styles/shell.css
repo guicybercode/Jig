@@ -982,6 +982,17 @@
   overflow-wrap: anywhere;
 }
 
+.terminal-host__surface,
+.terminal-host__surface .terminal-surface {
+  min-width: 0;
+  min-height: 0;
+}
+
+.terminal-host__surface .terminal-surface {
+  border: 0;
+  border-radius: 0;
+}
+
 .danger-zone {
   display: flex;
   align-items: center;

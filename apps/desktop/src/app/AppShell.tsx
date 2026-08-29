@@ -459,6 +459,7 @@ export function AppShell() {
           view={workspace.view}
           projects={workspace.projects}
           project={workspace.selectedProject ?? undefined}
+          agents={workspace.agents}
           sessions={workspace.projectSessions}
           session={workspace.selectedSession ?? undefined}
           agent={selectedAgent}
@@ -469,7 +470,12 @@ export function AppShell() {
           onOpenCanvas={() => workspace.setView("canvas")}
           onSelectProject={selectProject}
           onSelectSession={selectSession}
+          onCreateCustomAgent={workspace.createCustomAgent}
+          onCreateSession={workspace.createSession}
           onStartSession={(sessionId) => workspace.startSession({ sessionId })}
+          subscribeTerminal={workspace.subscribeTerminal}
+          writeTerminal={workspace.writeTerminal}
+          resizeTerminal={workspace.resizeTerminal}
           onRestartSession={(sessionId) => workspace.restartSession({ sessionId })}
           onRenameSession={(sessionId) => workspace.openOverlay({ kind: "rename-session", sessionId })}
           onStopSession={(sessionId) => workspace.openOverlay({ kind: "stop-session", sessionId })}

@@ -11,6 +11,24 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CANVAS_STORAGE_KEY } from "./canvas-state";
 import { CanvasWorkspace } from "./CanvasWorkspace";
 
+const PROJECT = {
+  id: "0198f000-0000-7000-8000-000000000001",
+  name: "Jig",
+  path: "/workspace/jig",
+  repositoryRoot: "/workspace/jig",
+  currentBranch: "main",
+  createdAtMs: 1,
+  lastOpenedAtMs: 1,
+} as const;
+
+const SHELL_AGENT = {
+  id: "0198f000-0000-7000-8000-000000000002",
+  displayName: "Shell",
+  source: "built_in",
+  command: { executable: "/bin/zsh", args: ["-l"], env: {} },
+  enabled: true,
+} as const;
+
 describe("CanvasWorkspace", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -78,6 +96,69 @@ describe("CanvasWorkspace", () => {
     expect(screen.getAllByRole("textbox", { name: /Notes content/ })).toHaveLength(
       1,
     );
+  });
+
+  it("creates and starts a real project session from a terminal card", async () => {
+    const user = userEvent.setup();
+    const createdSession = {
+      id: "0198f000-0000-7000-8000-000000000003",
+      projectId: PROJECT.id,
+      name: "Terminal 1",
+      agentId: SHELL_AGENT.id,
+      cwd: PROJECT.path,
+      status: "unknown",
+      createdAtMs: 2,
+      updatedAtMs: 2,
+    } as const;
+    const onCreateSession = vi.fn().mockResolvedValue(createdSession);
+    const onStartSession = vi.fn().mockResolvedValue({
+      ...createdSession,
+      status: "running",
+      pid: 123,
+    });
+    render(
+      <CanvasWorkspace
+        isConnected
+        projects={[PROJECT]}
+        project={PROJECT}
+        agents={[SHELL_AGENT]}
+        sessions={[]}
+        onAddProject={vi.fn()}
+        onNewSession={vi.fn()}
+        onSelectSession={vi.fn()}
+        onCreateCustomAgent={vi.fn()}
+        onCreateSession={onCreateSession}
+        onStartSession={onStartSession}
+        subscribeTerminal={vi.fn()}
+        writeTerminal={vi.fn()}
+        resizeTerminal={vi.fn()}
+      />,
+    );
+
+    const terminal = screen.getByRole("article", {
+      name: "Terminal 1, terminal canvas item",
+    });
+    await user.click(
+      within(terminal).getByRole("button", { name: "Start terminal" }),
+    );
+
+    await waitFor(() => {
+      expect(onCreateSession).toHaveBeenCalledWith({
+        projectId: PROJECT.id,
+        name: "Terminal 1",
+        agentId: SHELL_AGENT.id,
+        isolation: "current",
+        relativeDirectory: undefined,
+      });
+      expect(onStartSession).toHaveBeenCalledWith(createdSession.id);
+    });
+    const persisted = JSON.parse(
+      localStorage.getItem(CANVAS_STORAGE_KEY) ?? "{}",
+    ) as { nodes?: readonly { id: string; sessionId?: string }[] };
+    expect(
+      persisted.nodes?.find((node) => node.id === "terminal-primary")
+        ?.sessionId,
+    ).toBe(createdSession.id);
   });
 
   it("configures a Codex terminal from the terminal tool", async () => {
@@ -283,10 +364,17 @@ function renderCanvas() {
     <CanvasWorkspace
       isConnected
       projects={[]}
+      agents={[]}
       sessions={[]}
       onAddProject={vi.fn()}
       onNewSession={vi.fn()}
       onSelectSession={vi.fn()}
+      onCreateCustomAgent={vi.fn()}
+      onCreateSession={vi.fn()}
+      onStartSession={vi.fn()}
+      subscribeTerminal={vi.fn()}
+      writeTerminal={vi.fn()}
+      resizeTerminal={vi.fn()}
     />,
   );
 }

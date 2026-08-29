@@ -1,6 +1,12 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import type { Project, Session } from "../../../ipc/types";
+import type {
+  AgentRecord,
+  CreateCustomAgentInput,
+  CreateSessionInput,
+  Project,
+  Session,
+} from "../../../ipc/types";
 import { Icon } from "../../components/Icon";
 import { StatusBadge } from "../../components/StatusBadge";
 import {
@@ -22,15 +28,26 @@ import {
 } from "./canvas-geometry";
 import { NewCanvasTerminalDialog } from "./NewCanvasTerminalDialog";
 import { useCanvasState } from "./useCanvasState";
+import {
+  LiveTerminal,
+  type LiveTerminalTransport,
+} from "../terminal/LiveTerminal";
+import { isLiveStatus } from "../../utils";
 
-interface CanvasWorkspaceProps {
+interface CanvasWorkspaceProps extends LiveTerminalTransport {
   readonly isConnected: boolean;
   readonly projects: readonly Project[];
   readonly project?: Project;
+  readonly agents: readonly AgentRecord[];
   readonly sessions: readonly Session[];
   readonly onAddProject: () => void;
   readonly onNewSession: () => void;
   readonly onSelectSession: (sessionId: string) => void;
+  readonly onCreateCustomAgent: (
+    input: CreateCustomAgentInput,
+  ) => Promise<AgentRecord>;
+  readonly onCreateSession: (input: CreateSessionInput) => Promise<Session>;
+  readonly onStartSession: (sessionId: string) => Promise<Session>;
 }
 
 const ZOOM_STEP = 0.1;
@@ -40,10 +57,17 @@ export function CanvasWorkspace({
   isConnected,
   projects,
   project,
+  agents,
   sessions,
   onAddProject,
   onNewSession,
   onSelectSession,
+  onCreateCustomAgent,
+  onCreateSession,
+  onStartSession,
+  subscribeTerminal,
+  writeTerminal,
+  resizeTerminal,
 }: CanvasWorkspaceProps) {
   const { state, dispatch, persistenceAvailable } = useCanvasState();
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -57,6 +81,12 @@ export function CanvasWorkspace({
   } | null>(null);
   const [layersOpen, setLayersOpen] = useState(false);
   const [terminalDialogOpen, setTerminalDialogOpen] = useState(false);
+  const [pendingTerminals, setPendingTerminals] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const [terminalErrors, setTerminalErrors] = useState<
+    Readonly<Record<string, string>>
+  >({});
   const terminalSessions = useMemo(
     () => new Map(sessions.map((session) => [session.id, session])),
     [sessions],
@@ -118,11 +148,66 @@ export function CanvasWorkspace({
   }
 
   function addTerminal(configuration: CanvasTerminalConfiguration) {
+    const node = createTerminalCanvasNode(nextNodePosition(), configuration);
     dispatch({
       type: "node/add",
-      node: createTerminalCanvasNode(nextNodePosition(), configuration),
+      node,
     });
     setTerminalDialogOpen(false);
+    if (project && isConnected) {
+      void launchTerminal(node);
+    }
+  }
+
+  async function launchTerminal(node: TerminalCanvasNode, session?: Session) {
+    if (!project) {
+      setTerminalErrors((current) => ({
+        ...current,
+        [node.id]: "Select a project before starting this terminal.",
+      }));
+      return;
+    }
+    setPendingTerminals((current) => new Set(current).add(node.id));
+    setTerminalErrors((current) => {
+      const next = { ...current };
+      delete next[node.id];
+      return next;
+    });
+    try {
+      if (session) {
+        await onStartSession(session.id);
+        return;
+      }
+      const agent = await resolveTerminalAgent(
+        node,
+        agents,
+        onCreateCustomAgent,
+      );
+      const created = await onCreateSession({
+        projectId: project.id,
+        name: node.title,
+        agentId: agent.id,
+        isolation: "current",
+        relativeDirectory: relativeWorkingDirectory(project, node.workingDirectory),
+      });
+      dispatch({
+        type: "terminal/attach",
+        nodeId: node.id,
+        sessionId: created.id,
+      });
+      await onStartSession(created.id);
+    } catch (error) {
+      setTerminalErrors((current) => ({
+        ...current,
+        [node.id]: terminalErrorMessage(error),
+      }));
+    } finally {
+      setPendingTerminals((current) => {
+        const next = new Set(current);
+        next.delete(node.id);
+        return next;
+      });
+    }
   }
 
   function setZoom(zoom: number) {
@@ -404,12 +489,10 @@ export function CanvasWorkspace({
             selectedNodeId={state.selectedNodeId}
             connectionSourceId={state.connectionSourceId}
           />
-          {state.nodes.map((node, index) => {
-            const fallbackSession =
-              node.kind === "terminal" ? sessions[index] : undefined;
+          {state.nodes.map((node) => {
             const session =
               node.kind === "terminal"
-                ? terminalSessions.get(node.sessionId ?? "") ?? fallbackSession
+                ? terminalSessions.get(node.sessionId ?? "")
                 : undefined;
             return (
               <CanvasNodeCard
@@ -458,6 +541,16 @@ export function CanvasWorkspace({
                   dispatch({ type: "note/update", nodeId: node.id, text })
                 }
                 onOpenSession={() => session && onSelectSession(session.id)}
+                onStartTerminal={() =>
+                  node.kind === "terminal" && launchTerminal(node, session)
+                }
+                terminalPending={pendingTerminals.has(node.id)}
+                terminalError={terminalErrors[node.id]}
+                terminalTransport={{
+                  subscribeTerminal,
+                  writeTerminal,
+                  resizeTerminal,
+                }}
               />
             );
           })}
@@ -606,6 +699,10 @@ interface CanvasNodeCardProps {
   }) => void;
   readonly onNoteChange: (text: string) => void;
   readonly onOpenSession: () => void;
+  readonly onStartTerminal: () => void;
+  readonly terminalPending: boolean;
+  readonly terminalError?: string;
+  readonly terminalTransport: LiveTerminalTransport;
 }
 
 function CanvasNodeCard({
@@ -623,6 +720,10 @@ function CanvasNodeCard({
   onResize,
   onNoteChange,
   onOpenSession,
+  onStartTerminal,
+  terminalPending,
+  terminalError,
+  terminalTransport,
 }: CanvasNodeCardProps) {
   const dragRef = useRef<{
     readonly pointerId: number;
@@ -780,6 +881,10 @@ function CanvasNodeCard({
             node={node}
             session={session}
             onOpenSession={onOpenSession}
+            onStart={onStartTerminal}
+            pending={terminalPending}
+            error={terminalError}
+            transport={terminalTransport}
           />
           {selected ? (
             <button
@@ -882,11 +987,20 @@ function TerminalNodeBody({
   node,
   session,
   onOpenSession,
+  onStart,
+  pending,
+  error,
+  transport,
 }: {
   readonly node: TerminalCanvasNode;
   readonly session?: Session;
   readonly onOpenSession: () => void;
+  readonly onStart: () => void;
+  readonly pending: boolean;
+  readonly error?: string;
+  readonly transport: LiveTerminalTransport;
 }) {
+  const live = session ? isLiveStatus(session.status) : false;
   return (
     <div
       className="canvas-terminal"
@@ -906,21 +1020,98 @@ function TerminalNodeBody({
           </span>
         )}
       </div>
-      <div className="canvas-terminal__body">
-        <Icon name="terminal" />
-        <p>
-          {session
-            ? "The PTY surface will attach here without routing output through React."
-            : `${node.executable ?? "A login shell"} is configured. Attach a project session to start its live PTY.`}
-        </p>
-        {session ? (
-          <button type="button" onClick={onOpenSession}>
-            Open session details
-          </button>
-        ) : null}
-      </div>
+      {session && live ? (
+        <div className="canvas-terminal__body canvas-terminal__body--live">
+          <LiveTerminal session={session} {...transport} />
+        </div>
+      ) : (
+        <div className="canvas-terminal__body">
+          <Icon name="terminal" />
+          <p>
+            {error ??
+              (session
+                ? "This terminal is stopped. Start it to attach a fresh live PTY."
+                : `${node.executable ?? "A login shell"} is ready to start in this project.`)}
+          </p>
+          <div className="canvas-terminal__body-actions">
+            <button
+              type="button"
+              disabled={pending}
+              aria-busy={pending}
+              onClick={onStart}
+            >
+              {pending ? "Starting…" : error ? "Retry terminal" : "Start terminal"}
+            </button>
+            {session ? (
+              <button type="button" onClick={onOpenSession}>
+                Session details
+              </button>
+            ) : null}
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+async function resolveTerminalAgent(
+  node: TerminalCanvasNode,
+  agents: readonly AgentRecord[],
+  createCustomAgent: (
+    input: CreateCustomAgentInput,
+  ) => Promise<AgentRecord>,
+): Promise<AgentRecord> {
+  if (node.preset === "custom") {
+    if (!node.executable) {
+      throw new Error("Choose an executable before starting this terminal.");
+    }
+    return createCustomAgent({
+      displayName: node.title,
+      command: { executable: node.executable, args: [], env: {} },
+    });
+  }
+  const executable = node.preset === "shell" ? undefined : node.executable;
+  const match = agents.find((agent) => {
+    if (!agent.enabled) {
+      return false;
+    }
+    if (node.preset === "shell") {
+      return agent.displayName.toLowerCase() === "shell";
+    }
+    const commandName = agent.command.executable.split(/[\\/]/).pop();
+    return commandName?.toLowerCase() === executable?.toLowerCase();
+  });
+  if (!match) {
+    throw new Error(
+      `${node.preset === "shell" ? "Shell" : node.title} is not available in Jig yet.`,
+    );
+  }
+  return match;
+}
+
+function relativeWorkingDirectory(
+  project: Project,
+  selectedDirectory?: string,
+): string | undefined {
+  if (!selectedDirectory || selectedDirectory === "~") {
+    return undefined;
+  }
+  const root = (project.repositoryRoot ?? project.path).replace(/\/$/, "");
+  const selected = selectedDirectory.replace(/\/$/, "");
+  if (selected === root || selected === project.path.replace(/\/$/, "")) {
+    return undefined;
+  }
+  if (!selected.startsWith(`${root}/`)) {
+    throw new Error("Choose a working directory inside the selected project.");
+  }
+  return selected.slice(root.length + 1);
+}
+
+function terminalErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return "Jig could not start this terminal. Try again.";
 }
 
 function NoteNodeBody({

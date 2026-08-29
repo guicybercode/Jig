@@ -13,7 +13,15 @@ import {
   tauriIpcClient,
   toIpcError,
 } from "../../ipc/client";
-import type { AppPlatform, IpcClient } from "../../ipc/client";
+import type {
+  AppPlatform,
+  IpcClient,
+  IpcEventErrorHandler,
+  IpcEventHandler,
+  TerminalResizeInput,
+  TerminalSubscriptionInput,
+  Unsubscribe,
+} from "../../ipc/client";
 import {
   IpcContractError,
   requireNumber,
@@ -103,6 +111,13 @@ export interface WorkspaceOperations {
   removeWorktree(input: RemoveWorktreeInput): Promise<void>;
   getDiagnostics(): Promise<DiagnosticsSnapshot>;
   openPath(path: string): Promise<void>;
+  subscribeTerminal(
+    input: TerminalSubscriptionInput,
+    handler: IpcEventHandler,
+    onError: IpcEventErrorHandler,
+  ): Promise<Unsubscribe>;
+  writeTerminal(sessionId: string, bytes: Uint8Array): Promise<void>;
+  resizeTerminal(input: TerminalResizeInput): Promise<void>;
 }
 
 /** Stable state and actions consumed by project/session UI features. */
@@ -663,6 +678,26 @@ export function WorkspaceProvider({
     [client, execute],
   );
 
+  const subscribeTerminal = useCallback(
+    (
+      input: TerminalSubscriptionInput,
+      handler: IpcEventHandler,
+      onError: IpcEventErrorHandler,
+    ) => client.subscribeTerminal(input, handler, onError),
+    [client],
+  );
+
+  const writeTerminal = useCallback(
+    (sessionId: string, bytes: Uint8Array) =>
+      client.writeTerminal(sessionId, bytes),
+    [client],
+  );
+
+  const resizeTerminal = useCallback(
+    (input: TerminalResizeInput) => client.resizeTerminal(input),
+    [client],
+  );
+
   const projects = state.snapshot?.projects ?? EMPTY_PROJECTS;
   const agents = state.snapshot?.agents ?? EMPTY_AGENTS;
   const agentDetections = state.agentDetections;
@@ -727,6 +762,9 @@ export function WorkspaceProvider({
     removeWorktree,
     getDiagnostics,
     openPath,
+    subscribeTerminal,
+    writeTerminal,
+    resizeTerminal,
   };
 
   return (

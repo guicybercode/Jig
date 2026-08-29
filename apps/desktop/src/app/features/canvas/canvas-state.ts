@@ -89,6 +89,11 @@ export type CanvasAction =
       readonly nodeId: string;
       readonly size: { readonly width: number; readonly height: number };
     }
+  | {
+      readonly type: "terminal/attach";
+      readonly nodeId: string;
+      readonly sessionId: string;
+    }
   | { readonly type: "node/delete"; readonly nodeId: string }
   | { readonly type: "node/select"; readonly nodeId: string | null }
   | { readonly type: "connection/start"; readonly nodeId: string }
@@ -210,6 +215,12 @@ export function canvasReducer(
                 MAX_TERMINAL_HEIGHT,
               ),
             }
+          : node,
+      );
+    case "terminal/attach":
+      return updateNode(state, action.nodeId, (node) =>
+        node.kind === "terminal"
+          ? { ...node, sessionId: action.sessionId }
           : node,
       );
     case "node/delete":

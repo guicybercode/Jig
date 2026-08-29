@@ -4,8 +4,9 @@ import type { AgentRecord, ApiErrorData, Project, Session, Worktree } from "../.
 import { Icon } from "../../components/Icon";
 import { StatusBadge } from "../../components/StatusBadge";
 import { copyText, errorData, formatActivityTime, isLiveStatus, toDateTime } from "../../utils";
+import { LiveTerminal, type LiveTerminalTransport } from "../terminal/LiveTerminal";
 
-interface SessionWorkspaceProps {
+interface SessionWorkspaceProps extends LiveTerminalTransport {
   readonly session: Session;
   readonly project: Project;
   readonly agent?: AgentRecord;
@@ -36,6 +37,9 @@ export function SessionWorkspace({
   onRemoveWorktree,
   onGitStatus,
   onOpenPath,
+  subscribeTerminal,
+  writeTerminal,
+  resizeTerminal,
 }: SessionWorkspaceProps) {
   const [pendingAction, setPendingAction] = useState<string>();
   const [notice, setNotice] = useState<string>();
@@ -221,10 +225,21 @@ export function SessionWorkspace({
             <span><Icon name="terminal" /> Terminal</span>
             <span className="terminal-host__status">Session {session.status}</span>
           </div>
-          <div className="terminal-host__placeholder">
-            <Icon name="terminal" />
-            <p>Terminal rendering attaches here without flowing output through React state.</p>
-          </div>
+          {live ? (
+            <LiveTerminal
+              className="terminal-host__surface"
+              session={session}
+              autoFocus
+              subscribeTerminal={subscribeTerminal}
+              writeTerminal={writeTerminal}
+              resizeTerminal={resizeTerminal}
+            />
+          ) : (
+            <div className="terminal-host__placeholder">
+              <Icon name="terminal" />
+              <p>Start this session to open its interactive terminal.</p>
+            </div>
+          )}
         </section>
 
         <section className="danger-zone" aria-labelledby="session-data-title">

@@ -2,6 +2,8 @@ import type { AppPlatform } from "../../../ipc/client";
 import type {
   AgentRecord,
   ApiErrorData,
+  CreateCustomAgentInput,
+  CreateSessionInput,
   HelloResponse,
   Project,
   Session,
@@ -13,11 +15,12 @@ import { StatusBadge } from "../../components/StatusBadge";
 import { DiagnosticsView } from "../diagnostics/DiagnosticsView";
 import { CanvasWorkspace } from "../canvas/CanvasWorkspace";
 import { SessionWorkspace } from "../sessions/SessionWorkspace";
+import type { LiveTerminalTransport } from "../terminal/LiveTerminal";
 
 type WorkspaceViewName = "canvas" | "session" | "grid" | "settings" | "diagnostics";
 type ConnectionStatus = "connecting" | "connected" | "disconnected" | "fatal";
 
-interface WorkspaceProps {
+interface WorkspaceProps extends LiveTerminalTransport {
   readonly connectionStatus: ConnectionStatus;
   readonly connectionError?: ApiErrorData;
   readonly hello?: HelloResponse;
@@ -27,6 +30,7 @@ interface WorkspaceProps {
   readonly projects: readonly Project[];
   readonly project?: Project;
   readonly sessions: readonly Session[];
+  readonly agents: readonly AgentRecord[];
   readonly session?: Session;
   readonly agent?: AgentRecord;
   readonly worktree?: Worktree;
@@ -37,6 +41,8 @@ interface WorkspaceProps {
   readonly onSelectProject: (projectId: string) => void;
   readonly onSelectSession: (sessionId: string) => void;
   readonly onStartSession: (sessionId: string) => Promise<Session>;
+  readonly onCreateCustomAgent: (input: CreateCustomAgentInput) => Promise<AgentRecord>;
+  readonly onCreateSession: (input: CreateSessionInput) => Promise<Session>;
   readonly onRestartSession: (sessionId: string) => Promise<Session>;
   readonly onRenameSession: (sessionId: string) => void;
   readonly onStopSession: (sessionId: string) => void;
@@ -78,10 +84,17 @@ export function Workspace(props: WorkspaceProps) {
         isConnected={props.connectionStatus === "connected"}
         projects={props.projects}
         project={props.project}
+        agents={props.agents}
         sessions={props.sessions}
         onAddProject={props.onAddProject}
         onNewSession={props.onNewSession}
         onSelectSession={props.onSelectSession}
+        onCreateCustomAgent={props.onCreateCustomAgent}
+        onCreateSession={props.onCreateSession}
+        onStartSession={props.onStartSession}
+        subscribeTerminal={props.subscribeTerminal}
+        writeTerminal={props.writeTerminal}
+        resizeTerminal={props.resizeTerminal}
       />
     );
   }
@@ -112,6 +125,9 @@ export function Workspace(props: WorkspaceProps) {
       onRemoveWorktree={props.onRemoveWorktree}
       onGitStatus={props.onGitStatus}
       onOpenPath={props.onOpenPath}
+      subscribeTerminal={props.subscribeTerminal}
+      writeTerminal={props.writeTerminal}
+      resizeTerminal={props.resizeTerminal}
     />
   );
 }

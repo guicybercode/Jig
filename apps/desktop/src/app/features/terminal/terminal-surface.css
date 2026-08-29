@@ -11,6 +11,36 @@
   contain: layout paint;
 }
 
+.live-terminal {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.live-terminal > .terminal-surface {
+  width: 100%;
+  height: 100%;
+}
+
+.live-terminal__error {
+  position: absolute;
+  inset: auto 0 0;
+  z-index: 2;
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.55rem 0.7rem;
+  color: #ffd9d5;
+  background: rgb(55 15 18 / 94%);
+  border-top: 1px solid rgb(255 120 120 / 35%);
+  font-size: 0.72rem;
+}
+
+.live-terminal__error span {
+  color: rgb(255 217 213 / 75%);
+}
+
 .terminal-surface:focus-within {
   border-color: var(--color-accent);
   box-shadow: inset 0 0 0 1px var(--color-focus-ring);

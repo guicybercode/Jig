@@ -1208,6 +1208,18 @@
   text-align: center;
 }
 
+.canvas-terminal__body--live {
+  display: flex;
+  align-items: stretch;
+  padding: 0;
+  text-align: initial;
+}
+
+.canvas-terminal__body--live .terminal-surface {
+  border: 0;
+  border-radius: 0;
+}
+
 .canvas-terminal__body > .icon {
   width: 1.5rem;
   height: 1.5rem;
@@ -1229,6 +1241,13 @@
   color: #dbe3ef;
   background: rgb(255 255 255 / 6%);
   font-size: 0.6875rem;
+}
+
+.canvas-terminal__body-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.45rem;
 }
 
 .canvas-note {
