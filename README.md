@@ -26,6 +26,12 @@ API server. Authentication remains with each CLI installed on the machine.
 > [docs/backup-and-recovery.md](docs/backup-and-recovery.md),
 > [docs/troubleshooting.md](docs/troubleshooting.md),
 > [docs/uninstall.md](docs/uninstall.md).
+>
+> The current Beta package has a known domain-IPC gap: its daemon returns an
+> empty snapshot and does not yet implement the project/session mutations
+> needed to add a project, create a live session, or populate `TerminalGrid`
+> through the packaged GUI. Runtime-crate acceptance is not end-to-end desktop
+> acceptance. See [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
 
 ## Supported platforms
 
@@ -94,7 +100,9 @@ pnpm tauri dev
 ```
 
 This command starts Vite and the Tauri desktop process. It does not start an
-agent until the user creates a session.
+agent automatically. The current daemon domain-IPC gap prevents the packaged
+GUI from completing project/session creation; see
+[docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
 
 For browser-only UI development:
 
@@ -122,9 +130,11 @@ pnpm --filter @cli-master/desktop test:e2e
 disagree. Packaging CI smoke-tests the AppImage / `.app` bundle, not only
 `cargo build`.
 
-Runtime acceptance for two live sessions, worktree isolation, UI close/reopen,
-and daemon recovery lives in `crates/e2e`. Playwright covers the empty desktop
-shell; see [docs/playwright-testing.md](docs/playwright-testing.md).
+Runtime acceptance for two live sessions, worktree isolation, subscription
+disconnect/reconnect, and daemon recovery lives in `crates/e2e`. Playwright
+covers the empty/disconnected desktop shell; the required project/session
+daemon mutations and a real Tauri-window harness remain explicit gaps. See
+[docs/playwright-testing.md](docs/playwright-testing.md).
 Platform-specific PTY tests run in the Linux and macOS CI jobs.
 
 ## Build packages
@@ -157,10 +167,10 @@ crates/e2e                     Acceptance tests against production crates
 design-system/cli-master/      UI tokens and interaction rules
 ARCHITECTURE.md                accepted architecture and protocol design
 AGENTS.md                      crate ownership and IPC rules for agents
-protocol/catalog.json          frozen v1 method names plus applicationVersion
+protocol/catalog.json          frozen v1 names plus applicationVersion
 docs/                          install, packaging, and recovery guides
 CHANGELOG.md                   Beta packaging notes
-docs/playwright-testing.md     UI E2E scope and skipped Tauri grid tests
+docs/playwright-testing.md     UI E2E scope and the Tauri window-level gap
 docs/test-coverage-review.md   Beta criteria mapped onto real tests
 ```
 
