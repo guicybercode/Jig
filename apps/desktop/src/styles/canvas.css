@@ -280,6 +280,40 @@
   transform-origin: 0 0;
 }
 
+.canvas-connections {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.canvas-connection path {
+  fill: none;
+  stroke: var(--canvas-connector);
+  stroke-width: 1.75;
+  stroke-dasharray: 7 7;
+  opacity: 0.68;
+}
+
+.canvas-connection circle {
+  fill: var(--canvas-card);
+  stroke: var(--canvas-connector);
+  stroke-width: 1.75;
+  vector-effect: non-scaling-stroke;
+}
+
+.canvas-connection--emphasized path {
+  stroke: var(--canvas-accent);
+  opacity: 0.95;
+}
+
+.canvas-connection--emphasized circle {
+  stroke: var(--canvas-accent);
+}
+
 .canvas-node {
   position: absolute;
   top: 0;

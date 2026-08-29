@@ -10,6 +10,7 @@ import {
   type NoteCanvasNode,
   type TerminalCanvasNode,
 } from "./canvas-state";
+import { CanvasConnections } from "./CanvasConnections";
 import { useCanvasState } from "./useCanvasState";
 
 interface CanvasWorkspaceProps {
@@ -275,6 +276,12 @@ export function CanvasWorkspace({
           className="canvas-stage"
           style={{ transform: `scale(${state.zoom})` }}
         >
+          <CanvasConnections
+            connections={state.connections}
+            nodes={state.nodes}
+            selectedNodeId={state.selectedNodeId}
+            connectionSourceId={state.connectionSourceId}
+          />
           {state.nodes.map((node, index) => {
             const fallbackSession =
               node.kind === "terminal" ? sessions[index] : undefined;

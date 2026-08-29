@@ -17,7 +17,7 @@ describe("CanvasWorkspace", () => {
   });
 
   it("renders the first-launch terminal and note composition", () => {
-    renderCanvas();
+    const { container } = renderCanvas();
 
     expect(
       screen.getByRole("heading", { name: "My Workspace", level: 1 }),
@@ -30,6 +30,9 @@ describe("CanvasWorkspace", () => {
     );
     expect(screen.getByText("Canvas saved locally")).toBeVisible();
     expect(screen.queryByText(/Daemon (connected|offline)/)).not.toBeInTheDocument();
+    expect(
+      container.querySelectorAll("[data-connection-id]"),
+    ).toHaveLength(2);
   });
 
   it("adds notes, creates a two-click connection, and resets the layout", async () => {
@@ -65,6 +68,9 @@ describe("CanvasWorkspace", () => {
       ) as { connections?: readonly unknown[] };
       expect(persisted.connections).toHaveLength(3);
     });
+    expect(
+      document.querySelectorAll("[data-connection-id]"),
+    ).toHaveLength(3);
 
     await user.click(
       screen.getByRole("button", { name: "Reset canvas layout" }),
