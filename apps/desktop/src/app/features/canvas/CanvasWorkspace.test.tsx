@@ -111,6 +111,27 @@ describe("CanvasWorkspace", () => {
     });
     expect(container.querySelector(".canvas-node--selected")).toBe(terminal);
   });
+
+  it("shows canvas items and fits them from the reference controls", async () => {
+    const user = userEvent.setup();
+    const { container } = renderCanvas();
+    const viewport = container.querySelector<HTMLElement>(".canvas-viewport");
+    expect(viewport).not.toBeNull();
+    const scrollTo = vi.fn();
+    Object.defineProperties(viewport!, {
+      clientWidth: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 700 },
+      scrollTo: { configurable: true, value: scrollTo },
+    });
+
+    await user.click(screen.getByRole("button", { name: "Show canvas items" }));
+    const panel = screen.getByRole("region", { name: "Canvas items" });
+    expect(within(panel).getByRole("button", { name: /Terminal 1/ })).toBeVisible();
+    expect(within(panel).getByRole("button", { name: /Notes/ })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Fit canvas to items" }));
+    expect(scrollTo).toHaveBeenCalledOnce();
+  });
 });
 
 function renderCanvas() {

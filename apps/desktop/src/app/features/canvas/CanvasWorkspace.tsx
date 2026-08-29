@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import type { Project, Session } from "../../../ipc/types";
 import { Icon } from "../../components/Icon";
@@ -23,6 +23,10 @@ interface CanvasWorkspaceProps {
 }
 
 const ZOOM_STEP = 0.1;
+const NODE_SIZE = {
+  terminal: { width: 432, height: 256 },
+  note: { width: 288, height: 288 },
+} as const;
 
 /** Spatial terminal and notes workspace inspired by the supplied references. */
 export function CanvasWorkspace({
@@ -36,6 +40,7 @@ export function CanvasWorkspace({
 }: CanvasWorkspaceProps) {
   const { state, dispatch, persistenceAvailable } = useCanvasState();
   const viewportRef = useRef<HTMLDivElement>(null);
+  const [layersOpen, setLayersOpen] = useState(false);
   const terminalSessions = useMemo(
     () => new Map(sessions.map((session) => [session.id, session])),
     [sessions],
@@ -56,6 +61,71 @@ export function CanvasWorkspace({
 
   function setZoom(zoom: number) {
     dispatch({ type: "zoom/set", zoom: Number(zoom.toFixed(2)) });
+  }
+
+  function focusNode(node: CanvasNode) {
+    const viewport = viewportRef.current;
+    dispatch({ type: "node/select", nodeId: node.id });
+    setLayersOpen(false);
+    if (!viewport) {
+      return;
+    }
+
+    const size = NODE_SIZE[node.kind];
+    viewport.scrollTo({
+      left: Math.max(
+        0,
+        (node.x + size.width / 2) * state.zoom - viewport.clientWidth / 2,
+      ),
+      top: Math.max(
+        0,
+        (node.y + size.height / 2) * state.zoom - viewport.clientHeight / 2,
+      ),
+      behavior: "smooth",
+    });
+  }
+
+  function fitCanvasToItems() {
+    const viewport = viewportRef.current;
+    if (!viewport || state.nodes.length === 0) {
+      return;
+    }
+
+    const minimumX = Math.min(...state.nodes.map((node) => node.x));
+    const minimumY = Math.min(...state.nodes.map((node) => node.y));
+    const maximumX = Math.max(
+      ...state.nodes.map((node) => node.x + NODE_SIZE[node.kind].width),
+    );
+    const maximumY = Math.max(
+      ...state.nodes.map((node) => node.y + NODE_SIZE[node.kind].height),
+    );
+    const contentWidth = maximumX - minimumX;
+    const contentHeight = maximumY - minimumY;
+    const viewportWidth = viewport.clientWidth || 960;
+    const viewportHeight = viewport.clientHeight || 640;
+    const nextZoom = Math.min(
+      1,
+      Math.max(
+        0.5,
+        Math.min(
+          (viewportWidth - 160) / contentWidth,
+          (viewportHeight - 160) / contentHeight,
+        ),
+      ),
+    );
+
+    setZoom(nextZoom);
+    viewport.scrollTo({
+      left: Math.max(
+        0,
+        (minimumX + contentWidth / 2) * nextZoom - viewportWidth / 2,
+      ),
+      top: Math.max(
+        0,
+        (minimumY + contentHeight / 2) * nextZoom - viewportHeight / 2,
+      ),
+      behavior: "smooth",
+    });
   }
 
   return (
@@ -262,6 +332,58 @@ export function CanvasWorkspace({
         </div>
       </div>
 
+      {layersOpen ? (
+        <section
+          id="canvas-layers-panel"
+          className="canvas-layers-panel"
+          aria-labelledby="canvas-layers-title"
+        >
+          <header>
+            <div>
+              <span>Workspace</span>
+              <h2 id="canvas-layers-title">Canvas items</h2>
+            </div>
+            <span>{state.nodes.length}</span>
+          </header>
+          <ul>
+            {state.nodes.map((node) => (
+              <li key={node.id}>
+                <button type="button" onClick={() => focusNode(node)}>
+                  <Icon name={node.kind === "terminal" ? "terminal" : "note"} />
+                  <span>{node.title}</span>
+                  <small>
+                    {state.connections.filter(
+                      (connection) =>
+                        connection.sourceNodeId === node.id ||
+                        connection.targetNodeId === node.id,
+                    ).length} connections
+                  </small>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      <div className="canvas-view-controls" aria-label="Canvas view controls">
+        <button
+          type="button"
+          aria-label="Show canvas items"
+          aria-expanded={layersOpen}
+          aria-controls="canvas-layers-panel"
+          onClick={() => setLayersOpen((open) => !open)}
+        >
+          <Icon name="layers" />
+        </button>
+        <button
+          type="button"
+          aria-label="Fit canvas to items"
+          onClick={fitCanvasToItems}
+        >
+          <Icon name="map" />
+        </button>
+      </div>
+
       <div className="canvas-zoom" aria-label="Canvas zoom controls">
         <button
           type="button"
@@ -346,6 +468,7 @@ function CanvasNodeCard({
       style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
       tabIndex={0}
       aria-label={`${node.title}, ${node.kind} canvas item`}
+      data-canvas-node-id={node.id}
       aria-selected={selected}
       aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
       onFocus={onSelect}

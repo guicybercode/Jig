@@ -144,8 +144,10 @@
 
 .canvas-toolbar,
 .canvas-session-actions,
+.canvas-view-controls,
 .canvas-zoom,
-.canvas-connect-notice {
+.canvas-connect-notice,
+.canvas-layers-panel {
   position: absolute;
   z-index: 10;
   border: 1px solid rgb(25 27 29 / 9%);
@@ -536,6 +538,103 @@
   padding: 0.25rem;
 }
 
+.canvas-view-controls {
+  right: 11rem;
+  bottom: 1.25rem;
+  display: flex;
+  gap: 0.5rem;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.canvas-view-controls button {
+  width: 3rem;
+  height: 3rem;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgb(25 27 29 / 9%);
+  border-radius: 50%;
+  color: var(--canvas-text);
+  background: var(--canvas-chrome);
+  box-shadow: 0 0.5rem 1.75rem rgb(30 33 36 / 10%);
+  backdrop-filter: blur(18px);
+}
+
+.canvas-view-controls button[aria-expanded="true"] {
+  color: var(--canvas-accent);
+  background: var(--canvas-accent-muted);
+}
+
+.canvas-layers-panel {
+  right: 11rem;
+  bottom: 5rem;
+  width: min(17rem, calc(100% - 2.5rem));
+  overflow: hidden;
+  border-radius: 0.875rem;
+}
+
+.canvas-layers-panel > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--canvas-border);
+  padding: 0.75rem;
+}
+
+.canvas-layers-panel > header div {
+  display: grid;
+  gap: 0.125rem;
+}
+
+.canvas-layers-panel > header span {
+  color: var(--canvas-text-muted);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.canvas-layers-panel h2 {
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.canvas-layers-panel ul {
+  max-height: 15rem;
+  overflow: auto;
+  margin: 0;
+  padding: 0.375rem;
+  list-style: none;
+}
+
+.canvas-layers-panel button {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1.25rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  border: 0;
+  border-radius: 0.5rem;
+  padding: 0.5rem;
+  color: var(--canvas-text);
+  background: transparent;
+  text-align: left;
+}
+
+.canvas-layers-panel button span,
+.canvas-layers-panel button small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.canvas-layers-panel button small {
+  color: var(--canvas-text-muted);
+  font-size: 0.625rem;
+}
+
 .canvas-zoom button {
   width: 2.25rem;
   height: 2.25rem;
@@ -569,6 +668,8 @@
 @media (hover: hover) {
   .canvas-tool:not(:disabled):hover,
   .canvas-node__actions button:hover,
+  .canvas-view-controls button:hover,
+  .canvas-layers-panel button:hover,
   .canvas-zoom button:not(:disabled):hover {
     color: var(--canvas-accent);
     background: var(--canvas-accent-muted);
@@ -588,8 +689,7 @@
     width: 15rem;
   }
 
-  .canvas-context__meta,
-  .canvas-service-state {
+  .canvas-context__meta {
     display: none;
   }
 }
@@ -636,8 +736,10 @@
   .app-shell--canvas .navigation-pane,
   .canvas-toolbar,
   .canvas-session-actions,
+  .canvas-view-controls button,
   .canvas-zoom,
-  .canvas-connect-notice {
+  .canvas-connect-notice,
+  .canvas-layers-panel {
     background: #fafaf9;
   }
 }
