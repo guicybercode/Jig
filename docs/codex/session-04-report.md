@@ -1,131 +1,126 @@
 # Session 04 report: Git worktree isolation
 
-This session added `crates/git` (`cli-master-git`). The crate is the only place that runs Git. The desktop UI still does not invoke Git.
+This session established `cli-master-git` as the only crate that invokes Git.
+The implementation described here is the reconciled version that follows
+[ADR 0004](../adr/0004-git-worktree-safety.md); the desktop and daemon consume
+the crate instead of constructing Git commands themselves.
 
-Git is the system binary resolved from `PATH`. Every invocation is `Command::new(executable)` plus a separate argument array. Paths, refs, and branch names never go through a shell string.
+## Process boundary
 
-## Git commands
+Git is discovered on `PATH`, verified with `git --version`, and invoked directly
+with an executable plus an argument array. No operation builds a shell command.
+Every child receives `GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat`, and `LC_ALL=C`.
 
-Read operations prefix Git with `--no-optional-locks --no-pager -c core.quotepath=false -C <path>` and set `GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat`, `PAGER=cat`, and `LC_ALL=C`.
+Commands have bounded stdout and stderr, a default 15-second timeout, and no
+stdin. On Unix, a timed-out Git process and its helpers are terminated as a
+process group so inherited output pipes cannot hang the application.
+
+The relevant command shapes are:
 
 | Operation | Git arguments |
 |---|---|
-| Inside a work tree | `rev-parse --is-inside-work-tree` |
-| Bare check | `rev-parse --is-bare-repository` |
-| Repository root | `rev-parse --show-toplevel` |
-| Git directory | `rev-parse --absolute-git-dir` |
-| Common directory | `rev-parse --git-common-dir` |
-| Current branch | `symbolic-ref --short HEAD` |
-| Current commit | `rev-parse --verify HEAD` |
-| Resolve a base ref | `rev-parse --verify --end-of-options <ref>^{commit}` |
-| Local branches | `for-each-ref --format=%(refname:short) refs/heads` |
-| Status | `status --porcelain=v2 -z --branch --untracked-files=all` |
-| Diff (unstaged) | `diff --no-color --no-ext-diff` |
-| Diff (staged) | `diff --no-color --no-ext-diff --cached` |
-| Binary detection | `diff --numstat --no-ext-diff` (and `--cached` when staged) |
+| Repository root | `rev-parse --path-format=absolute --show-toplevel` |
+| Common directory | `rev-parse --path-format=absolute --git-common-dir` |
+| Current branch | `symbolic-ref --quiet --short HEAD` |
+| Starting commit | `rev-parse --verify HEAD^{commit}` |
+| Verify planned commit | `cat-file -e <oid>^{commit}` |
+| Validate branch | `check-ref-format --branch <branch>` |
+| Check branch collision | `show-ref --verify --quiet refs/heads/<branch>` |
+| Status | `status --porcelain=v2 --branch -z --untracked-files=all` |
+| Removal status | status above plus `--ignored=matching` |
+| Hidden index flags | `ls-files -v -z` |
+| Diff | `-c color.ui=false diff --no-color --no-ext-diff --no-textconv --text HEAD --` |
 | List worktrees | `worktree list --porcelain -z` |
-| Create worktree | `worktree add --no-track -b <branch> <path> <commit>` |
-| Remove worktree | `worktree remove <path>` (no `--force`) |
-| Rollback branch | `branch -d <branch>` (no `-D`) |
+| Create worktree | `worktree add -b <branch> <path> <commit>` |
+| Remove worktree | `worktree remove <path>` |
 
-The crate never runs `git reset --hard`, `git clean`, `git worktree remove --force`, or `git branch -D`.
+The crate exposes no reset, clean, branch deletion, or forced worktree removal
+operation.
 
 ## Branch and directory names
 
-Session title `Implement OAuth Refresh` becomes branch `agent/implement-oauth-refresh` and directory leaf `implement-oauth-refresh`.
+A task such as `Implementação OAuth` with short ID `abc123` becomes
+`agent/implementacao-oauth-abc123`. The worktree directory starts with the
+branch leaf, `implementacao-oauth-abc123`.
 
-The slug path:
+Naming is deterministic:
 
-1. Unicode lowercase, then NFKD.
-2. Keep ASCII letters and digits.
-3. Turn separators and path punctuation into a single hyphen, which collapses `../` into ordinary slug pieces instead of traversal.
-4. Cap length at 48 characters.
-5. Replace empty or reserved names (`HEAD`, `CON`, `.`, `..`, and the usual Windows device names) with `session`.
+1. Normalize the task label with NFKD and lowercase it.
+2. Preserve ASCII letters and digits, discard combining marks, and collapse
+   other separators into `-`.
+3. Cap the task slug at 48 bytes.
+4. Map empty labels and reserved Git/path names (`HEAD`, `.git`, `CON`, Windows
+   device names, and related sentinels) to `task`.
+5. Normalize the caller-provided short ID to at most 12 ASCII alphanumeric
+   characters and always include it in the base branch.
+6. Add `-2`, `-3`, and so on only when an existing local branch collides.
 
-The worktree directory is always `<managed-root>/<project-id>/<leaf>`. After normalization the path must stay under the managed root.
+Inputs such as `../../../etc/passwd` therefore become the ordinary leaf
+`etc-passwd`; they cannot carry traversal components into the destination.
+Git still validates every generated ref with `check-ref-format --branch`.
 
-If `agent/<slug>` is taken, the allocator appends the last eight hex characters of the session UUID, then `-2`, `-3`, and so on. Two sessions with the same title therefore cannot receive the same branch by accident. `ExistingBranchBehavior::Reject` fails instead of suffixing, which is the explicit collision policy for callers that want that.
+## Planning, creation, and recovery
 
-## Worktree creation and rollback
+Planning is side-effect free. A `WorktreePlan` binds the operation to:
 
-Creation:
+- the canonical repository root and physical Git common-directory identity;
+- the exact full `HEAD` object ID;
+- a canonically intended managed root;
+- a collision-free branch and descendant destination.
 
-1. Detect a non-bare repository.
-2. Refuse unborn `HEAD` when the base ref is `HEAD`.
-3. Resolve the base ref to a hex object id, after rejecting values that start with `-`. The object id is what later goes to `worktree add`, not the original user string.
-4. Allocate a unique branch and directory.
-5. Create missing parent directories under the managed root only.
-6. Run `git worktree add --no-track -b <branch> <path> <commit>`.
-7. Inspect the new worktree and check branch and `HEAD`.
-8. Return path, branch, and commit. The crate does not write SQLite. Persistence is the caller's job after this success.
+Creation revalidates those values immediately before `git worktree add`. It
+then confirms the registered path, branch, commit, detached state, and prunable
+state. This prevents a stale plan from targeting a recreated repository,
+retargeted symlink, occupied path, new branch, or unavailable commit.
 
-If `worktree add` fails, empty parent directories created in this call are removed. If add succeeds and confirmation fails, rollback runs `git worktree remove <path>` without `--force`, removes an empty leftover directory, and deletes the new branch only with `git branch -d`. If that cleanup also fails, the error is `GIT_ROLLBACK_FAILED` and includes both failures so a human can inspect leftovers.
+Git and SQLite cannot share a transaction, so a failed or timed-out add is
+reconciled against three observable effects: branch existence, path existence,
+and the Git worktree registry. Cleanup runs only when all three prove the exact
+planned identity and the worktree is clean. Cleanup uses `git worktree remove`
+without `--force` and deliberately preserves the branch. Ambiguous or partial
+state returns an actionable partial-worktree error and is never retried or
+deleted automatically.
 
 ## Removal
 
-Removal is two-step and has no hidden force flag.
+Removal is conservative and state-bound. `prepare_remove` requires a registered
+linked worktree below the canonical managed root and rejects the primary
+checkout. Its snapshot records Git identity, status, ignored files,
+`assume-unchanged` and `skip-worktree` entries, lock state, and caller-supplied
+runtime usage.
 
-`prepare_remove_worktree` inspects the path and returns findings. A confirmation token is issued only when there are no blockers. Dirty directory removal never gets a token.
+`remove_worktree` reads that complete snapshot twice while the caller retains
+its session exclusion guard. Any difference aborts removal. The following are
+blockers:
 
-Blockers:
+- staged, tracked, untracked, or ignored content;
+- `assume-unchanged` or `skip-worktree` index entries;
+- a Git worktree lock;
+- a running agent or any other live owner.
 
-- the path is not a Git worktree of this repository
-- the path is the primary checkout
-- the path is outside the managed root
-- the requested worktree path itself is a symlink
-- Git reports the worktree as locked
-- a session is still using it (`session_is_active`)
-- the worktree is dirty (staged, unstaged, or untracked), for `RemoveScope::Directory`
+Only two identical, blocker-free snapshots reach `git worktree remove`, and
+the crate never passes `--force` or deletes the associated branch.
 
-`remove_worktree` requires the token, rechecks the fingerprint (path, `HEAD`, dirty, locked, scope), and refuses if anything changed. Directory scope runs `git worktree remove` without `--force`. `RemoveScope::MetadataOnly` leaves Git and the directory alone so the caller can drop application metadata.
+## Status, diff, and tests
 
-Tokens live five minutes in process memory. An empty token is `GIT_CONFIRMATION_REQUIRED`.
+Status and worktree data use NUL-delimited porcelain output rather than
+localized human text. Repository-relative paths preserve non-UTF-8 bytes on
+Unix. Diff output includes staged and unstaged changes relative to `HEAD` (or
+the index relative to the empty tree for an unborn repository), disables color
+and external/textconv drivers, and never exceeds the caller's byte limit after
+lossy UTF-8 conversion.
 
-## Status and diff
+Unit and real-repository integration tests under `crates/git/tests/` cover:
 
-Status is porcelain v2 with NUL delimiters. The parser never reads localized `git status` text. Ahead/behind come from `# branch.ab` when Git already has an upstream. There is no fetch.
+- repository inspection, naming/transliteration, collisions, and unborn HEAD;
+- bounded diff and structured dirty status;
+- side-effect-free plans and exact-OID creation;
+- symlink, path occupancy, repository-replacement, branch, and destination races;
+- post-effect failures, timeouts, conservative compensation, and repeated stress;
+- dirty, ignored, hidden-index, locked, running, in-use, and out-of-root removal
+  blockers;
+- proof that cleanup/removal never receives `--force` and preserves branches.
 
-Diff is capped at 2 MiB by default. Crossing the cap sets `truncated` and kills the Git process so a huge patch cannot fill memory. `git diff --numstat` lines of `-	-	<path>` are recorded as binary paths. `Binary files` / `GIT binary patch` lines are dropped. Non-UTF-8 stdout sets `invalid_output` and returns an empty patch instead of panicking.
-
-## Protections
-
-- Executable and arguments stay separate. A path like `name; true` is a missing directory, not a shell command.
-- Refs cannot start with `-`. `--end-of-options` is passed to `rev-parse`.
-- Worktree paths are checked with lexical normalization plus resolving the longest existing prefix. That keeps `/var` vs `/private/var` on macOS from looking like an escape, without assuming a case-insensitive disk.
-- A symlink passed as the worktree path is reported as a blocker for either removal scope, so prepare-remove never issues it a token. System ancestor links such as macOS `/var` → `/private/var` are not treated as an attack.
-- The primary repository worktree cannot be removed.
-- Dirty worktrees cannot be removed through this crate.
-
-## Tests
-
-Unit tests cover slug generation, collision suffixes, and porcelain v2 parsing.
-
-Integration tests in `crates/git/tests/git_service.rs` use real temporary repositories and the system Git binary:
-
-- valid root and subdirectory
-- missing path and non-Git directory
-- unborn repository, then first commit
-- isolated worktree creation
-- two sessions with the same title getting different branches
-- `Reject` when the unsuffixed branch exists
-- clean status, dirty status, and textual diff
-- binary files and truncated diffs
-- dirty removal refused, including an empty token
-- clean removal after an explicit token
-- metadata-only removal leaving the directory, unless a session is active
-- primary worktree, active session, and symlink blockers
-- `worktree add` failure on a read-only parent, with no leftover branch
-- paths with spaces and Unicode session names
-- detached `HEAD` as a base ref
-- recovery action on `ApiError`
-
-## Limitations
-
-- The crate talks to Git only. SQLite `creating` / `active` / `orphaned` states belong to storage and the daemon, which are not wired in this session.
-- Dirty removal cannot be confirmed. Architecture.md mentions an explicit `allowDirty` path. This crate refuses dirty directory removal outright so there is no force-shaped flag to misuse.
-- Ahead/behind is whatever porcelain v2 already knows. There is no network fetch.
-- `git worktree add --no-track` needs a Git that forwards `--no-track` from `worktree add -b`. Linux and current macOS CI images do. Very old Git is not a target.
-- Rollback cannot be transactional with SQLite. A daemon caller still needs the `creating` row from the architecture if it persists before Git returns.
-- Worktrees created outside the managed root can be listed, but directory removal of those paths is blocked.
-- Binary diffs list paths and omit patch bytes. There is no hex dump.
-- Confirmation tokens are in-memory only. A daemon restart forgets pending prepare-remove tokens.
+Persistence remains a daemon/storage responsibility. This crate does not fetch
+remotes, delete branches, or infer whether a session is live; callers must
+supply runtime usage under their own exclusion guard.

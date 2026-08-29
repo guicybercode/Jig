@@ -2,9 +2,10 @@ use std::{
     env,
     ffi::{OsStr, OsString},
     fmt, fs,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
+
+use rustix::fs::{Access, AtFlags, CWD, accessat};
 
 /// The explicit executable search path used for adapter detection.
 ///
@@ -60,7 +61,9 @@ impl LaunchEnvironment {
     }
 
     /// Resolves an absolute executable path or a bare name against this
-    /// environment without invoking a shell.
+    /// environment without invoking a shell. A successful result contains a
+    /// canonical absolute path, so changing the process working directory
+    /// cannot change which file a later launch addresses.
     #[must_use]
     pub fn detect(&self, executable: impl AsRef<Path>) -> DetectionResult {
         let executable = executable.as_ref();
@@ -137,13 +140,18 @@ impl DetectionResult {
 }
 
 fn inspect_candidate(candidate: PathBuf) -> DetectionResult {
-    match fs::metadata(&candidate) {
-        Ok(metadata) if metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 => {
-            DetectionResult::Found {
-                executable: candidate,
-            }
-        }
-        Ok(_) => DetectionResult::NotExecutable { candidate },
-        Err(_) => DetectionResult::NotFound,
+    let Ok(resolved) = fs::canonicalize(&candidate) else {
+        return DetectionResult::NotFound;
+    };
+    let Ok(metadata) = fs::metadata(&resolved) else {
+        return DetectionResult::NotFound;
+    };
+
+    if !metadata.is_file() || accessat(CWD, &resolved, Access::EXEC_OK, AtFlags::EACCESS).is_err() {
+        return DetectionResult::NotExecutable { candidate };
+    }
+
+    DetectionResult::Found {
+        executable: resolved,
     }
 }

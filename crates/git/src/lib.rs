@@ -1,239 +1,397 @@
-//! Safe Git repository detection, status, diff, and worktree isolation.
+//! Safe, bounded access to the system Git executable.
 //!
-//! Every Git invocation uses a resolved executable plus a separate argument
-//! array. This crate never interpolates a shell string, never runs
-//! `git reset --hard` or `git clean`, and never deletes a dirty worktree.
+//! This crate invokes Git directly with structured argument lists. It never
+//! starts a shell and deliberately exposes no reset, branch deletion, or forced
+//! worktree removal operation.
 
 #![warn(missing_docs)]
 
 mod command;
-mod detect;
 mod diff;
 mod error;
 mod naming;
-mod paths;
+mod path_safety;
+mod repository;
 mod status;
 mod worktree;
+mod worktree_creation;
+mod worktree_reconcile;
+mod worktree_removal;
+
+pub use diff::Diff;
+pub use error::{GitError, GitErrorKind};
+pub use naming::slugify;
+pub use repository::RepositoryInspection;
+pub use status::{ChangeKind, ChangedFile, RepositoryStatus, StatusCounts};
+pub use worktree::{WorktreeInfo, WorktreeUse};
+pub use worktree_creation::WorktreePlan;
+pub use worktree_removal::{RemovalBlocker, RemovalPreparation};
 
 use std::{
-    fs,
+    env,
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
+    time::Duration,
 };
 
-use crate::command::resolve_git_executable;
+use command::{CommandOutput, run};
 
-pub use detect::{BranchState, RepositoryInfo, RepositoryKind};
-pub use diff::{DiffOptions, DiffScope, GitDiff};
-pub use error::{GitError, code};
-pub use naming::{AllocatedNames, allocate_names, session_suffix, slugify};
-pub use status::{ChangeKind, GitStatus, StatusEntry};
-pub use worktree::{
-    CreateWorktreeRequest, CreatedWorktree, ExistingBranchBehavior, InspectOptions,
-    PrepareRemoveRequest, PrepareRemoveResult, RemoveBlocker, RemoveScope, RemoveWorktreeRequest,
-    RemovedWorktree, WorktreeInfo,
-};
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 
-/// Typed Git operations for CLI Master. Frontend code must not invoke Git.
-pub struct GitService {
-    git_executable: PathBuf,
-    managed_worktree_root: PathBuf,
-    removals: worktree::RemovalTokens,
+/// A validated system Git executable with bounded command execution.
+#[derive(Clone, Debug)]
+pub struct Git {
+    executable: PathBuf,
+    timeout: Duration,
 }
 
-impl std::fmt::Debug for GitService {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("GitService")
-            .field("git_executable", &self.git_executable)
-            .field("managed_worktree_root", &self.managed_worktree_root)
-            .finish_non_exhaustive()
-    }
-}
-
-impl GitService {
-    /// Resolves `git` from `PATH` and stores worktrees under `managed_worktree_root`.
+impl Git {
+    /// Locates Git on `PATH` and verifies that it can execute.
     ///
     /// # Errors
     ///
-    /// Returns [`GitError::ExecutableNotFound`] when Git is missing, or an I/O
-    /// error if the managed root cannot be created.
-    pub fn new(managed_worktree_root: impl Into<PathBuf>) -> Result<Self, GitError> {
-        Self::with_executable(resolve_git_executable()?, managed_worktree_root)
-    }
-
-    /// Builds a service around an already resolved Git executable.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the executable is not usable or the managed root
-    /// cannot be created.
-    pub fn with_executable(
-        git_executable: impl Into<PathBuf>,
-        managed_worktree_root: impl Into<PathBuf>,
-    ) -> Result<Self, GitError> {
-        let git_executable = git_executable.into();
-        if !command::is_executable_file(&git_executable) {
-            return Err(GitError::ExecutableNotFound);
-        }
-        let managed_worktree_root = paths::normalize_absolute(&managed_worktree_root.into())?;
-        fs::create_dir_all(&managed_worktree_root).map_err(|error| GitError::SpawnFailed {
-            message: format!(
-                "could not create managed worktree root {}: {error}",
-                managed_worktree_root.display()
-            ),
+    /// Returns an actionable error when `PATH` is missing, no executable Git is
+    /// found, or the discovered executable cannot report its version.
+    pub fn discover() -> Result<Self, GitError> {
+        let executable = find_on_path(OsStr::new("git")).ok_or_else(|| {
+            GitError::new(
+                GitErrorKind::NotFound,
+                "Git was not found on PATH",
+                "Install Git and restart CLI Master so the desktop process inherits the updated PATH",
+            )
         })?;
-        let managed_worktree_root = paths::existing_real_path(&managed_worktree_root)?;
-        Ok(Self {
-            git_executable,
-            managed_worktree_root,
-            removals: worktree::RemovalTokens::new(),
-        })
+        Self::with_executable(executable)
     }
 
-    /// Returns the resolved Git executable.
+    /// Validates an explicit Git executable path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the path is not a file or does not successfully
+    /// execute `git --version` within the default timeout.
+    pub fn with_executable(executable: impl Into<PathBuf>) -> Result<Self, GitError> {
+        let executable = executable.into();
+        if !executable.is_file() {
+            return Err(GitError::new(
+                GitErrorKind::NotFound,
+                format!("Git executable does not exist: {}", executable.display()),
+                "Choose an existing Git executable",
+            ));
+        }
+        let git = Self {
+            executable,
+            timeout: DEFAULT_TIMEOUT,
+        };
+        let output = git.execute(None, [OsStr::new("--version")], 16 * 1024)?;
+        if !output.success() {
+            return Err(git.command_error("validate Git", &output));
+        }
+        if output.stdout_truncated {
+            return Err(GitError::new(
+                GitErrorKind::InvalidOutput,
+                "The selected executable returned an unexpectedly large version response",
+                "Choose the system Git executable",
+            ));
+        }
+        if !String::from_utf8_lossy(&output.stdout).starts_with("git version ") {
+            return Err(GitError::new(
+                GitErrorKind::InvalidOutput,
+                "The selected executable did not identify itself as Git",
+                "Choose the system Git executable",
+            ));
+        }
+        Ok(git)
+    }
+
+    /// Overrides the command timeout for this handle.
+    ///
+    /// A zero timeout is rejected because it would make every invocation race
+    /// process startup.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `timeout` is zero.
+    pub fn with_timeout(mut self, timeout: Duration) -> Result<Self, GitError> {
+        if timeout.is_zero() {
+            return Err(GitError::new(
+                GitErrorKind::InvalidInput,
+                "Git command timeout must be greater than zero",
+                "Use a positive timeout",
+            ));
+        }
+        self.timeout = timeout;
+        Ok(self)
+    }
+
+    /// Returns the validated executable path.
     #[must_use]
-    pub fn git_executable(&self) -> &Path {
-        &self.git_executable
+    pub fn executable(&self) -> &Path {
+        &self.executable
     }
 
-    /// Returns the directory that must contain every created worktree.
-    #[must_use]
-    pub fn managed_worktree_root(&self) -> &Path {
-        &self.managed_worktree_root
-    }
-
-    /// Detects whether `path` is a repository root, subdirectory, or worktree.
+    /// Inspects a directory without requiring it to be a Git repository.
     ///
     /// # Errors
     ///
-    /// Returns a typed error for a missing path, a non-Git directory, or a bare
-    /// repository.
-    pub fn detect_repository(&self, path: impl AsRef<Path>) -> Result<RepositoryInfo, GitError> {
-        detect::detect_repository(&self.git_executable, path.as_ref())
+    /// Returns an error if the path does not exist, is not a directory, cannot
+    /// be canonicalized, or Git cannot inspect it for a reason other than it not
+    /// being a repository.
+    pub fn inspect_repository(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<RepositoryInspection, GitError> {
+        repository::inspect(self, path.as_ref())
     }
 
-    /// Returns the worktree root that owns `path`.
+    /// Generates an ASCII `agent/<slug>-<shortid>` branch name.
+    ///
+    /// Existing local branches are avoided with deterministic numeric suffixes.
     ///
     /// # Errors
     ///
-    /// Returns the same class of errors as [`Self::detect_repository`].
-    pub fn get_repository_root(&self, path: impl AsRef<Path>) -> Result<PathBuf, GitError> {
-        Ok(self.detect_repository(path)?.root)
+    /// Returns an error if `repository` is not a repository or Git cannot query
+    /// its refs.
+    pub fn generate_branch_name(
+        &self,
+        repository: impl AsRef<Path>,
+        task_name: &str,
+        short_id: &str,
+    ) -> Result<String, GitError> {
+        naming::generate_branch_name(self, repository.as_ref(), task_name, short_id)
     }
 
-    /// Returns the current branch, detached HEAD, or unborn branch at `path`.
+    /// Reads branch metadata and changed paths using porcelain v2 `-z` output.
     ///
     /// # Errors
     ///
-    /// Returns a typed error when Git cannot describe `HEAD`.
-    pub fn current_branch(&self, path: impl AsRef<Path>) -> Result<BranchState, GitError> {
-        detect::current_branch(&self.git_executable, path.as_ref())
+    /// Returns an error when `path` is not in a repository, Git times out, or
+    /// the porcelain response is malformed.
+    pub fn status(&self, path: impl AsRef<Path>) -> Result<RepositoryStatus, GitError> {
+        status::read(self, path.as_ref())
     }
 
-    /// Returns porcelain v2 status for `path`.
+    /// Returns the combined staged and unstaged tracked-file diff against `HEAD`.
+    ///
+    /// Output is always generated without color or external diff drivers and is
+    /// capped at `max_bytes`. The returned [`Diff::truncated`] flag reports when
+    /// bytes were omitted.
     ///
     /// # Errors
     ///
-    /// Returns a typed error when the path is not a worktree or Git output
-    /// cannot be parsed.
-    pub fn status(&self, path: impl AsRef<Path>) -> Result<GitStatus, GitError> {
-        status::status(&self.git_executable, path.as_ref())
+    /// Returns an error for a zero limit, invalid repository, timeout, or failed
+    /// Git invocation.
+    pub fn diff(&self, path: impl AsRef<Path>, max_bytes: usize) -> Result<Diff, GitError> {
+        diff::read(self, path.as_ref(), max_bytes)
     }
 
-    /// Returns a size-capped textual diff for `path`.
+    /// Lists all worktrees registered by a repository.
     ///
     /// # Errors
     ///
-    /// Returns a typed error when Git fails. Invalid UTF-8 is reported in
-    /// [`GitDiff::invalid_output`] rather than panicking.
-    pub fn diff(&self, path: impl AsRef<Path>, options: DiffOptions) -> Result<GitDiff, GitError> {
-        diff::diff(&self.git_executable, path.as_ref(), &options)
-    }
-
-    /// Lists Git worktrees for the repository that owns `repository`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed error when the path is not a repository or porcelain
-    /// output cannot be parsed.
+    /// Returns an error when Git cannot list or parse worktree metadata.
     pub fn list_worktrees(
         &self,
         repository: impl AsRef<Path>,
     ) -> Result<Vec<WorktreeInfo>, GitError> {
-        worktree::list_worktrees(&self.git_executable, repository.as_ref())
+        worktree::list(self, repository.as_ref())
     }
 
-    /// Creates an isolated branch and worktree for a session.
+    /// Plans a branch and linked worktree without changing Git or the filesystem.
     ///
-    /// Persistence is the caller's job. This method only talks to Git and the
-    /// filesystem, and only after Git confirms the worktree.
+    /// The returned paths are absolute and resolved through every existing
+    /// ancestor. A missing managed root is represented safely but is not created
+    /// until [`Self::create_worktree_from_plan`] executes the plan.
     ///
     /// # Errors
     ///
-    /// Returns a typed error when the repository, base ref, generated names,
-    /// or `git worktree add` fail. A partial failure attempts compensating
-    /// cleanup.
-    #[allow(clippy::needless_pass_by_value)]
+    /// Returns an error for an invalid repository/root, an unsafe path, or when
+    /// Git cannot allocate collision-free branch and directory names.
+    pub fn plan_worktree(
+        &self,
+        repository: impl AsRef<Path>,
+        managed_root: impl AsRef<Path>,
+        task_name: &str,
+        short_id: &str,
+    ) -> Result<WorktreePlan, GitError> {
+        worktree_creation::plan(
+            self,
+            repository.as_ref(),
+            managed_root.as_ref(),
+            task_name,
+            short_id,
+        )
+    }
+
+    /// Executes a previously generated worktree plan after revalidating it.
+    ///
+    /// Repository identity, branch availability, path containment, symlink
+    /// resolution, filesystem collisions, and Git's worktree registry are
+    /// checked immediately before creation. If post-create confirmation fails,
+    /// a clean exact-identity worktree is removed without `--force`; otherwise
+    /// the path and branch are preserved and a partial-creation error is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the plan is stale, Git creation fails, confirmation
+    /// fails, or conservative compensation cannot prove cleanup.
+    pub fn create_worktree_from_plan(&self, plan: &WorktreePlan) -> Result<WorktreeInfo, GitError> {
+        worktree_creation::create_from_plan(self, plan)
+    }
+
+    /// Creates a branch and linked worktree below a managed root.
+    ///
+    /// Both branch and directory names use collision-safe ASCII names. The
+    /// destination is validated to remain below `managed_root`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid repository/root, unsafe destination,
+    /// stale generated plan, failed Git worktree creation, or unproven cleanup.
     pub fn create_worktree(
         &self,
-        request: CreateWorktreeRequest,
-    ) -> Result<CreatedWorktree, GitError> {
-        worktree::create_worktree(&self.git_executable, &self.managed_worktree_root, &request)
-    }
-
-    /// Inspects one worktree, optionally including dirty state.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed error when the path is not a known worktree.
-    pub fn inspect_worktree(
-        &self,
-        path: impl AsRef<Path>,
-        options: InspectOptions,
+        repository: impl AsRef<Path>,
+        managed_root: impl AsRef<Path>,
+        task_name: &str,
+        short_id: &str,
     ) -> Result<WorktreeInfo, GitError> {
-        worktree::inspect_worktree(&self.git_executable, path.as_ref(), options)
-    }
-
-    /// Inspects a worktree and, if removal is allowed, issues a confirmation token.
-    ///
-    /// Dirty directory removal never receives a token. There is no hidden force
-    /// flag.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed error when the path cannot be inspected.
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn prepare_remove_worktree(
-        &self,
-        request: PrepareRemoveRequest,
-    ) -> Result<PrepareRemoveResult, GitError> {
-        worktree::prepare_remove(
-            &self.git_executable,
-            &self.managed_worktree_root,
-            &self.removals,
-            &request,
+        worktree_creation::create(
+            self,
+            repository.as_ref(),
+            managed_root.as_ref(),
+            task_name,
+            short_id,
         )
     }
 
-    /// Removes a worktree after a matching prepare-remove token.
+    /// Checks whether a managed worktree can be removed safely.
     ///
-    /// [`RemoveScope::MetadataOnly`] does not delete Git files. Directory
-    /// removal uses `git worktree remove` without `--force`.
+    /// The result distinguishes staged, tracked, and untracked dirtiness and
+    /// combines that state with caller-supplied runtime usage information.
     ///
     /// # Errors
     ///
-    /// Returns a typed error when the token is missing, expired, or the
-    /// worktree state changed, including when it became dirty.
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn remove_worktree(
+    /// Returns an error if paths are invalid, the target is outside the managed
+    /// root, or Git cannot inspect the target.
+    pub fn prepare_remove(
         &self,
-        request: RemoveWorktreeRequest,
-    ) -> Result<RemovedWorktree, GitError> {
-        worktree::remove_worktree(
-            &self.git_executable,
-            &self.managed_worktree_root,
-            &self.removals,
-            &request,
+        repository: impl AsRef<Path>,
+        managed_root: impl AsRef<Path>,
+        worktree_path: impl AsRef<Path>,
+        usage: WorktreeUse,
+    ) -> Result<RemovalPreparation, GitError> {
+        worktree_removal::prepare_remove(
+            self,
+            repository.as_ref(),
+            managed_root.as_ref(),
+            worktree_path.as_ref(),
+            usage,
         )
     }
+
+    /// Removes a clean, unused managed worktree without using `--force`.
+    ///
+    /// This method never deletes a branch. Dirty, running, or otherwise in-use
+    /// worktrees are rejected. `read_usage` is retained for the entire operation
+    /// and called for each safety snapshot; callers should capture their session
+    /// exclusion guard in that closure. Git state is also rechecked immediately
+    /// before removal, and `--force` is never passed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if safety checks fail or `git worktree remove` fails.
+    pub fn remove_worktree<F>(
+        &self,
+        repository: impl AsRef<Path>,
+        managed_root: impl AsRef<Path>,
+        worktree_path: impl AsRef<Path>,
+        read_usage: F,
+    ) -> Result<(), GitError>
+    where
+        F: FnMut() -> WorktreeUse,
+    {
+        worktree_removal::remove(
+            self,
+            repository.as_ref(),
+            managed_root.as_ref(),
+            worktree_path.as_ref(),
+            read_usage,
+        )
+    }
+
+    pub(crate) fn execute<I, S>(
+        &self,
+        cwd: Option<&Path>,
+        args: I,
+        max_stdout: usize,
+    ) -> Result<CommandOutput, GitError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let args = args
+            .into_iter()
+            .map(|arg| arg.as_ref().to_os_string())
+            .collect();
+        run(&self.executable, cwd, args, self.timeout, max_stdout)
+    }
+
+    pub(crate) fn checked<I, S>(
+        &self,
+        cwd: Option<&Path>,
+        args: I,
+        operation: &'static str,
+    ) -> Result<CommandOutput, GitError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let output = self.execute(cwd, args, DEFAULT_OUTPUT_LIMIT)?;
+        if !output.success() {
+            return Err(self.command_error(operation, &output));
+        }
+        if output.stdout_truncated {
+            return Err(GitError::new(
+                GitErrorKind::InvalidOutput,
+                format!("Git returned too much data while attempting to {operation}"),
+                "Reduce the repository's changed-file count or stale worktree entries and try again",
+            ));
+        }
+        Ok(output)
+    }
+
+    pub(crate) fn command_error(
+        &self,
+        operation: &'static str,
+        output: &CommandOutput,
+    ) -> GitError {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let message = if stderr.is_empty() {
+            format!("Git could not {operation} (exit status {})", output.status)
+        } else {
+            format!("Git could not {operation}: {stderr}")
+        };
+        GitError::new(
+            GitErrorKind::CommandFailed,
+            message,
+            "Resolve the Git error and try again",
+        )
+        .with_path(&self.executable)
+        .with_exit_status(output.status.code())
+    }
+}
+
+fn find_on_path(name: &OsStr) -> Option<PathBuf> {
+    let candidate = Path::new(name);
+    if candidate.components().count() > 1 {
+        return candidate.is_file().then(|| candidate.to_path_buf());
+    }
+    let path = env::var_os("PATH")?;
+    env::split_paths(&path)
+        .map(|directory| directory.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+pub(crate) fn os(value: impl Into<OsString>) -> OsString {
+    value.into()
 }

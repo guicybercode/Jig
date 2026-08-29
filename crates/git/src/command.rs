@@ -1,245 +1,186 @@
 use std::{
-    env,
-    ffi::{OsStr, OsString},
-    fs,
-    io::Read,
-    os::unix::fs::PermissionsExt,
-    path::{Path, PathBuf},
-    process::{Command, Stdio},
+    ffi::OsString,
+    io::{self, Read},
+    path::Path,
+    process::{Command, ExitStatus, Stdio},
+    sync::mpsc::{self, Receiver, RecvTimeoutError},
     thread,
+    time::{Duration, Instant},
 };
 
-use crate::error::GitError;
+use crate::{GitError, GitErrorKind};
 
-const STDERR_LIMIT: usize = 2_048;
-const DEFAULT_DIFF_LIMIT: usize = 2 * 1024 * 1024;
+const STDERR_LIMIT: usize = 256 * 1024;
+const POLL_INTERVAL: Duration = Duration::from_millis(10);
+const TERMINATION_GRACE: Duration = Duration::from_millis(250);
 
-/// Output captured from a Git invocation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct GitOutput {
+type ReaderResult = io::Result<(Vec<u8>, bool)>;
+
+pub(crate) struct CommandOutput {
+    pub status: ExitStatus,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
-    pub exit_code: Option<i32>,
-    pub truncated: bool,
+    pub stdout_truncated: bool,
 }
 
-impl GitOutput {
-    pub(crate) fn success(&self) -> bool {
-        self.exit_code == Some(0)
-    }
-
-    pub(crate) fn stdout_str(&self) -> Result<&str, GitError> {
-        std::str::from_utf8(&self.stdout).map_err(|_| GitError::InvalidOutput {
-            reason: "stdout was not valid UTF-8".to_owned(),
-        })
-    }
-
-    pub(crate) fn stdout_trimmed(&self) -> Result<&str, GitError> {
-        Ok(self.stdout_str()?.trim())
-    }
-
-    pub(crate) fn require_success(&self, args: &[OsString]) -> Result<(), GitError> {
-        if self.success() {
-            Ok(())
-        } else {
-            Err(command_failed(args, self.exit_code, &self.stderr))
-        }
+impl CommandOutput {
+    pub fn success(&self) -> bool {
+        self.status.success()
     }
 }
 
-pub(crate) struct GitCommand<'a> {
-    executable: &'a Path,
+pub(crate) fn run(
+    executable: &Path,
+    cwd: Option<&Path>,
     args: Vec<OsString>,
-}
-
-impl<'a> GitCommand<'a> {
-    pub(crate) fn new(executable: &'a Path) -> Self {
-        Self {
-            executable,
-            args: vec![
-                "--no-pager".into(),
-                "-c".into(),
-                "core.quotepath=false".into(),
-            ],
-        }
+    timeout: Duration,
+    max_stdout: usize,
+) -> Result<CommandOutput, GitError> {
+    let mut command = Command::new(executable);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_PAGER", "cat")
+        .env("LC_ALL", "C");
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
     }
-
-    pub(crate) fn read_only(mut self) -> Self {
-        self.args.insert(0, "--no-optional-locks".into());
-        self
-    }
-
-    pub(crate) fn repo(mut self, path: impl AsRef<Path>) -> Self {
-        self.args.push("-C".into());
-        self.args.push(path.as_ref().as_os_str().to_owned());
-        self
-    }
-
-    pub(crate) fn arg(mut self, arg: impl AsRef<OsStr>) -> Self {
-        self.args.push(arg.as_ref().to_owned());
-        self
-    }
-
-    pub(crate) fn args<I, S>(mut self, args: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
+    #[cfg(unix)]
     {
-        self.args
-            .extend(args.into_iter().map(|arg| arg.as_ref().to_owned()));
-        self
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
     }
 
-    pub(crate) fn run(self) -> Result<GitOutput, GitError> {
-        self.run_capped(None)
-    }
+    let started = Instant::now();
+    let deadline = started + timeout;
+    let mut child = command
+        .spawn()
+        .map_err(|error| GitError::io("start Git", error))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| GitError::io("capture Git stdout", io::Error::other("missing pipe")))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| GitError::io("capture Git stderr", io::Error::other("missing pipe")))?;
 
-    pub(crate) fn run_checked(self) -> Result<GitOutput, GitError> {
-        let args = self.args.clone();
-        let output = self.run()?;
-        output.require_success(&args)?;
-        Ok(output)
-    }
+    let stdout_reader = spawn_reader(stdout, max_stdout);
+    let stderr_reader = spawn_reader(stderr, STDERR_LIMIT);
 
-    pub(crate) fn run_capped(self, stdout_limit: Option<usize>) -> Result<GitOutput, GitError> {
-        let mut command = Command::new(self.executable);
-        command
-            .args(&self.args)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_PAGER", "cat")
-            .env("PAGER", "cat")
-            .env("LC_ALL", "C")
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| GitError::io("wait for Git", error))?
+        {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            terminate_process_group(&mut child);
+            return Err(timeout_error(timeout));
+        }
+        thread::sleep(POLL_INTERVAL);
+    };
+
+    let Some((stdout, stdout_truncated)) =
+        receive_reader(&stdout_reader, deadline, "read Git stdout")?
+    else {
+        terminate_process_group(&mut child);
+        return Err(timeout_error(timeout));
+    };
+    let Some((stderr, _)) = receive_reader(&stderr_reader, deadline, "read Git stderr")? else {
+        terminate_process_group(&mut child);
+        return Err(timeout_error(timeout));
+    };
+    Ok(CommandOutput {
+        status,
+        stdout,
+        stderr,
+        stdout_truncated,
+    })
+}
+
+fn read_capped(mut reader: impl Read, limit: usize) -> io::Result<(Vec<u8>, bool)> {
+    let mut retained = Vec::with_capacity(limit.min(64 * 1024));
+    let mut buffer = [0_u8; 16 * 1024];
+    let mut truncated = false;
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(retained.len());
+        let keep = remaining.min(count);
+        retained.extend_from_slice(&buffer[..keep]);
+        truncated |= keep < count;
+    }
+    Ok((retained, truncated))
+}
+
+fn spawn_reader(reader: impl Read + Send + 'static, limit: usize) -> Receiver<ReaderResult> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let _ = sender.send(read_capped(reader, limit));
+    });
+    receiver
+}
+
+fn receive_reader(
+    reader: &Receiver<ReaderResult>,
+    deadline: Instant,
+    operation: &'static str,
+) -> Result<Option<(Vec<u8>, bool)>, GitError> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match reader.recv_timeout(remaining) {
+        Ok(result) => result
+            .map(Some)
+            .map_err(|error| GitError::io(operation, error)),
+        Err(RecvTimeoutError::Timeout) => Ok(None),
+        Err(RecvTimeoutError::Disconnected) => Err(GitError::io(
+            operation,
+            io::Error::other("reader thread stopped unexpectedly"),
+        )),
+    }
+}
+
+fn terminate_process_group(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        // The child was placed in a process group whose ID is its PID. Signaling
+        // the negative ID terminates Git helpers and descendants that inherited
+        // stdout/stderr, preventing pipe-reader hangs. `/bin/kill` is available
+        // on both supported platforms and is invoked directly, never by a shell.
+        let group = format!("-{}", child.id());
+        let _ = Command::new("/bin/kill")
+            // GNU kill otherwise parses a negative process-group ID as an
+            // option (or another signal). The POSIX end-of-options marker is
+            // also accepted by the BSD utility shipped on macOS.
+            .args(["-KILL", "--", group.as_str()])
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        let mut child = command.spawn().map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                GitError::ExecutableNotFound
-            } else {
-                GitError::SpawnFailed {
-                    message: error.to_string(),
-                }
-            }
-        })?;
-
-        let mut stdout_pipe = child.stdout.take().ok_or_else(|| GitError::Internal {
-            message: "Git stdout pipe was missing".to_owned(),
-        })?;
-        let mut stderr_pipe = child.stderr.take().ok_or_else(|| GitError::Internal {
-            message: "Git stderr pipe was missing".to_owned(),
-        })?;
-
-        let stderr_thread = thread::spawn(move || {
-            let mut stderr = Vec::new();
-            let mut buffer = [0_u8; 8_192];
-            loop {
-                match stderr_pipe.read(&mut buffer) {
-                    Ok(0) | Err(_) => break,
-                    Ok(read) => {
-                        let remaining = STDERR_LIMIT.saturating_sub(stderr.len());
-                        if remaining == 0 {
-                            continue;
-                        }
-                        stderr.extend_from_slice(&buffer[..read.min(remaining)]);
-                    }
-                }
-            }
-            stderr
-        });
-
-        let limit = stdout_limit.unwrap_or(usize::MAX);
-        let mut stdout = Vec::new();
-        let mut buffer = [0_u8; 8_192];
-        let mut truncated = false;
-        loop {
-            match stdout_pipe.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(read) => {
-                    if stdout.len() >= limit {
-                        truncated = true;
-                        break;
-                    }
-                    let allowed = limit - stdout.len();
-                    let take = read.min(allowed);
-                    stdout.extend_from_slice(&buffer[..take]);
-                    if take < read {
-                        truncated = true;
-                        break;
-                    }
-                }
-                Err(error) => {
-                    return Err(GitError::SpawnFailed {
-                        message: error.to_string(),
-                    });
-                }
-            }
-        }
-
-        if truncated {
-            let _ = child.kill();
-            let _ = stdout_pipe.read_to_end(&mut Vec::new());
-        }
-
-        let status = child.wait().map_err(|error| GitError::SpawnFailed {
-            message: error.to_string(),
-        })?;
-        let stderr = stderr_thread.join().unwrap_or_default();
-
-        Ok(GitOutput {
-            stdout,
-            stderr,
-            exit_code: status.code(),
-            truncated,
-        })
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
-}
-
-pub(crate) fn command_failed(args: &[OsString], exit_code: Option<i32>, stderr: &[u8]) -> GitError {
-    GitError::CommandFailed {
-        args: args
-            .iter()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect(),
-        exit_code,
-        stderr: String::from_utf8_lossy(stderr).trim().to_owned(),
-    }
-}
-
-pub(crate) fn default_diff_limit() -> usize {
-    DEFAULT_DIFF_LIMIT
-}
-
-pub(crate) fn resolve_git_executable() -> Result<PathBuf, GitError> {
-    match env::var_os("PATH") {
-        Some(path) => resolve_git_in_path(&path),
-        None => Err(GitError::ExecutableNotFound),
-    }
-}
-
-pub(crate) fn resolve_git_in_path(path: &OsStr) -> Result<PathBuf, GitError> {
-    for directory in env::split_paths(path) {
-        let candidate = directory.join("git");
-        if is_executable_file(&candidate) {
-            return Ok(candidate);
+    let _ = child.kill();
+    let deadline = Instant::now() + TERMINATION_GRACE;
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return,
+            Ok(None) => thread::sleep(POLL_INTERVAL),
         }
     }
-    Err(GitError::ExecutableNotFound)
 }
 
-pub(crate) fn is_executable_file(path: &Path) -> bool {
-    fs::metadata(path)
-        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-}
-
-pub(crate) fn inspect_path(path: &Path) -> Result<(), GitError> {
-    match fs::metadata(path) {
-        Ok(metadata) if metadata.is_dir() => Ok(()),
-        Ok(_) => Err(GitError::NotADirectory {
-            path: path.to_path_buf(),
-        }),
-        Err(_) => Err(GitError::PathNotFound {
-            path: path.to_path_buf(),
-        }),
-    }
+fn timeout_error(timeout: Duration) -> GitError {
+    GitError::new(
+        GitErrorKind::Timeout,
+        format!(
+            "Git command timed out after {} seconds",
+            timeout.as_secs_f64()
+        ),
+        "Retry the operation; if it repeatedly times out, inspect repository locks and filesystem health",
+    )
 }

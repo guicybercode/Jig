@@ -1,9 +1,12 @@
 [workspace]
 members = [
-    "apps/desktop/src-tauri",
-    "crates/core",
-    "crates/storage",
-    "crates/git",
+  "apps/desktop/src-tauri",
+  "crates/agents",
+  "crates/core",
+  "crates/daemon",
+  "crates/git",
+  "crates/session",
+  "crates/storage",
 ]
 resolver = "2"
 
