@@ -119,9 +119,11 @@ See [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) and
 pnpm tauri build
 ```
 
-Tauri creates the formats supported by the current operating system. Code
-signing and macOS notarization are release concerns and are not required for a
-local development build.
+Tauri creates the formats supported by the current operating system. On Linux
+that includes an AppImage and a `.deb` with `cli-masterd` next to the desktop
+binary. Code signing and macOS notarization are release concerns and are not
+required for a local development build. See
+[docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
 
 ## Repository layout
 
