@@ -1,4 +1,10 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -66,6 +72,44 @@ describe("CanvasWorkspace", () => {
       1,
     );
   });
+
+  it("moves a selected node with keyboard and pointer alternatives", async () => {
+    const user = userEvent.setup();
+    const { container } = renderCanvas();
+    const terminal = screen.getByRole("article", {
+      name: "Terminal 1, terminal canvas item",
+    });
+
+    terminal.focus();
+    await user.keyboard("{ArrowRight}{Alt>}{ArrowUp}{/Alt}");
+
+    await waitFor(() => {
+      expect(readNodePosition("terminal-primary")).toEqual({ x: 178, y: 209 });
+    });
+
+    const header = terminal.querySelector<HTMLElement>(".canvas-node__header");
+    expect(header).not.toBeNull();
+    fireEvent.pointerDown(header!, {
+      pointerId: 7,
+      clientX: 100,
+      clientY: 100,
+    });
+    fireEvent.pointerMove(header!, {
+      pointerId: 7,
+      clientX: 132,
+      clientY: 124,
+    });
+    fireEvent.pointerUp(header!, {
+      pointerId: 7,
+      clientX: 132,
+      clientY: 124,
+    });
+
+    await waitFor(() => {
+      expect(readNodePosition("terminal-primary")).toEqual({ x: 210, y: 233 });
+    });
+    expect(container.querySelector(".canvas-node--selected")).toBe(terminal);
+  });
 });
 
 function renderCanvas() {
@@ -79,4 +123,14 @@ function renderCanvas() {
       onSelectSession={vi.fn()}
     />,
   );
+}
+
+function readNodePosition(nodeId: string) {
+  const persisted = JSON.parse(
+    localStorage.getItem(CANVAS_STORAGE_KEY) ?? "{}",
+  ) as {
+    nodes?: readonly { readonly id?: string; readonly x?: number; readonly y?: number }[];
+  };
+  const node = persisted.nodes?.find((candidate) => candidate.id === nodeId);
+  return { x: node?.x, y: node?.y };
 }

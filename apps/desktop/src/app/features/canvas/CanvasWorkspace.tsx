@@ -252,8 +252,15 @@ export function CanvasWorkspace({
                     dispatch({ type: "connection/start", nodeId: node.id });
                   }
                 }}
+                onCancelConnection={() =>
+                  dispatch({ type: "connection/cancel" })
+                }
                 onDelete={() =>
                   dispatch({ type: "node/delete", nodeId: node.id })
+                }
+                zoom={state.zoom}
+                onMove={(position) =>
+                  dispatch({ type: "node/move", nodeId: node.id, position })
                 }
                 onNoteChange={(text) =>
                   dispatch({ type: "note/update", nodeId: node.id, text })
@@ -300,9 +307,12 @@ interface CanvasNodeCardProps {
   readonly selected: boolean;
   readonly connectionSource: string | null;
   readonly connectionCount: number;
+  readonly zoom: number;
   readonly onSelect: () => void;
   readonly onConnect: () => void;
+  readonly onCancelConnection: () => void;
   readonly onDelete: () => void;
+  readonly onMove: (position: { readonly x: number; readonly y: number }) => void;
   readonly onNoteChange: (text: string) => void;
   readonly onOpenSession: () => void;
 }
@@ -313,12 +323,22 @@ function CanvasNodeCard({
   selected,
   connectionSource,
   connectionCount,
+  zoom,
   onSelect,
   onConnect,
+  onCancelConnection,
   onDelete,
+  onMove,
   onNoteChange,
   onOpenSession,
 }: CanvasNodeCardProps) {
+  const dragRef = useRef<{
+    readonly pointerId: number;
+    readonly clientX: number;
+    readonly clientY: number;
+    readonly nodeX: number;
+    readonly nodeY: number;
+  } | null>(null);
   const isConnectionTarget =
     connectionSource !== null && connectionSource !== node.id;
   const classes = [
@@ -337,13 +357,66 @@ function CanvasNodeCard({
       tabIndex={0}
       aria-label={`${node.title}, ${node.kind} canvas item`}
       aria-selected={selected}
+      aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
       onFocus={onSelect}
+      onKeyDown={(event) => {
+        if (event.currentTarget !== event.target) {
+          return;
+        }
+        const step = event.altKey ? 1 : 8;
+        const movement = keyboardMovement(event.key, step);
+        if (movement) {
+          event.preventDefault();
+          onMove({ x: node.x + movement.x, y: node.y + movement.y });
+        } else if (event.key === "Escape" && connectionSource) {
+          event.preventDefault();
+          onCancelConnection();
+        }
+      }}
       onPointerDown={(event) => {
         event.stopPropagation();
         onSelect();
       }}
     >
-      <header className="canvas-node__header">
+      <header
+        className="canvas-node__header"
+        aria-label={`Move ${node.title}`}
+        onPointerDown={(event) => {
+          if ((event.target as HTMLElement).closest("button")) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          onSelect();
+          dragRef.current = {
+            pointerId: event.pointerId,
+            clientX: event.clientX,
+            clientY: event.clientY,
+            nodeX: node.x,
+            nodeY: node.y,
+          };
+          event.currentTarget.setPointerCapture?.(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          const drag = dragRef.current;
+          if (!drag || drag.pointerId !== event.pointerId) {
+            return;
+          }
+          onMove({
+            x: drag.nodeX + (event.clientX - drag.clientX) / zoom,
+            y: drag.nodeY + (event.clientY - drag.clientY) / zoom,
+          });
+        }}
+        onPointerUp={(event) => {
+          if (dragRef.current?.pointerId === event.pointerId) {
+            dragRef.current = null;
+            event.currentTarget.releasePointerCapture?.(event.pointerId);
+          }
+        }}
+        onPointerCancel={() => {
+          dragRef.current = null;
+        }}
+      >
         <div className="canvas-node__identity">
           {node.kind === "terminal" ? (
             <span className="canvas-window-controls" aria-hidden="true">
@@ -407,6 +480,24 @@ function CanvasNodeCard({
       )}
     </article>
   );
+}
+
+function keyboardMovement(
+  key: string,
+  step: number,
+): { readonly x: number; readonly y: number } | null {
+  switch (key) {
+    case "ArrowUp":
+      return { x: 0, y: -step };
+    case "ArrowDown":
+      return { x: 0, y: step };
+    case "ArrowLeft":
+      return { x: -step, y: 0 };
+    case "ArrowRight":
+      return { x: step, y: 0 };
+    default:
+      return null;
+  }
 }
 
 function TerminalNodeBody({

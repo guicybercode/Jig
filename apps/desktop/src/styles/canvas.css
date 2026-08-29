@@ -352,6 +352,13 @@
   border-bottom: 1px solid rgb(40 42 44 / 8%);
   padding: 0.25rem 0.375rem 0.25rem 0.75rem;
   background: rgb(246 246 245 / 94%);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.canvas-node__header:active {
+  cursor: grabbing;
 }
 
 .canvas-node--note .canvas-node__header {
