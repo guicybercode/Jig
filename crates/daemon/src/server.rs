@@ -53,8 +53,7 @@ impl Daemon {
     /// Returns an error when paths cannot be secured, another daemon owns the
     /// lock, migrations fail, or the socket cannot be bound.
     pub fn bind(config: DaemonConfig) -> Result<Self, DaemonError> {
-        ensure_private_directory(config.data_directory())?;
-        ensure_private_directory(config.runtime_directory())?;
+        config.prepare_private_directories()?;
 
         let instance_lock = InstanceLock::acquire(config.lock_path())?;
         remove_stale_socket(config.socket_path())?;
@@ -346,22 +345,6 @@ fn decode_request(bytes: &[u8]) -> Result<RequestEnvelope<Value>, RequestFailure
         )
         .with_detail("reason", error.to_string()),
     })
-}
-
-fn ensure_private_directory(path: &Path) -> Result<(), DaemonError> {
-    fs::create_dir_all(path)
-        .map_err(|error| DaemonError::io("create private directory", path, error))?;
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|error| DaemonError::io("inspect private directory", path, error))?;
-    if !metadata.file_type().is_dir() {
-        return Err(DaemonError::io(
-            "secure private directory",
-            path,
-            io::Error::new(io::ErrorKind::InvalidInput, "path is not a directory"),
-        ));
-    }
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-        .map_err(|error| DaemonError::io("secure private directory", path, error))
 }
 
 fn remove_stale_socket(path: &Path) -> Result<(), DaemonError> {

@@ -32,6 +32,15 @@ pub enum DaemonError {
         #[source]
         source: io::Error,
     },
+    /// A candidate private directory is a symlink, a non-directory, or owned by
+    /// another user.
+    #[error("refusing to use untrusted directory {path}: {reason}")]
+    UntrustedDirectory {
+        /// Path that failed the ownership and type checks.
+        path: PathBuf,
+        /// Safe explanation of why the path was rejected.
+        reason: &'static str,
+    },
     /// Opening or migrating the local database failed.
     #[error("could not prepare daemon storage: {0}")]
     Storage(#[from] cli_master_storage::StorageError),

@@ -12,6 +12,7 @@ compile_error!("cli-master-daemon supports Linux and macOS only");
 mod config;
 mod error;
 mod lock;
+mod paths;
 mod server;
 
 pub use cli_master_core::wire::{HelloResponse, StateSnapshotResponse};

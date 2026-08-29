@@ -274,6 +274,9 @@ async fn runtime_paths_and_socket_are_private() {
     let daemon = RunningDaemon::start(temporary.path());
 
     assert_eq!(mode(daemon.config.data_directory()), 0o700);
+    assert_eq!(mode(daemon.config.config_directory()), 0o700);
+    assert_eq!(mode(daemon.config.cache_directory()), 0o700);
+    assert_eq!(mode(daemon.config.log_directory()), 0o700);
     assert_eq!(mode(daemon.config.runtime_directory()), 0o700);
     assert_eq!(mode(daemon.config.lock_path()), 0o600);
     assert_eq!(mode(daemon.config.socket_path()), 0o600);
