@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::Duration;
 
-use cli_master_core::{CommandSpec, Session, SessionId, SessionStatus};
+use cli_master_core::{CommandSpec, SessionId, SessionStatus};
 use cli_master_fake_agent::compiled_executable;
-use cli_master_session::{SessionManager, SessionSubscription};
+use cli_master_session::{SessionEvent, SessionManager, SessionSnapshot, SessionSubscription};
 use rustix::process::{Pid, test_kill_process};
 use tempfile::TempDir;
 
@@ -123,7 +123,7 @@ pub fn fake_agent_command(cwd: &Path, extra_args: &[&str]) -> CommandSpec {
 /// # Panics
 ///
 /// Panics if the session fails, exits, or the probe deadline elapses.
-pub async fn wait_live(manager: &SessionManager, id: SessionId) -> Session {
+pub async fn wait_live(manager: &SessionManager, id: SessionId) -> SessionSnapshot {
     wait_until_session(manager, id, |session| session.status.is_live()).await
 }
 
@@ -136,18 +136,18 @@ pub async fn wait_status(
     manager: &SessionManager,
     id: SessionId,
     expected: SessionStatus,
-) -> Session {
+) -> SessionSnapshot {
     wait_until_session(manager, id, |session| session.status == expected).await
 }
 
 async fn wait_until_session(
     manager: &SessionManager,
     id: SessionId,
-    predicate: impl Fn(&Session) -> bool,
-) -> Session {
+    predicate: impl Fn(&SessionSnapshot) -> bool,
+) -> SessionSnapshot {
     let deadline = tokio::time::Instant::now() + PROBE_TIMEOUT;
     loop {
-        if let Some(session) = manager.get(id) {
+        if let Ok(session) = manager.snapshot(id) {
             if predicate(&session) {
                 return session;
             }
@@ -162,7 +162,7 @@ async fn wait_until_session(
         assert!(
             tokio::time::Instant::now() < deadline,
             "timed out waiting for session {id}, last={:?}",
-            manager.get(id)
+            manager.snapshot(id)
         );
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
@@ -179,7 +179,13 @@ pub async fn wait_for_bytes(
     needle: &[u8],
 ) {
     if collected.is_empty() {
-        collected.extend(subscription.snapshot.concatenated());
+        collected.extend(
+            subscription
+                .snapshot
+                .output
+                .iter()
+                .flat_map(|chunk| chunk.bytes.iter().copied()),
+        );
     }
     if contains(collected, needle) {
         return;
@@ -193,13 +199,14 @@ pub async fn wait_for_bytes(
             String::from_utf8_lossy(needle),
             String::from_utf8_lossy(collected)
         );
-        match tokio::time::timeout(remaining, subscription.next_chunk()).await {
-            Ok(Ok(chunk)) => {
-                collected.extend_from_slice(&chunk.data);
+        match tokio::time::timeout(remaining, subscription.receiver.recv()).await {
+            Ok(Ok(SessionEvent::Output(chunk))) => {
+                collected.extend_from_slice(&chunk.bytes);
                 if contains(collected, needle) {
                     return;
                 }
             }
+            Ok(Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
             Ok(Err(error)) => panic!("subscription ended while waiting for output: {error}"),
             Err(elapsed) => panic!(
                 "timed out waiting for {}, got {} after {elapsed:?}",
