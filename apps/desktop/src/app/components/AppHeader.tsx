@@ -1,10 +1,28 @@
 import { Icon } from "./Icon";
-import { useWorkspace } from "../workspace/WorkspaceContext";
+import {
+  useDaemonReady,
+  useSelectedProject,
+  useWorkspaceActions,
+} from "../workspace";
+
+interface AppHeaderProps {
+  readonly commandPaletteOpen: boolean;
+  readonly onOpenCommandPalette: () => void;
+  readonly onOpenAgents: () => void;
+  readonly agentsActive: boolean;
+}
 
 /** Renders global product identity and session actions. */
-export function AppHeader() {
-  const workspace = useWorkspace();
-  const canCreate = workspace.connected && workspace.selectedProjectId !== null;
+export function AppHeader({
+  commandPaletteOpen,
+  onOpenCommandPalette,
+  onOpenAgents,
+  agentsActive,
+}: AppHeaderProps) {
+  const ready = useDaemonReady();
+  const project = useSelectedProject();
+  const actions = useWorkspaceActions();
+  const canCreate = ready && project !== null;
 
   return (
     <header className="app-header">
@@ -13,21 +31,42 @@ export function AppHeader() {
           <Icon name="terminal" />
         </span>
         <span className="app-header__name">CLI Master</span>
-        <span className="app-header__edition">Beta {workspace.appVersion}</span>
+        <span className="app-header__edition">Desktop</span>
       </div>
       <div className="app-header__actions">
-        <span id="new-session-requirement" className="app-header__requirement">
-          Add a project first
-        </span>
+        <button
+          className="button button--secondary"
+          type="button"
+          onClick={onOpenAgents}
+          aria-current={agentsActive ? "page" : undefined}
+        >
+          <Icon name="settings" />
+          <span>Agents</span>
+        </button>
+        <button
+          className="button button--secondary"
+          type="button"
+          aria-haspopup="dialog"
+          aria-expanded={commandPaletteOpen}
+          aria-keyshortcuts="Control+K Meta+K"
+          onClick={onOpenCommandPalette}
+        >
+          <span>Commands</span>
+          <kbd className="app-header__shortcut" aria-hidden="true">
+            Ctrl/⌘ K
+          </kbd>
+        </button>
+        {canCreate ? null : (
+          <span id="new-session-requirement" className="app-header__requirement">
+            Add a project first
+          </span>
+        )}
         <button
           className="button button--primary"
           type="button"
           disabled={!canCreate}
-          aria-describedby="new-session-requirement"
-          onClick={() => {
-            document.getElementById("new-session-form")?.scrollIntoView();
-            document.getElementById("session-name")?.focus();
-          }}
+          aria-describedby={canCreate ? undefined : "new-session-requirement"}
+          onClick={() => actions.openDialog("newSession")}
         >
           <Icon name="plus" />
           <span>New Session</span>

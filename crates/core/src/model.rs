@@ -23,18 +23,12 @@ pub enum SessionStatus {
     Unknown,
 }
 
-/// Persistence and recovery state for a managed Git worktree.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorktreeState {
-    /// Git isolation is being prepared.
-    Creating,
-    /// The worktree exists and can be used as a session working directory.
-    Active,
-    /// Removal was requested but has not completed.
-    RemovePending,
-    /// The database record no longer matches Git's worktree list.
-    Orphaned,
+impl SessionStatus {
+    /// Returns whether a process is expected to exist for this status.
+    #[must_use]
+    pub const fn is_live(self) -> bool {
+        matches!(self, Self::Starting | Self::Running | Self::Idle)
+    }
 }
 
 /// Origin of an agent definition.
@@ -120,13 +114,30 @@ pub struct Session {
     /// Process exit code, once available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
-    /// Stable error code when the session failed to start or run.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error_code: Option<String>,
     /// Creation time as Unix epoch milliseconds.
     pub created_at_ms: i64,
     /// Most recent metadata update as Unix epoch milliseconds.
     pub updated_at_ms: i64,
+    /// Most recent terminal input or output as Unix epoch milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_at_ms: Option<i64>,
+    /// Stable machine-readable failure code, when the session failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+}
+
+/// Durable orchestration state for a managed Git worktree.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeState {
+    /// Metadata is reserved while Git creates the branch and linked checkout.
+    Creating,
+    /// The worktree is available for its associated session.
+    Active,
+    /// A confirmed removal is in progress or awaiting completion.
+    RemovePending,
+    /// Metadata remains because creation, reconciliation, or removal failed.
+    Orphaned,
 }
 
 /// Serializable metadata for a managed Git worktree.
@@ -144,10 +155,10 @@ pub struct Worktree {
     pub path: PathBuf,
     /// Checked-out branch name.
     pub branch: String,
-    /// Persistence and recovery state.
-    pub state: WorktreeState,
     /// Whether the latest Git inspection found uncommitted changes.
     pub is_dirty: bool,
+    /// Current durable orchestration state.
+    pub state: WorktreeState,
     /// Creation time as Unix epoch milliseconds.
     pub created_at_ms: i64,
     /// Most recent metadata update as Unix epoch milliseconds.
@@ -174,6 +185,16 @@ mod tests {
         let status: SessionStatus =
             serde_json::from_str("\"waiting_for_vendor\"").expect("unknown status should decode");
         assert_eq!(status, SessionStatus::Unknown);
+    }
+
+    #[test]
+    fn live_statuses_match_process_ownership() {
+        assert!(SessionStatus::Starting.is_live());
+        assert!(SessionStatus::Running.is_live());
+        assert!(SessionStatus::Idle.is_live());
+        assert!(!SessionStatus::Exited.is_live());
+        assert!(!SessionStatus::Failed.is_live());
+        assert!(!SessionStatus::Unknown.is_live());
     }
 
     #[test]
@@ -215,7 +236,7 @@ mod tests {
     #[test]
     fn agent_session_and_worktree_dtos_round_trip() {
         let project_id = ProjectId::new();
-        let agent_id = AgentId::from_key("codex").expect("built-in key should parse");
+        let agent_id = AgentId::new();
         let session_id = SessionId::new();
         let worktree_id = WorktreeId::new();
         let command = CommandSpec::try_from_parts(
@@ -226,7 +247,7 @@ mod tests {
         )
         .expect("command fixture should be valid");
         let agent = AgentDefinition {
-            id: agent_id.clone(),
+            id: agent_id,
             display_name: "Codex".to_owned(),
             description: Some("Local coding agent".to_owned()),
             source: AgentSource::BuiltIn,
@@ -245,9 +266,10 @@ mod tests {
             worktree_path: Some(PathBuf::from("/tmp/worktrees/auth")),
             status: SessionStatus::Running,
             exit_code: None,
-            error_code: None,
             created_at_ms: 1,
             updated_at_ms: 2,
+            last_activity_at_ms: Some(2),
+            error_code: None,
         };
         let worktree = Worktree {
             id: worktree_id,
@@ -255,14 +277,44 @@ mod tests {
             session_id: Some(session_id),
             path: PathBuf::from("/tmp/worktrees/auth"),
             branch: "agent/auth".to_owned(),
-            state: WorktreeState::Active,
             is_dirty: true,
+            state: WorktreeState::Active,
             created_at_ms: 1,
-            updated_at_ms: 1,
+            updated_at_ms: 2,
         };
 
         assert_json_round_trip(&agent);
         assert_json_round_trip(&session);
         assert_json_round_trip(&worktree);
+    }
+
+    #[test]
+    fn worktree_state_and_timestamps_have_stable_wire_values() {
+        for (state, expected) in [
+            (WorktreeState::Creating, "creating"),
+            (WorktreeState::Active, "active"),
+            (WorktreeState::RemovePending, "remove_pending"),
+            (WorktreeState::Orphaned, "orphaned"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(state).expect("state should serialize"),
+                expected
+            );
+        }
+
+        let worktree = Worktree {
+            id: WorktreeId::new(),
+            project_id: ProjectId::new(),
+            session_id: None,
+            path: PathBuf::from("/tmp/worktree"),
+            branch: "agent/worktree".to_owned(),
+            is_dirty: false,
+            state: WorktreeState::RemovePending,
+            created_at_ms: 10,
+            updated_at_ms: 20,
+        };
+        let value = serde_json::to_value(worktree).expect("worktree should serialize");
+        assert_eq!(value["state"], "remove_pending");
+        assert_eq!(value["updatedAtMs"], 20);
     }
 }

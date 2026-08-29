@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -45,16 +44,3 @@ impl ApiError {
         self
     }
 }
-
-impl fmt::Display for ApiError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.action {
-            Some(action) => {
-                write!(formatter, "{}: {}. {action}", self.code, self.message)
-            }
-            None => write!(formatter, "{}: {}", self.code, self.message),
-        }
-    }
-}
-
-impl std::error::Error for ApiError {}

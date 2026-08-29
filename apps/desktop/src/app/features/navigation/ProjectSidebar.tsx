@@ -1,17 +1,27 @@
 import { useState } from "react";
 
 import { Icon } from "../../components/Icon";
-import { formatApiError } from "../../../lib/ipc";
-import { useWorkspace } from "../../workspace/WorkspaceContext";
+import { formatApiError } from "../../../ipc";
+import {
+  useDaemonReady,
+  useProjects,
+  useSelectedSessions,
+  useSelection,
+  useWorkspaceActions,
+} from "../../workspace";
 
 /** Renders project and session navigation. */
 export function ProjectSidebar() {
-  const workspace = useWorkspace();
+  const ready = useDaemonReady();
+  const projects = useProjects();
+  const selection = useSelection();
+  const projectSessions = useSelectedSessions();
+  const actions = useWorkspaceActions();
   const [path, setPath] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
-  const projectSessions = workspace.sessions.filter(
-    (session) => session.projectId === workspace.selectedProjectId,
-  );
+  const activeCount = projectSessions.filter(
+    (session) => session.status === "running" || session.status === "idle",
+  ).length;
 
   return (
     <aside className="sidebar" aria-label="Project and session navigation">
@@ -20,12 +30,10 @@ export function ProjectSidebar() {
         <span
           className="sidebar__count"
           aria-label={
-            workspace.projects.length === 0
-              ? "No projects"
-              : `${workspace.projects.length} projects`
+            projects.length === 0 ? "No projects" : `${projects.length} projects`
           }
         >
-          {workspace.projects.length}
+          {projects.length}
         </span>
       </div>
       <nav className="sidebar__navigation" aria-label="Workspace navigation">
@@ -33,23 +41,23 @@ export function ProjectSidebar() {
           <div className="sidebar-section__header">
             <h2 id="projects-heading">Projects</h2>
           </div>
-          {workspace.projects.length === 0 ? (
+          {projects.length === 0 ? (
             <div className="sidebar-section__empty">
               <Icon name="folder" />
               <p>No repositories added.</p>
             </div>
           ) : (
             <ul className="sidebar-list">
-              {workspace.projects.map((project) => (
+              {projects.map((project) => (
                 <li key={project.id}>
                   <button
                     type="button"
                     className={
-                      project.id === workspace.selectedProjectId
+                      project.id === selection.projectId
                         ? "sidebar-list__item sidebar-list__item--active"
                         : "sidebar-list__item"
                     }
-                    onClick={() => workspace.selectProject(project.id)}
+                    onClick={() => actions.selectProject(project.id)}
                   >
                     <strong>{project.name}</strong>
                     <span>{project.currentBranch ?? "unknown branch"}</span>
@@ -64,9 +72,12 @@ export function ProjectSidebar() {
             onSubmit={(event) => {
               event.preventDefault();
               setFormError(null);
-              void workspace.addProject(path.trim()).catch((error: unknown) => {
-                setFormError(formatApiError(error));
-              });
+              void actions
+                .addProject(path.trim())
+                .then(() => setPath(""))
+                .catch((error: unknown) => {
+                  setFormError(formatApiError(error));
+                });
             }}
           >
             <label htmlFor="project-path">Repository path</label>
@@ -76,12 +87,12 @@ export function ProjectSidebar() {
               onChange={(event) => setPath(event.target.value)}
               placeholder="/home/you/src/app"
               autoComplete="off"
-              disabled={!workspace.connected}
+              disabled={!ready}
             />
             <button
               className="button button--secondary button--full"
               type="submit"
-              disabled={!workspace.connected || path.trim().length === 0}
+              disabled={!ready || path.trim().length === 0}
               aria-describedby="add-project-requirement"
             >
               <Icon name="plus" />
@@ -89,7 +100,7 @@ export function ProjectSidebar() {
             </button>
           </form>
           <p id="add-project-requirement" className="sidebar-section__hint">
-            {workspace.connected
+            {ready
               ? "The directory stays on disk when you remove it from CLI Master."
               : "Available when the local daemon is connected."}
           </p>
@@ -102,10 +113,7 @@ export function ProjectSidebar() {
         <section className="sidebar-section" aria-labelledby="sessions-heading">
           <div className="sidebar-section__header">
             <h2 id="sessions-heading">Sessions</h2>
-            <span className="sidebar-section__meta">
-              {projectSessions.filter((session) => session.status === "running").length}{" "}
-              active
-            </span>
+            <span className="sidebar-section__meta">{activeCount} active</span>
           </div>
           {projectSessions.length === 0 ? (
             <div className="sidebar-section__empty">
@@ -119,13 +127,13 @@ export function ProjectSidebar() {
                   <button
                     type="button"
                     className={
-                      session.id === workspace.focusedSessionId
+                      session.id === selection.sessionId
                         ? "sidebar-list__item sidebar-list__item--active"
                         : "sidebar-list__item"
                     }
                     onClick={() => {
-                      workspace.focusSession(session.id);
-                      workspace.toggleVisible(session.id);
+                      actions.focusSession(session.id);
+                      actions.toggleVisible(session.id);
                     }}
                   >
                     <strong>{session.name}</strong>

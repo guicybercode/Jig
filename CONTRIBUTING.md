@@ -9,7 +9,8 @@ Read these files:
 
 1. [README.md](README.md) for setup and validation commands.
 2. [ARCHITECTURE.md](ARCHITECTURE.md) for accepted system boundaries.
-3. [design-system/cli-master/MASTER.md](design-system/cli-master/MASTER.md) for
+3. [AGENTS.md](AGENTS.md) for crate ownership and the IPC catalog.
+4. [design-system/cli-master/MASTER.md](design-system/cli-master/MASTER.md) for
    interface and accessibility rules.
 
 Windows support and the future features listed as out of scope in the
@@ -60,7 +61,10 @@ feature in one commit.
 
 Tests must be headless, deterministic, and independent. Use temporary
 directories and databases for filesystem, Git, and SQLite integration tests.
-Use short-lived real child programs for PTY lifecycle tests.
+Use short-lived real child programs for PTY lifecycle tests. Beta acceptance
+that needs an interactive agent should launch `cli-master-fake-agent` through
+`CommandSpec`, never `sh -c`. Wait on readiness lines, session status, Git
+errors, or SQLite rows. Do not add `sleep(3)` calls to hide races.
 
 Frontend tests should query semantic roles and labels. Mock the project-owned
 backend client rather than scattering Tauri mocks through components. Do not

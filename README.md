@@ -16,39 +16,37 @@ CLI Master does not require an account, cloud backend, telemetry service, or
 API server. Authentication remains with each CLI installed on the machine.
 
 > [!IMPORTANT]
-> Beta v0.1.0-beta.1 is a local Linux/macOS desktop. The daemon and workspace
-> crates are in this repository. Read [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md)
-> before treating a path as finished. Windows is out of scope.
+> Beta v0.1 is under active development. The repository currently contains the
+> architecture and the first buildable Tauri/React foundation. Do not treat the
+> current `main` branch as a finished release.
 
 ## Supported platforms
 
-- Linux is a first-class target. AppImage is the intended package format; a
-  Debian package follows when `pnpm tauri build` produces it on that host.
+- Linux is a first-class target. AppImage is the initial package format; a
+  Debian package follows when the packaging path is reliable.
 - macOS is a first-class target on Apple Silicon and supported modern releases.
-  The intended artifacts are an application bundle and DMG. This integrator
-  did not run on macOS; use CI or a Mac.
+  The initial artifacts are an application bundle and DMG.
 - Windows is explicitly outside the Beta v0.1 scope.
 
 ## How it works
 
 ```text
-React workspace
-       │ typed Tauri commands
+React + xterm.js
+       │ typed Tauri commands and events
        ▼
 Tauri 2 desktop bridge
-       │ length-prefixed JSON on a Unix socket
+       │ versioned local IPC
        ▼
-cli-masterd
+CLI Master daemon
        ├── PTY session manager ── Codex / Claude / Gemini / OpenCode
        ├── Git and worktree service
        └── SQLite metadata storage
 ```
 
 The separate daemon owns live PTYs and SQLite. Closing or reloading the desktop
-window therefore does not inherently stop active sessions. Beta v0.1 hosts
-terminal I/O in a textarea and polls replay snapshots; the architecture target
-in [ARCHITECTURE.md](ARCHITECTURE.md) still describes xterm.js. Read that file
-for the protocol, schema, lifecycle, and safety decisions.
+window therefore does not inherently stop active sessions. Read
+[ARCHITECTURE.md](ARCHITECTURE.md) for the protocol, schema, lifecycle, and
+safety decisions.
 
 ## Prerequisites
 
@@ -108,10 +106,14 @@ pnpm check
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+pnpm --filter @cli-master/desktop test:e2e
 ```
 
-See [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) and
-[docs/BETA_V0.1_ACCEPTANCE.md](docs/BETA_V0.1_ACCEPTANCE.md).
+`pnpm check` type-checks and builds the frontend, then checks every Rust crate.
+Runtime acceptance for two live sessions, worktree isolation, UI close/reopen,
+and daemon recovery lives in `crates/e2e`. Playwright covers the empty desktop
+shell; see [docs/playwright-testing.md](docs/playwright-testing.md).
+Platform-specific PTY tests run in the Linux and macOS CI jobs.
 
 ## Build packages
 
@@ -119,19 +121,23 @@ See [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) and
 pnpm tauri build
 ```
 
-Tauri creates the formats supported by the current operating system. On Linux
-that includes an AppImage and a `.deb` with `cli-masterd` next to the desktop
-binary. Code signing and macOS notarization are release concerns and are not
-required for a local development build. See
-[docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
+Tauri creates the formats supported by the current operating system. Code
+signing and macOS notarization are release concerns and are not required for a
+local development build.
 
 ## Repository layout
 
 ```text
-apps/desktop/                  React, TypeScript, Vite, and Tauri bridge
-crates/                        Rust domain, storage, Git, PTY, and daemon crates
+apps/desktop/                  React, TypeScript, Vite, Tauri bridge, Playwright
+crates/                        Rust domain, storage, Git, PTY, daemon, e2e
+crates/fake-agent              Interactive coding-agent stand-in for Beta tests
+crates/e2e                     Acceptance tests against production crates
 design-system/cli-master/      UI tokens and interaction rules
 ARCHITECTURE.md                accepted architecture and protocol design
+AGENTS.md                      crate ownership and IPC rules for agents
+protocol/catalog.json          frozen v1 method and event names
+docs/playwright-testing.md     UI E2E scope and skipped Tauri grid tests
+docs/test-coverage-review.md   Beta criteria mapped onto real tests
 ```
 
 ## Safety principles

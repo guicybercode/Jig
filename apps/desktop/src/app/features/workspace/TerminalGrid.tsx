@@ -1,17 +1,24 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
-import type { Session } from "../../../lib/ipc";
-import { useWorkspace } from "../../workspace/WorkspaceContext";
+import type { Session } from "../../../ipc";
+import {
+  TerminalSurface,
+  type TerminalDimensions,
+  type TerminalInput,
+  type TerminalSurfaceHandle,
+} from "../terminal";
+import { useSelection, useWorkspaceActions, useWorkspaceRuntime } from "../../workspace";
+import { terminalInputToBase64 } from "../../workspace/terminal-codec";
 
 interface TerminalGridProps {
-  readonly sessions: Session[];
+  readonly sessions: readonly Session[];
 }
 
-/** Renders up to four interactive terminals. Output is polled into a textarea host. */
+/** Renders up to four xterm surfaces. PTY bytes never enter React state. */
 export function TerminalGrid({ sessions }: TerminalGridProps) {
-  const workspace = useWorkspace();
+  const selection = useSelection();
   const visible = sessions.filter((session) =>
-    workspace.visibleSessionIds.includes(session.id),
+    selection.visibleSessionIds.includes(session.id),
   );
   const shown = visible.length > 0 ? visible.slice(0, 4) : sessions.slice(0, 1);
 
@@ -32,7 +39,7 @@ export function TerminalGrid({ sessions }: TerminalGridProps) {
         <TerminalPane
           key={session.id}
           session={session}
-          focused={session.id === workspace.focusedSessionId}
+          focused={session.id === selection.sessionId}
         />
       ))}
     </section>
@@ -46,36 +53,34 @@ function TerminalPane({
   readonly session: Session;
   readonly focused: boolean;
 }) {
-  const workspace = useWorkspace();
-  const hostRef = useRef<HTMLTextAreaElement>(null);
-  const appliedRef = useRef(0);
+  const actions = useWorkspaceActions();
+  const { terminals } = useWorkspaceRuntime();
+  const handleRef = useRef<TerminalSurfaceHandle | null>(null);
+
+  const onInput = useCallback(
+    (input: TerminalInput) => {
+      void actions.writeSession(session.id, terminalInputToBase64(input));
+    },
+    [actions, session.id],
+  );
+
+  const onResize = useCallback(
+    (dimensions: TerminalDimensions) => {
+      void actions.resizeSession(session.id, dimensions.cols, dimensions.rows);
+    },
+    [actions, session.id],
+  );
 
   useEffect(() => {
-    let cancelled = false;
-    const timer = window.setInterval(() => {
-      void workspace.subscribeReplay(session.id).then((replay) => {
-        if (cancelled || !hostRef.current) {
-          return;
-        }
-        if (replay.lastSequence === appliedRef.current) {
-          return;
-        }
-        appliedRef.current = replay.lastSequence;
-        hostRef.current.value = base64ToText(replay.replayBase64);
-        if (focused) {
-          hostRef.current.scrollTop = hostRef.current.scrollHeight;
-        }
-      });
-    }, 80);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [focused, session.id, workspace]);
+    const cursor = handleRef.current?.getCursor() ?? 0;
+    void actions.subscribeSession(session.id, cursor);
+  }, [actions, session.id]);
 
   return (
     <article
-      className={focused ? "terminal-pane terminal-pane--focused" : "terminal-pane"}
+      className={
+        focused ? "terminal-pane terminal-pane--focused" : "terminal-pane"
+      }
     >
       <header>
         <h3>{session.name}</h3>
@@ -84,33 +89,20 @@ function TerminalPane({
           {session.worktreePath ? ` · ${session.worktreePath}` : ""}
         </span>
       </header>
-      <textarea
-        ref={hostRef}
-        aria-label={`${session.name} terminal`}
-        className="terminal-pane__io"
-        spellCheck={false}
-        onFocus={() => workspace.focusSession(session.id)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            void workspace.writeSession(session.id, new TextEncoder().encode("\r"));
-          } else if (event.key.length === 1 && !event.ctrlKey && !event.metaKey) {
-            event.preventDefault();
-            void workspace.writeSession(
-              session.id,
-              new TextEncoder().encode(event.key),
-            );
+      <TerminalSurface
+        accessibleLabel={`${session.name} terminal`}
+        className="terminal-pane__surface"
+        onInput={onInput}
+        onResize={onResize}
+        ref={(handle) => {
+          handleRef.current = handle;
+          if (handle) {
+            terminals.attach(session.id, handle);
+          } else {
+            terminals.detach(session.id);
           }
         }}
       />
     </article>
   );
-}
-
-function base64ToText(value: string): string {
-  try {
-    return atob(value);
-  } catch {
-    return "";
-  }
 }

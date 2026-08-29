@@ -1,42 +1,14 @@
-//! Tauri desktop bridge. Process ownership stays with `cli-masterd`.
-
-#![allow(clippy::needless_pass_by_value)]
+//! Tauri desktop process for CLI Master.
+//!
+//! The window process is a typed bridge. It forwards versioned wire envelopes
+//! to `cli-masterd` and relays daemon events. Live sessions belong to the
+//! daemon and survive closing the window.
 
 mod bridge;
 
-use std::sync::Mutex;
-
-use cli_master_core::ApiError;
-use serde_json::Value;
-use tauri::Manager;
-
-use crate::bridge::Bridge;
-
-struct AppState {
-    bridge: Mutex<Option<Bridge>>,
-}
-
-fn connected_bridge(state: &AppState) -> Result<Bridge, ApiError> {
-    let mut slot = state
-        .bridge
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(existing) = slot.as_ref() {
-        return Ok(existing.clone());
-    }
-    let created = Bridge::connect()?;
-    *slot = Some(created.clone());
-    Ok(created)
-}
-
-#[tauri::command]
-fn daemon_request(
-    state: tauri::State<'_, AppState>,
-    method: String,
-    payload: Value,
-) -> Result<Value, ApiError> {
-    connected_bridge(&state)?.request(&method, payload)
-}
+use bridge::DaemonBridge;
+use bridge::commands::{app_quit, daemon_invoke, daemon_reconnect, daemon_status, protocol_info};
+use tauri::{Manager, RunEvent};
 
 /// Starts the Tauri desktop process.
 ///
@@ -45,20 +17,60 @@ fn daemon_request(
 /// Panics when Tauri cannot initialize or run the desktop application.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    tracing_subscriber::fmt()
+        .json()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_target(true)
+        .try_init()
+        .ok();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(AppState {
-            bridge: Mutex::new(None),
-        })
-        .invoke_handler(tauri::generate_handler![daemon_request])
+        .invoke_handler(tauri::generate_handler![
+            protocol_info,
+            daemon_invoke,
+            daemon_status,
+            daemon_reconnect,
+            app_quit
+        ])
         .setup(|app| {
-            let handle = app.handle().clone();
-            std::thread::spawn(move || {
-                let state = handle.state::<AppState>();
-                let _ = connected_bridge(&state);
-            });
+            let bridge = bridge::commands::start_bridge(app.handle());
+            app.manage(bridge);
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| {
+            if let RunEvent::ExitRequested { .. } = event {
+                if let Some(bridge) = app_handle.try_state::<DaemonBridge>() {
+                    bridge.shutdown();
+                }
+            }
+        });
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use cli_master_core::{PROTOCOL_V1, wire};
+
+    #[test]
+    fn rust_catalog_matches_desktop_mirror() {
+        let catalog: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../protocol/catalog.json"))
+                .expect("desktop protocol mirror should parse");
+
+        assert_eq!(catalog["protocolVersion"], PROTOCOL_V1);
+        assert_eq!(catalog["methods"], json!(wire::method::ALL));
+        assert_eq!(catalog["events"], json!(wire::event_name::ALL));
+
+        let exposed = protocol_info();
+        assert_eq!(exposed.methods, wire::method::ALL);
+        assert_eq!(exposed.events, wire::event_name::ALL);
+    }
 }

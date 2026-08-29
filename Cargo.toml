@@ -1,19 +1,21 @@
 [workspace]
 members = [
-    "apps/desktop/src-tauri",
-    "crates/agents",
-    "crates/core",
-    "crates/git",
-    "crates/session",
-    "crates/daemon",
-    "crates/storage",
+  "apps/desktop/src-tauri",
+  "crates/agents",
+  "crates/core",
+  "crates/daemon",
+  "crates/e2e",
+  "crates/fake-agent",
+  "crates/git",
+  "crates/session",
+  "crates/storage",
 ]
 resolver = "2"
 
 [workspace.package]
 edition = "2024"
 rust-version = "1.85"
-version = "0.1.0-beta.1"
+version = "0.1.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
