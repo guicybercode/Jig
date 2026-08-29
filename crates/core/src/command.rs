@@ -352,29 +352,10 @@ pub fn validate_structured_invocation(
             continue;
         }
 
-        let shell = classify_shell_executable(executable);
-        let uses_command_string = match shell {
-            Some(ShellKind::Posix) => args.iter().any(|argument| {
-                let argument = argument.to_ascii_lowercase();
-                argument == "--command"
-                    || argument.starts_with("--command=")
-                    || argument == "--init-command"
-                    || argument.starts_with("--init-command=")
-                    || argument
-                        .strip_prefix('-')
-                        .is_some_and(|flags| !flags.starts_with('-') && flags.contains('c'))
-            }),
-            Some(ShellKind::PowerShell) => args.iter().any(|argument| {
-                let flag = argument.trim_start_matches(['-', '/']).to_ascii_lowercase();
-                !flag.is_empty()
-                    && ("command".starts_with(&flag)
-                        || "commandwithargs".starts_with(&flag)
-                        || "encodedcommand".starts_with(&flag))
-            }),
-            Some(ShellKind::Cmd) => args.iter().any(|argument| {
-                let argument = argument.to_ascii_lowercase();
-                argument.starts_with("/c") || argument.starts_with("/k")
-            }),
+        let uses_command_string = match classify_shell_executable(executable) {
+            Some(ShellKind::Posix) => posix_shell_uses_command_string(executable, args),
+            Some(ShellKind::PowerShell) => powershell_uses_command_string(args),
+            Some(ShellKind::Cmd) => cmd_uses_command_string(args),
             None => false,
         };
         return if uses_command_string {
@@ -415,6 +396,304 @@ fn classify_shell_executable(executable: &str) -> Option<ShellKind> {
 fn executable_has_name(executable: &str, expected: &str) -> bool {
     executable_name(executable)
         .is_some_and(|name| name.trim_end_matches(".exe").eq_ignore_ascii_case(expected))
+}
+
+fn posix_shell_uses_command_string(executable: &str, args: &[String]) -> bool {
+    let mut index = 0;
+    while let Some(argument) = args.get(index) {
+        if argument == "--" || argument == "-" {
+            return false;
+        }
+        if let Some(long) = argument.strip_prefix("--") {
+            let (name, has_attached_value) = long
+                .split_once('=')
+                .map_or((long, false), |(name, _)| (name, true));
+            let name = name.to_ascii_lowercase();
+            if matches!(name.as_str(), "command" | "commands" | "init-command")
+                || (executable_has_name(executable, "nu") && name == "execute")
+            {
+                return true;
+            }
+            index += if posix_long_option_consumes_value(executable, &name) && !has_attached_value {
+                2
+            } else {
+                1
+            };
+            continue;
+        }
+
+        let (sets_options, flags) = argument
+            .strip_prefix('-')
+            .map(|flags| (true, flags))
+            .or_else(|| argument.strip_prefix('+').map(|flags| (false, flags)))
+            .unwrap_or((false, ""));
+        if flags.is_empty() {
+            return false;
+        }
+        match parse_posix_short_options(executable, flags, sets_options) {
+            PosixShortOptions::CommandString => return true,
+            PosixShortOptions::ConsumesNext => index += 2,
+            PosixShortOptions::Complete => index += 1,
+        }
+    }
+    false
+}
+
+fn posix_long_option_consumes_value(executable: &str, name: &str) -> bool {
+    if matches!(name, "init-file" | "rcfile") {
+        return true;
+    }
+    if executable_has_name(executable, "fish")
+        && matches!(
+            name,
+            "debug" | "debug-output" | "features" | "profile" | "profile-startup"
+        )
+    {
+        return true;
+    }
+    executable_has_name(executable, "nu")
+        && matches!(
+            name,
+            "config"
+                | "config-home"
+                | "env-config"
+                | "error-style"
+                | "experimental-options"
+                | "ide-check"
+                | "ide-complete"
+                | "ide-goto-def"
+                | "ide-hover"
+                | "include-path"
+                | "log-exclude"
+                | "log-file"
+                | "log-include"
+                | "log-level"
+                | "log-target"
+                | "mcp-port"
+                | "mcp-transport"
+                | "plugin-config"
+                | "plugins"
+                | "table-mode"
+        )
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PosixShortOptions {
+    CommandString,
+    ConsumesNext,
+    Complete,
+}
+
+fn parse_posix_short_options(
+    executable: &str,
+    flags: &str,
+    sets_options: bool,
+) -> PosixShortOptions {
+    let mut consumes_next = false;
+    for (offset, flag) in flags.char_indices() {
+        let command_string = sets_options
+            && (flag == 'c'
+                || (flag == 'C' && executable_has_name(executable, "fish"))
+                || (flag == 'e' && executable_has_name(executable, "nu")));
+        if command_string {
+            return PosixShortOptions::CommandString;
+        }
+        if (flag == 'o' && bourne_shell_o_is_clustered(executable))
+            || (flag == 'O' && executable_has_name(executable, "bash"))
+        {
+            consumes_next = true;
+            continue;
+        }
+        let consumes_value = flag == 'o'
+            || (executable_has_name(executable, "fish") && matches!(flag, 'd' | 'f' | 'p'))
+            || (executable_has_name(executable, "nu") && matches!(flag, 'I' | 'm'));
+        if consumes_value {
+            return if offset + flag.len_utf8() == flags.len() {
+                PosixShortOptions::ConsumesNext
+            } else {
+                PosixShortOptions::Complete
+            };
+        }
+    }
+    if consumes_next {
+        PosixShortOptions::ConsumesNext
+    } else {
+        PosixShortOptions::Complete
+    }
+}
+
+fn bourne_shell_o_is_clustered(executable: &str) -> bool {
+    executable_name(executable).is_some_and(|name| {
+        matches!(
+            name.trim_end_matches(".exe").to_ascii_lowercase().as_str(),
+            "sh" | "ash" | "bash" | "dash" | "ksh" | "mksh" | "yash" | "posh" | "hush"
+        )
+    })
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PowerShellOption {
+    CommandString,
+    File,
+    Value,
+    Switch,
+    Terminal,
+}
+
+const POWERSHELL_OPTIONS: &[(&str, PowerShellOption)] = &[
+    ("command", PowerShellOption::CommandString),
+    ("commandwithargs", PowerShellOption::CommandString),
+    ("encodedcommand", PowerShellOption::CommandString),
+    ("file", PowerShellOption::File),
+    ("configurationfile", PowerShellOption::Value),
+    ("configurationname", PowerShellOption::Value),
+    ("custompipename", PowerShellOption::Value),
+    ("encodedarguments", PowerShellOption::Value),
+    ("executionpolicy", PowerShellOption::Value),
+    ("inputformat", PowerShellOption::Value),
+    ("outputformat", PowerShellOption::Value),
+    ("psconsolefile", PowerShellOption::Value),
+    ("settingsfile", PowerShellOption::Value),
+    ("token", PowerShellOption::Value),
+    ("utctimestamp", PowerShellOption::Value),
+    ("windowstyle", PowerShellOption::Value),
+    ("workingdirectory", PowerShellOption::Value),
+    ("interactive", PowerShellOption::Switch),
+    ("login", PowerShellOption::Switch),
+    ("mta", PowerShellOption::Switch),
+    ("noexit", PowerShellOption::Switch),
+    ("nologo", PowerShellOption::Switch),
+    ("noninteractive", PowerShellOption::Switch),
+    ("noprofile", PowerShellOption::Switch),
+    ("noprofileloadtime", PowerShellOption::Switch),
+    ("namedpipeservermode", PowerShellOption::Switch),
+    (
+        "removeworkingdirectorytrailingcharacter",
+        PowerShellOption::Switch,
+    ),
+    ("servermode", PowerShellOption::Switch),
+    ("socketservermode", PowerShellOption::Switch),
+    ("sshservermode", PowerShellOption::Switch),
+    ("sta", PowerShellOption::Switch),
+    ("v2socketservermode", PowerShellOption::Switch),
+    ("help", PowerShellOption::Terminal),
+    ("version", PowerShellOption::Terminal),
+];
+
+const POWERSHELL_OPTION_ALIASES: &[(&str, PowerShellOption)] = &[
+    ("c", PowerShellOption::CommandString),
+    ("cwa", PowerShellOption::CommandString),
+    ("e", PowerShellOption::CommandString),
+    ("ec", PowerShellOption::CommandString),
+    ("enc", PowerShellOption::CommandString),
+    ("f", PowerShellOption::File),
+    ("config", PowerShellOption::Value),
+    ("ea", PowerShellOption::Value),
+    ("ep", PowerShellOption::Value),
+    ("ex", PowerShellOption::Value),
+    ("if", PowerShellOption::Value),
+    ("inp", PowerShellOption::Value),
+    ("o", PowerShellOption::Value),
+    ("of", PowerShellOption::Value),
+    ("settings", PowerShellOption::Value),
+    ("w", PowerShellOption::Value),
+    ("wd", PowerShellOption::Value),
+    ("wo", PowerShellOption::Value),
+    ("i", PowerShellOption::Switch),
+    ("l", PowerShellOption::Switch),
+    ("noe", PowerShellOption::Switch),
+    ("nam", PowerShellOption::Switch),
+    ("nol", PowerShellOption::Switch),
+    ("noni", PowerShellOption::Switch),
+    ("nop", PowerShellOption::Switch),
+    ("sshs", PowerShellOption::Switch),
+    ("s", PowerShellOption::Switch),
+    ("so", PowerShellOption::Switch),
+    ("to", PowerShellOption::Value),
+    ("utc", PowerShellOption::Value),
+    ("v2so", PowerShellOption::Switch),
+    ("?", PowerShellOption::Terminal),
+    ("h", PowerShellOption::Terminal),
+    ("v", PowerShellOption::Terminal),
+];
+
+fn classify_powershell_option(name: &str) -> Option<PowerShellOption> {
+    if let Some((_, option)) = POWERSHELL_OPTION_ALIASES
+        .iter()
+        .find(|(alias, _)| *alias == name)
+    {
+        return Some(*option);
+    }
+    if let Some((_, option)) = POWERSHELL_OPTIONS
+        .iter()
+        .find(|(candidate, _)| *candidate == name)
+    {
+        return Some(*option);
+    }
+
+    let mut matches = POWERSHELL_OPTIONS
+        .iter()
+        .filter(|(candidate, _)| candidate.starts_with(name))
+        .map(|(_, option)| *option);
+    let option = matches.next()?;
+    matches.next().is_none().then_some(option)
+}
+
+fn powershell_uses_command_string(args: &[String]) -> bool {
+    let mut index = 0;
+    while let Some(argument) = args.get(index) {
+        if argument == "--" {
+            return false;
+        }
+        let Some(option) = argument
+            .strip_prefix("--")
+            .or_else(|| argument.strip_prefix('-'))
+            .or_else(|| argument.strip_prefix('/'))
+        else {
+            return false;
+        };
+        let (name, has_attached_value) = option
+            .split_once([':', '='])
+            .map_or((option, false), |(name, _)| (name, true));
+        let Some(option) = classify_powershell_option(&name.to_ascii_lowercase()) else {
+            return false;
+        };
+        match option {
+            PowerShellOption::CommandString => return true,
+            PowerShellOption::File | PowerShellOption::Terminal => return false,
+            PowerShellOption::Value => index += if has_attached_value { 1 } else { 2 },
+            PowerShellOption::Switch => index += 1,
+        }
+    }
+    false
+}
+
+fn cmd_uses_command_string(args: &[String]) -> bool {
+    for argument in args {
+        let argument = argument.to_ascii_lowercase();
+        if argument.starts_with("/c") || argument.starts_with("/k") {
+            return true;
+        }
+        if !matches!(
+            argument.as_str(),
+            "/a" | "/u"
+                | "/q"
+                | "/d"
+                | "/s"
+                | "/e:on"
+                | "/e:off"
+                | "/f:on"
+                | "/f:off"
+                | "/v:on"
+                | "/v:off"
+        ) && !argument
+            .strip_prefix("/t:")
+            .is_some_and(|colors| matches!(colors.len(), 1 | 2))
+        {
+            return false;
+        }
+    }
+    false
 }
 
 #[derive(Clone, Copy, Default)]
@@ -797,6 +1076,95 @@ mod tests {
                 "rejected structured nested wrapper chain {executable} {args:?}"
             );
         }
+    }
+
+    #[test]
+    fn shell_option_parsers_respect_script_and_option_boundaries() {
+        for (executable, args) in [
+            ("/bin/sh", vec!["--", "-c"]),
+            ("bash", vec!["script.sh", "-c"]),
+            ("bash", vec!["-o", "posix", "script.sh", "-c"]),
+            ("bash", vec!["-O", "extglob", "script.sh", "-c"]),
+            ("fish", vec!["-p", "/tmp/profile", "script.fish", "-c"]),
+            ("fish", vec!["-p/tmp/cache", "script.fish", "-c"]),
+            ("fish", vec!["-dcomplete", "script.fish", "-c"]),
+            ("nu", vec!["--config", "/tmp/config.nu", "script.nu", "-e"]),
+            ("nu", vec!["-Iconfig", "script.nu", "-e"]),
+            ("nu", vec!["-mrounded", "script.nu", "-e"]),
+            ("pwsh", vec!["-File", "script.ps1", "c"]),
+            ("pwsh", vec!["script.ps1", "-Command", "plain argument"]),
+            ("pwsh", vec!["--", "-EncodedCommand", "plain argument"]),
+            (
+                "pwsh",
+                vec![
+                    "-WorkingDirectory",
+                    "/tmp",
+                    "-File",
+                    "script.ps1",
+                    "-Command",
+                ],
+            ),
+            ("cmd.exe", vec!["script.cmd", "/C", "plain argument"]),
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert_eq!(
+                validate_structured_invocation(executable, &args),
+                Ok(()),
+                "rejected arguments after a shell parsing boundary: {executable} {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shell_option_parsers_reject_effective_command_string_options() {
+        for (executable, args) in [
+            ("bash", vec!["-o", "posix", "-c", "echo unsafe"]),
+            ("bash", vec!["-oc", "posix", "echo unsafe"]),
+            ("/bin/sh", vec!["-oc", "posix", "echo unsafe"]),
+            ("zsh", vec!["-oshwordsplit", "-c", "echo unsafe"]),
+            ("bash", vec!["--rcfile", "/tmp/bashrc", "-c", "echo unsafe"]),
+            ("nu", vec!["--commands", "echo unsafe"]),
+            ("nu", vec!["-e", "echo unsafe"]),
+            ("nu", vec!["--execute", "echo unsafe"]),
+            (
+                "nu",
+                vec!["--config", "/tmp/config.nu", "-e", "echo unsafe"],
+            ),
+            ("fish", vec!["-d", "warning", "-c", "echo unsafe"]),
+            ("fish", vec!["-p", "/tmp/profile", "-c", "echo unsafe"]),
+            ("fish", vec!["-p/tmp/profile", "-c", "echo unsafe"]),
+            ("fish", vec!["-f", "qmark-noglob", "-c", "echo unsafe"]),
+            (
+                "fish",
+                vec!["--debug-output", "/tmp/fish.log", "-c", "echo unsafe"],
+            ),
+            (
+                "pwsh",
+                vec!["-WorkingDirectory", "/tmp", "-Command", "echo unsafe"],
+            ),
+            ("pwsh", vec!["-NoProfile", "-ec", "ZQBjAGgAbwA="]),
+            ("pwsh", vec!["-ea", "YQByAGcAcwA=", "-c", "echo unsafe"]),
+            ("pwsh", vec!["-so", "-c", "echo unsafe"]),
+            ("pwsh", vec!["-to", "token", "-c", "echo unsafe"]),
+            ("cmd.exe", vec!["/D", "/C", "echo unsafe"]),
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert_eq!(
+                validate_structured_invocation(executable, &args),
+                Err(CommandSpecError::ShellCommandString),
+                "accepted an effective shell command-string option: {executable} {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn deeply_nested_known_wrappers_do_not_use_recursive_validation() {
+        let mut args = vec!["env".to_owned(); 4_096];
+        args.extend(["sh".to_owned(), "-c".to_owned(), "echo unsafe".to_owned()]);
+        assert_eq!(
+            validate_structured_invocation("env", &args),
+            Err(CommandSpecError::ShellCommandString)
+        );
     }
 
     #[test]
