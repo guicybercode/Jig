@@ -60,6 +60,18 @@
   gap: var(--space-2);
 }
 
+.app-header__shortcut {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-small);
+  padding: 0 var(--space-1);
+  color: var(--color-text-muted);
+  background: var(--color-inset);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+}
+
 .app-header__requirement {
   color: var(--color-text-muted);
   font-size: 0.75rem;
@@ -531,6 +543,8 @@
 
 .dialog {
   width: min(100%, 28rem);
+  max-height: calc(100dvh - (2 * var(--space-4)));
+  overflow-y: auto;
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius);
   padding: var(--space-4);
@@ -591,6 +605,64 @@
   font-family: var(--font-mono);
   font-size: 0.75rem;
   line-height: 1.4;
+}
+
+.command-palette {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.command-palette input {
+  min-height: 2rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-small);
+  padding: 0 var(--space-2);
+  color: var(--color-text);
+  background: var(--color-inset);
+}
+
+.command-palette__summary,
+.command-palette__unavailable,
+.command-palette__empty {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
+
+.command-palette__summary {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.command-palette__results {
+  max-height: min(18rem, 42dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-1);
+  list-style: none;
+}
+
+.command-palette__results li {
+  min-width: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.command-palette__results .button {
+  justify-content: flex-start;
+}
+
+.command-palette__unavailable {
+  overflow-wrap: anywhere;
+  padding-inline: var(--space-2);
+}
+
+.command-palette__empty {
+  padding: var(--space-3);
+  text-align: center;
 }
 
 .notification-list {
@@ -657,7 +729,8 @@
 
 @media (max-width: 32rem) {
   .app-header__edition,
-  .app-header__requirement {
+  .app-header__requirement,
+  .app-header__shortcut {
     display: none;
   }
 

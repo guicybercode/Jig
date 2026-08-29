@@ -325,9 +325,12 @@ pub fn validate_structured_invocation(
     args: &[String],
 ) -> Result<(), CommandSpecError> {
     if executable_has_name(executable, "env")
-        && args
-            .iter()
-            .any(|argument| argument == "-S" || argument == "--split-string")
+        && args.iter().any(|argument| {
+            argument == "-S"
+                || argument.starts_with("-S") && argument.len() > 2
+                || argument == "--split-string"
+                || argument.starts_with("--split-string=")
+        })
     {
         return Err(CommandSpecError::ShellCommandString);
     }
@@ -541,6 +544,8 @@ mod tests {
             ("busybox", vec!["sh", "-c", "echo unsafe"]),
             ("busybox", vec!["/bin/ash", "-c", "echo unsafe"]),
             ("env", vec!["-S", "bash -c 'echo unsafe'"]),
+            ("env", vec!["-Sbash -c 'echo unsafe'"]),
+            ("env", vec!["--split-string=bash -c 'echo unsafe'"]),
         ] {
             let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
             assert_eq!(

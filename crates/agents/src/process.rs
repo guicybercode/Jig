@@ -11,6 +11,8 @@ pub(crate) const DEFAULT_PROBE_OUTPUT_LIMIT: usize = 4096;
 pub(crate) const PATH_IMPORT_OUTPUT_LIMIT: usize = 64 * 1024;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+const MAX_SPAWN_ATTEMPTS: u32 = 8;
+const SPAWN_RETRY_BASE: Duration = Duration::from_millis(15);
 const TERMINATION_GRACE: Duration = Duration::from_millis(250);
 
 type ReaderResult = io::Result<Vec<u8>>;
@@ -44,7 +46,11 @@ pub(crate) fn run_limited(
 
     let start = Instant::now();
     let deadline = start + timeout;
-    let mut child = command.spawn()?;
+    let mut child = spawn_with_retry(&mut command, deadline)?;
+    if Instant::now() >= deadline {
+        terminate_process_group(&mut child);
+        return Ok(timeout_output());
+    }
     let Some(stdout) = child.stdout.take() else {
         terminate_process_group(&mut child);
         return Err(io::Error::other("child stdout pipe was not available"));
@@ -80,13 +86,27 @@ pub(crate) fn run_limited(
         return Ok(timeout_output());
     }
 
-    let Some(stdout) = receive_limited_reader(&stdout_reader, deadline)? else {
-        terminate_process_group(&mut child);
-        return Ok(timeout_output());
+    let stdout = match receive_limited_reader(&stdout_reader, deadline) {
+        Ok(Some(output)) => output,
+        Ok(None) => {
+            terminate_process_group(&mut child);
+            return Ok(timeout_output());
+        }
+        Err(error) => {
+            terminate_process_group(&mut child);
+            return Err(error);
+        }
     };
-    let Some(stderr) = receive_limited_reader(&stderr_reader, deadline)? else {
-        terminate_process_group(&mut child);
-        return Ok(timeout_output());
+    let stderr = match receive_limited_reader(&stderr_reader, deadline) {
+        Ok(Some(output)) => output,
+        Ok(None) => {
+            terminate_process_group(&mut child);
+            return Ok(timeout_output());
+        }
+        Err(error) => {
+            terminate_process_group(&mut child);
+            return Err(error);
+        }
     };
 
     Ok(LimitedOutput {
@@ -95,6 +115,36 @@ pub(crate) fn run_limited(
         stdout,
         stderr,
     })
+}
+
+fn spawn_with_retry(command: &mut Command, deadline: Instant) -> io::Result<Child> {
+    let mut last_error = None;
+    for attempt in 0..MAX_SPAWN_ATTEMPTS {
+        match command.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error) if is_transient_spawn_error(&error) => {
+                if attempt + 1 == MAX_SPAWN_ATTEMPTS {
+                    return Err(error);
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(error);
+                }
+                last_error = Some(error);
+                let backoff = SPAWN_RETRY_BASE.saturating_mul(attempt + 1);
+                thread::sleep(backoff.min(remaining));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| io::Error::other("process spawn retries exhausted")))
+}
+
+fn is_transient_spawn_error(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+    ) || matches!(error.raw_os_error(), Some(11 | 35))
 }
 
 fn wait_with_timeout(child: &mut Child, deadline: Instant) -> io::Result<(bool, Option<i32>)> {
@@ -163,13 +213,14 @@ fn receive_limited_reader(
 fn terminate_process_group(child: &mut Child) {
     #[cfg(unix)]
     {
-        let group = format!("-{}", child.id());
-        let _ = Command::new("/bin/kill")
-            .args(["-KILL", "--", group.as_str()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        use nix::sys::signal::{Signal, killpg};
+        use nix::unistd::Pid;
+
+        if let Ok(group) = i32::try_from(child.id()) {
+            if group > 1 {
+                let _ = killpg(Pid::from_raw(group), Signal::SIGKILL);
+            }
+        }
     }
     let _ = child.kill();
     let deadline = Instant::now() + TERMINATION_GRACE;
@@ -230,5 +281,28 @@ mod tests {
 
         assert!(output.timed_out);
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn times_out_a_sleeping_child_without_busy_looping() {
+        let mut command = Command::new("/bin/sleep");
+        command.arg("30");
+        let output =
+            run_limited(command, Duration::from_millis(200), 64).expect("timeout should return");
+        assert!(output.timed_out);
+        assert!(output.exit_code.is_none());
+    }
+
+    #[test]
+    fn classifies_only_transient_spawn_failures_for_retry() {
+        assert!(is_transient_spawn_error(&io::Error::from(
+            io::ErrorKind::WouldBlock
+        )));
+        assert!(is_transient_spawn_error(&io::Error::from(
+            io::ErrorKind::Interrupted
+        )));
+        assert!(!is_transient_spawn_error(&io::Error::from(
+            io::ErrorKind::PermissionDenied
+        )));
     }
 }
