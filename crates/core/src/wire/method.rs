@@ -50,9 +50,9 @@ pub const SESSION_SUBSCRIBE: &str = "session.subscribe";
 /// Stop delivering terminal events to one client.
 pub const SESSION_UNSUBSCRIBE: &str = "session.unsubscribe";
 
-/// Read structured repository status for a registered project or session.
+/// Read structured repository status for a registered project, session, or worktree.
 pub const GIT_STATUS: &str = "git.status";
-/// Read a bounded textual diff for a registered project or session.
+/// Read a bounded textual diff for a registered project, session, or worktree.
 pub const GIT_DIFF: &str = "git.diff";
 
 /// Inspect whether a managed worktree can be safely removed.

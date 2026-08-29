@@ -8,6 +8,7 @@ pub mod event_name;
 pub mod method;
 
 mod event;
+mod git_path;
 mod request;
 mod response;
 mod value;
@@ -18,6 +19,7 @@ pub use event::{
     SessionExitedEvent, SessionOutputEvent, SessionOutputGapEvent, SessionReplayCompleteEvent,
     SessionStatusChangedEvent, WorktreeChangedEvent, WorktreeRemovedEvent,
 };
+pub use git_path::GitRelativePath;
 pub use request::{
     AgentCommand, AgentCustomCreateRequest, AgentCustomRemoveRequest, AgentCustomUpdateRequest,
     AgentDetectRequest, AgentSetEnabledRequest, EmptyRequest, GitDiffRequest, GitStatusRequest,
