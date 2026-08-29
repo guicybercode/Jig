@@ -20,6 +20,8 @@ It does not proxy vendor traffic. Windows is out of scope for Beta v0.1.
 | Git argv and worktree safety | `crates/git` |
 | PTY, process groups, `SessionManager` | `crates/session` |
 | Unix socket, composition, recovery | `crates/daemon` |
+| Deterministic coding-agent stand-in | `crates/fake-agent` |
+| Beta runtime acceptance | `crates/e2e` |
 | Tauri window, dialogs, event relay | `apps/desktop/src-tauri` |
 | React views and typed IPC client | `apps/desktop/src` |
 | Authoritative Beta wire contract | `crates/core/src/wire` |
@@ -52,6 +54,10 @@ ignore unknown events. Do not invent behavior for a name you do not know.
 - spawn an agent process
 - write status transitions
 - signal a process group
+
+`SessionWorktreeSaga` coordinates Git and SQLite effects for isolated session
+creation, recovery, and two-step worktree removal. It delegates every process
+spawn and rollback to `SessionManager`; it must not open PTYs or signal PIDs.
 
 React may call `session.start` / `session.stop` / `session.write`. Unmounting a
 terminal view must not stop the session. Do not store PTY bytes in React

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { Icon } from "../../components/Icon";
-import { useAgentApi } from "../../../ipc/AgentApiProvider";
+import { useAgentApi } from "../../../ipc/agentApiContext";
 import type {
   AgentDiagnosticsReport,
   AgentRecord,
@@ -53,8 +53,32 @@ export function AgentsView({ hasProject, onSessionDraft }: AgentsViewProps) {
   }, [api]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    let cancelled = false;
+
+    async function loadInitialAgents() {
+      try {
+        const response = await api.list();
+        if (cancelled) {
+          return;
+        }
+        setAgents(response.agents);
+        setStatus("ready");
+      } catch (cause) {
+        if (cancelled) {
+          return;
+        }
+        setStatus("error");
+        setError(
+          cause instanceof Error ? cause.message : "Could not load agents.",
+        );
+      }
+    }
+
+    void loadInitialAgents();
+    return () => {
+      cancelled = true;
+    };
+  }, [api]);
 
   async function detect(agent?: AgentRecord) {
     setBusyId(agent?.id ?? "all");

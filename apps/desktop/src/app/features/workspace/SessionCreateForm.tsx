@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { parseAgentId, formatApiError } from "../../../ipc";
 import {
@@ -27,15 +27,12 @@ export function SessionCreateForm({
     [agents],
   );
   const [name, setName] = useState("");
-  const [agentId, setAgentId] = useState<string>(launchable[0]?.id ?? "");
+  const [agentId, setAgentId] = useState("");
   const [createWorktree, setCreateWorktree] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!agentId && launchable[0]) {
-      setAgentId(launchable[0].id);
-    }
-  }, [agentId, launchable]);
+  const selectedAgentId = launchable.some((agent) => agent.id === agentId)
+    ? agentId
+    : (launchable[0]?.id ?? "");
 
   return (
     <form
@@ -44,7 +41,7 @@ export function SessionCreateForm({
       onSubmit={(event) => {
         event.preventDefault();
         setError(null);
-        const selected = agentId.trim();
+        const selected = selectedAgentId.trim();
         if (selected.length === 0) {
           setError("Select an agent.");
           return;
@@ -72,7 +69,7 @@ export function SessionCreateForm({
       <label htmlFor={`${formId}-agent`}>Agent</label>
       <select
         id={`${formId}-agent`}
-        value={agentId}
+        value={selectedAgentId}
         onChange={(event) => setAgentId(event.target.value)}
       >
         {launchable.map((agent) => (

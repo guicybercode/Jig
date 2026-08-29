@@ -52,13 +52,38 @@ export function Dialog({
     previouslyFocused.current =
       active instanceof HTMLElement ? active : null;
     const dialog = dialogRef.current;
-    const initial =
-      initialFocusRef?.current ??
-      (dialog ? (focusableElements(dialog)[0] ?? dialog) : null);
-    initial?.focus();
+    if (!dialog) {
+      return undefined;
+    }
+    const dialogElement = dialog;
+
+    function focusInitialControl() {
+      const elements = focusableElements(dialogElement);
+      const preferred = initialFocusRef?.current;
+      const initial =
+        preferred && elements.includes(preferred)
+          ? preferred
+          : (elements[0] ?? dialogElement);
+      initial.focus();
+    }
+
+    function containProgrammaticFocus(event: FocusEvent) {
+      if (
+        event.target instanceof Node &&
+        !dialogElement.contains(event.target)
+      ) {
+        focusInitialControl();
+      }
+    }
+
+    focusInitialControl();
+    document.addEventListener("focusin", containProgrammaticFocus);
 
     return () => {
-      previouslyFocused.current?.focus();
+      document.removeEventListener("focusin", containProgrammaticFocus);
+      if (previouslyFocused.current?.isConnected) {
+        previouslyFocused.current.focus();
+      }
     };
   }, [initialFocusRef, open]);
 

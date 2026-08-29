@@ -72,6 +72,12 @@ jobs:
       - name: Check frontend
         run: pnpm --filter @cli-master/desktop check
 
+      - name: Install Playwright Chromium
+        run: pnpm --filter @cli-master/desktop exec playwright install --with-deps chromium
+
+      - name: Run Playwright
+        run: pnpm --filter @cli-master/desktop test:e2e
+
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
 
@@ -80,6 +86,9 @@ jobs:
 
       - name: Lint Rust
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Build fake coding-agent
+        run: cargo build -p cli-master-fake-agent --locked
 
       - name: Test Rust workspace
         run: cargo test --workspace --locked

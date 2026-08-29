@@ -16,3 +16,7 @@ target/
 *.db-wal
 diagnostics/
 apps/desktop/src-tauri/binaries/cli-masterd-*
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
