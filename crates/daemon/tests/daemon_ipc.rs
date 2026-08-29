@@ -7,8 +7,9 @@ use std::time::Duration;
 
 use cli_master_core::wire::{HelloResponse, StateSnapshotResponse, method};
 use cli_master_core::{
-    AgentId, AgentSource, DaemonInstanceId, EnvelopeKind, PROTOCOL_V1, Project, ProjectId,
-    RequestEnvelope, RequestId, ResponseEnvelope, ResponsePayload, SessionId, SessionStatus,
+    AgentId, AgentSource, DaemonInstanceId, EnvelopeKind, EventEnvelope, PROTOCOL_V1, Project,
+    ProjectId, RequestEnvelope, RequestId, ResponseEnvelope, ResponsePayload, SessionId,
+    SessionStatus,
 };
 use cli_master_daemon::{Daemon, DaemonConfig, DaemonError, MAX_FRAME_LENGTH};
 use cli_master_storage::{LATEST_SCHEMA_VERSION, Storage, StoredAgent, StoredSession};
@@ -24,6 +25,7 @@ use tokio_util::sync::CancellationToken;
 struct RunningDaemon {
     config: DaemonConfig,
     instance_id: DaemonInstanceId,
+    events: cli_master_daemon::EventBus,
     cancellation: CancellationToken,
     task: JoinHandle<Result<(), DaemonError>>,
 }
@@ -33,12 +35,14 @@ impl RunningDaemon {
         let config = DaemonConfig::from_paths(root.join("data"), root.join("run"));
         let daemon = Daemon::bind(config.clone()).expect("daemon should bind");
         let instance_id = daemon.instance_id();
+        let events = daemon.events().clone();
         let cancellation = CancellationToken::new();
         let task_cancellation = cancellation.clone();
         let task = tokio::spawn(async move { daemon.run(task_cancellation).await });
         Self {
             config,
             instance_id,
+            events,
             cancellation,
             task,
         }
@@ -91,6 +95,49 @@ fn failure_code(response: ResponseEnvelope<Value>) -> String {
         ResponsePayload::Error { error } => error.code,
         ResponsePayload::Success { data } => panic!("expected failure, received {data}"),
     }
+}
+
+async fn next_event(client: &mut Framed<UnixStream, LengthDelimitedCodec>) -> EventEnvelope<Value> {
+    let bytes = client
+        .next()
+        .await
+        .expect("event frame should arrive")
+        .expect("event frame should be valid");
+    serde_json::from_slice(&bytes).expect("event should decode")
+}
+
+#[tokio::test]
+async fn subscribe_replays_then_follows_live_output() {
+    let temporary = TempDir::new().expect("temporary directory should exist");
+    let daemon = RunningDaemon::start(temporary.path());
+    let session = SessionId::new();
+    daemon.events.open_session(session);
+    daemon.events.publish_output(session, b"ab");
+
+    let mut client = connect(daemon.config.socket_path()).await;
+    let response = exchange(
+        &mut client,
+        &RequestEnvelope::v1(method::SESSION_SUBSCRIBE, json!({ "sessionId": session })),
+    )
+    .await;
+    assert!(matches!(response.payload, ResponsePayload::Success { .. }));
+
+    let replay = next_event(&mut client).await;
+    assert_eq!(replay.kind, EnvelopeKind::Event);
+    assert_eq!(replay.event, "session.output");
+    assert_eq!(replay.payload["replay"], true);
+    assert_eq!(replay.payload["outputSequence"], 1);
+
+    let complete = next_event(&mut client).await;
+    assert_eq!(complete.event, "session.replay_complete");
+
+    daemon.events.publish_output(session, b"c");
+    let live = next_event(&mut client).await;
+    assert_eq!(live.event, "session.output");
+    assert_eq!(live.payload["replay"], false);
+    assert_eq!(live.payload["outputSequence"], 2);
+
+    daemon.stop().await;
 }
 
 #[tokio::test]
