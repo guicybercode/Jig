@@ -46,6 +46,17 @@ export type IpcEventHandler = (event: EventEnvelope) => void;
 export type IpcEventErrorHandler = (error: IpcError) => void;
 export type Unsubscribe = () => void;
 
+export interface TerminalSubscriptionInput {
+  readonly sessionId: string;
+  readonly cursor?: number;
+}
+
+export interface TerminalResizeInput {
+  readonly sessionId: string;
+  readonly columns: number;
+  readonly rows: number;
+}
+
 /** The sole frontend interface to daemon and native desktop capabilities. */
 export interface IpcClient {
   readonly platform: AppPlatform;
@@ -54,6 +65,13 @@ export interface IpcClient {
     handler: IpcEventHandler,
     onError: IpcEventErrorHandler,
   ): Promise<Unsubscribe>;
+  subscribeTerminal(
+    input: TerminalSubscriptionInput,
+    handler: IpcEventHandler,
+    onError: IpcEventErrorHandler,
+  ): Promise<Unsubscribe>;
+  writeTerminal(sessionId: string, bytes: Uint8Array): Promise<void>;
+  resizeTerminal(input: TerminalResizeInput): Promise<void>;
   addProject(input: AddProjectInput): Promise<Project>;
   renameProject(input: RenameProjectInput): Promise<Project>;
   removeProject(projectId: string): Promise<void>;
@@ -145,24 +163,58 @@ class TauriIpcClient implements IpcClient {
   ): Promise<Unsubscribe> {
     const unlisten = await listen<unknown>("daemon:event", ({ payload }) => {
       try {
-        const record = requireRecord(payload, "daemon event");
-        const kind = requireString(record.kind, "event.kind");
-        const version = requireNumber(record.version, "event.version");
-        if (kind !== "event" || version !== 1) {
-          throw new IpcContractError("Daemon event envelope is incompatible");
-        }
-        handler({
-          kind: "event",
-          version: 1,
-          event: requireString(record.event, "event.event"),
-          sequence: requireNumber(record.sequence, "event.sequence"),
-          payload: record.payload,
-        });
+        handler(decodeEventEnvelope(payload));
       } catch (error) {
         onError(toIpcError(error));
       }
     });
     return unlisten;
+  }
+
+  async subscribeTerminal(
+    input: TerminalSubscriptionInput,
+    handler: IpcEventHandler,
+    onError: IpcEventErrorHandler,
+  ): Promise<Unsubscribe> {
+    const unlisten = await listen<unknown>("daemon:event", ({ payload }) => {
+      try {
+        const event = decodeEventEnvelope(payload);
+        const eventPayload = requireRecord(event.payload, "terminal event payload");
+        if (eventPayload.sessionId === input.sessionId) {
+          handler(event);
+        }
+      } catch (error) {
+        onError(toIpcError(error));
+      }
+    });
+    const request = createRequestEnvelope("session.subscribe", {
+      sessionId: input.sessionId,
+      ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+    });
+    try {
+      const raw = await invoke<unknown>("daemon_terminal_subscribe", { request });
+      unwrapResponse(raw, request.requestId);
+    } catch (error) {
+      unlisten();
+      throw toIpcError(error);
+    }
+    return () => {
+      unlisten();
+      void invoke("daemon_terminal_unsubscribe", {
+        sessionId: input.sessionId,
+      }).catch(() => undefined);
+    };
+  }
+
+  async writeTerminal(sessionId: string, bytes: Uint8Array): Promise<void> {
+    await this.request("session.write", {
+      sessionId,
+      base64: encodeBase64(bytes),
+    });
+  }
+
+  async resizeTerminal(input: TerminalResizeInput): Promise<void> {
+    await this.request("session.resize", input);
   }
 
   async addProject(input: AddProjectInput): Promise<Project> {
@@ -245,13 +297,7 @@ class TauriIpcClient implements IpcClient {
   }
 
   private async request(method: string, payload: unknown): Promise<unknown> {
-    const request: RequestEnvelope<unknown> = {
-      kind: "request",
-      version: 1,
-      requestId: createRequestId(),
-      method,
-      payload,
-    };
+    const request = createRequestEnvelope(method, payload);
     try {
       const raw = await invoke<unknown>("daemon_request", { request });
       return unwrapResponse(raw, request.requestId);
@@ -259,6 +305,43 @@ class TauriIpcClient implements IpcClient {
       throw toIpcError(error);
     }
   }
+}
+
+function createRequestEnvelope(
+  method: string,
+  payload: unknown,
+): RequestEnvelope<unknown> {
+  return {
+    kind: "request",
+    version: 1,
+    requestId: createRequestId(),
+    method,
+    payload,
+  };
+}
+
+function decodeEventEnvelope(payload: unknown): EventEnvelope {
+  const record = requireRecord(payload, "daemon event");
+  const kind = requireString(record.kind, "event.kind");
+  const version = requireNumber(record.version, "event.version");
+  if (kind !== "event" || version !== 1) {
+    throw new IpcContractError("Daemon event envelope is incompatible");
+  }
+  return {
+    kind: "event",
+    version: 1,
+    event: requireString(record.event, "event.event"),
+    sequence: requireNumber(record.sequence, "event.sequence"),
+    payload: record.payload,
+  };
+}
+
+function encodeBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return globalThis.btoa(binary);
 }
 
 /** Creates a production client; exported so wire-level transport tests stay real. */

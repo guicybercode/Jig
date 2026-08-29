@@ -26,6 +26,9 @@ export interface MockIpcClientOptions {
 export interface MockIpcClient extends IpcClient {
   readonly initialize: Mock<IpcClient["initialize"]>;
   readonly subscribe: Mock<IpcClient["subscribe"]>;
+  readonly subscribeTerminal: Mock<IpcClient["subscribeTerminal"]>;
+  readonly writeTerminal: Mock<IpcClient["writeTerminal"]>;
+  readonly resizeTerminal: Mock<IpcClient["resizeTerminal"]>;
   readonly addProject: Mock<IpcClient["addProject"]>;
   readonly renameProject: Mock<IpcClient["renameProject"]>;
   readonly removeProject: Mock<IpcClient["removeProject"]>;
@@ -86,6 +89,19 @@ export function createMockIpcClient(
     platform: options.platform ?? "linux",
     initialize,
     subscribe,
+    subscribeTerminal: vi.fn<IpcClient["subscribeTerminal"]>(
+      handlers.subscribeTerminal ??
+        (async (_input, handler): Promise<Unsubscribe> => {
+          listeners.add(handler);
+          return () => listeners.delete(handler);
+        }),
+    ),
+    writeTerminal: vi.fn<IpcClient["writeTerminal"]>(
+      handlers.writeTerminal ?? (() => rejectUnhandled("writeTerminal")),
+    ),
+    resizeTerminal: vi.fn<IpcClient["resizeTerminal"]>(
+      handlers.resizeTerminal ?? (() => rejectUnhandled("resizeTerminal")),
+    ),
     addProject: vi.fn<IpcClient["addProject"]>(
       handlers.addProject ?? (() => rejectUnhandled("addProject")),
     ),

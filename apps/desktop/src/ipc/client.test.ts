@@ -219,6 +219,94 @@ describe("production IPC wire contract", () => {
     expect(unlisten).toHaveBeenCalledOnce();
   });
 
+  it("opens a filtered terminal relay and encodes input and resize requests", async () => {
+    let receive: ((event: { readonly payload: unknown }) => void) | undefined;
+    const unlisten = vi.fn();
+    transport.listen.mockImplementation(async (_channel, handler) => {
+      receive = handler;
+      return unlisten;
+    });
+    transport.invoke.mockImplementation(async (command, args) => {
+      if (command === "daemon_terminal_unsubscribe") {
+        return undefined;
+      }
+      const request = requestFromArgs(args);
+      return {
+        kind: "response",
+        version: 1,
+        requestId: request.requestId,
+        status: "success",
+        data: {},
+      };
+    });
+    const handler = vi.fn();
+    const onError = vi.fn();
+    const client = createTauriIpcClient();
+
+    const unsubscribe = await client.subscribeTerminal(
+      { sessionId: SESSION.id, cursor: 12 },
+      handler,
+      onError,
+    );
+    await client.writeTerminal(SESSION.id, new Uint8Array([0x03, 0x0a]));
+    await client.resizeTerminal({
+      sessionId: SESSION.id,
+      columns: 120,
+      rows: 36,
+    });
+
+    receive?.({
+      payload: {
+        kind: "event",
+        version: 1,
+        event: "session.output",
+        sequence: 8,
+        payload: {
+          sessionId: "0198f000-0000-7000-8000-000000000099",
+          base64: "eA==",
+          outputSequence: 13,
+          replay: false,
+        },
+      },
+    });
+    receive?.({
+      payload: {
+        kind: "event",
+        version: 1,
+        event: "session.output",
+        sequence: 9,
+        payload: {
+          sessionId: SESSION.id,
+          base64: "eA==",
+          outputSequence: 13,
+          replay: false,
+        },
+      },
+    });
+
+    expect(handler).toHaveBeenCalledOnce();
+    expect(onError).not.toHaveBeenCalled();
+    expect(requestFromArgs(transport.invoke.mock.calls[0]?.[1])).toMatchObject({
+      method: "session.subscribe",
+      payload: { sessionId: SESSION.id, cursor: 12 },
+    });
+    expect(requestFromArgs(transport.invoke.mock.calls[1]?.[1])).toMatchObject({
+      method: "session.write",
+      payload: { sessionId: SESSION.id, base64: "Awo=" },
+    });
+    expect(requestFromArgs(transport.invoke.mock.calls[2]?.[1])).toMatchObject({
+      method: "session.resize",
+      payload: { sessionId: SESSION.id, columns: 120, rows: 36 },
+    });
+
+    unsubscribe();
+    expect(unlisten).toHaveBeenCalledOnce();
+    expect(transport.invoke).toHaveBeenLastCalledWith(
+      "daemon_terminal_unsubscribe",
+      { sessionId: SESSION.id },
+    );
+  });
+
   it("decodes the conservative blocked worktree-removal variant", async () => {
     installWireResponder({
       "worktree.prepare_remove": {
