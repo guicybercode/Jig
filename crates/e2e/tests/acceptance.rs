@@ -13,7 +13,7 @@ use cli_master_e2e::{
     RepositoryFixture, SessionFixture, contains, fake_agent_command, now_ms, process_is_alive,
     wait_for_bytes, wait_live, wait_status, which,
 };
-use cli_master_fake_agent::{ACK_PREFIX, CWD_PREFIX, INTERRUPT, READY, REDACTED, SIZE_PREFIX};
+use cli_master_fake_agent::{ACK_PREFIX, CWD_PREFIX, INTERRUPT, READY, REDACTED};
 use cli_master_git::{Git, GitErrorKind, RemovalBlocker, WorktreeUse};
 use cli_master_storage::{Storage, StoredAgent, StoredSession, StoredWorktree, WorktreeState};
 
@@ -125,8 +125,8 @@ fn dirty_worktree_cannot_be_removed() {
     assert!(worktree.path.exists());
 }
 
-#[test]
-fn daemon_restart_converts_stale_live_sessions_to_unknown_without_killing_the_pid() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn daemon_restart_converts_stale_live_sessions_to_unknown_without_killing_the_pid() {
     let temp = tempfile::TempDir::new().expect("tempdir");
     let config = DaemonConfig::from_paths(temp.path().join("data"), temp.path().join("run"));
     fs::create_dir_all(config.data_directory()).expect("data dir");
@@ -404,12 +404,7 @@ async fn interact_with_both_tiles(
         .manager
         .write(first_id, b"size\n")
         .expect("size probe");
-    wait_for_bytes(
-        first_sub,
-        first_out,
-        format!("{SIZE_PREFIX} cols=40 rows=12").as_bytes(),
-    )
-    .await;
+    wait_for_bytes(first_sub, first_out, b"cols=40 rows=12").await;
 
     fixture
         .manager

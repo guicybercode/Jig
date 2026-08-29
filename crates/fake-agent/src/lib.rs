@@ -14,8 +14,9 @@ compile_error!("cli-master-fake-agent supports Linux and macOS only");
 use std::env;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use rustix::termios::{Winsize, tcgetwinsize};
@@ -148,41 +149,29 @@ pub fn run() -> i32 {
 }
 
 fn run_with_args(args: &Args) -> io::Result<i32> {
-    let interrupted = Arc::new(AtomicBool::new(false));
-    let resized = Arc::new(AtomicBool::new(false));
-    flag::register(SIGINT, Arc::clone(&interrupted))?;
-    flag::register(SIGWINCH, Arc::clone(&resized))?;
+    let output = Arc::new(ProtocolOut::new(args.fragment_size));
+    spawn_signal_reporter(Arc::clone(&output))?;
     if args.hold {
         flag::register(SIGHUP, Arc::new(AtomicBool::new(false)))?;
     }
 
-    let mut stdout_handle = io::stdout();
-    write_banner(&mut stdout_handle, args.fragment_size)?;
+    write_banner(&output)?;
 
     let mut reader = BufReader::new(io::stdin());
     let mut line = String::new();
 
     loop {
-        if interrupted.swap(false, Ordering::SeqCst) {
-            write_fragmented(&mut stdout_handle, INTERRUPT.as_bytes(), args.fragment_size)?;
-            write_fragmented(&mut stdout_handle, b"\n", args.fragment_size)?;
-        }
-        if resized.swap(false, Ordering::SeqCst) {
-            write_winsize_line(&mut stdout_handle, RESIZE_PREFIX, args.fragment_size)?;
-        }
-
         line.clear();
         match reader.read_line(&mut line) {
             Ok(0) => {
                 if args.hold {
-                    write_fragmented(&mut stdout_handle, HOLDING.as_bytes(), args.fragment_size)?;
-                    write_fragmented(&mut stdout_handle, b"\n", args.fragment_size)?;
-                    return park_until_terminate();
+                    output.write_line(HOLDING)?;
+                    return park_until_terminate(&output);
                 }
                 return Ok(0);
             }
             Ok(_) => {
-                if let Some(code) = handle_line(&mut stdout_handle, &line, args)? {
+                if let Some(code) = handle_line(&output, &line)? {
                     return Ok(code);
                 }
             }
@@ -192,9 +181,33 @@ fn run_with_args(args: &Args) -> io::Result<i32> {
     }
 }
 
-fn handle_line(stdout: &mut io::Stdout, raw: &str, args: &Args) -> io::Result<Option<i32>> {
+fn spawn_signal_reporter(output: Arc<ProtocolOut>) -> io::Result<()> {
+    let mut signals = Signals::new([SIGINT, SIGWINCH])?;
+    thread::Builder::new()
+        .name("fake-agent-signals".to_owned())
+        .spawn(move || {
+            for signal in &mut signals {
+                match signal {
+                    SIGINT => {
+                        let _ = output.write_line(INTERRUPT);
+                    }
+                    SIGWINCH => {
+                        let _ = output.write_winsize(RESIZE_PREFIX);
+                    }
+                    _ => {}
+                }
+            }
+        })?;
+    Ok(())
+}
+
+fn handle_line(output: &ProtocolOut, raw: &str) -> io::Result<Option<i32>> {
     let line = raw.trim_end_matches(['\r', '\n']);
     if line.is_empty() {
+        return Ok(None);
+    }
+    if line == "\u{3}" {
+        output.write_line(INTERRUPT)?;
         return Ok(None);
     }
     if line == "fail" {
@@ -209,65 +222,54 @@ fn handle_line(stdout: &mut io::Stdout, raw: &str, args: &Args) -> io::Result<Op
         return Ok(Some(i32::from(code)));
     }
     if line == "size" {
-        write_winsize_line(stdout, SIZE_PREFIX, args.fragment_size)?;
+        output.write_winsize(SIZE_PREFIX)?;
         return Ok(None);
     }
     if line == "cwd" {
-        write_fragmented(stdout, CWD_PREFIX.as_bytes(), args.fragment_size)?;
-        write_fragmented(stdout, cwd_display().as_bytes(), args.fragment_size)?;
-        write_fragmented(stdout, b"\n", args.fragment_size)?;
+        output.write_line(&format!("{CWD_PREFIX}{}", cwd_display()))?;
         return Ok(None);
     }
     if line == "env" || line == "dump-env" {
-        write_fragmented(stdout, REDACTED.as_bytes(), args.fragment_size)?;
-        write_fragmented(stdout, b"\n", args.fragment_size)?;
+        output.write_line(REDACTED)?;
         return Ok(None);
     }
 
-    write_fragmented(stdout, ACK_PREFIX.as_bytes(), args.fragment_size)?;
-    write_fragmented(stdout, line.as_bytes(), args.fragment_size)?;
-    write_fragmented(stdout, b"\n", args.fragment_size)?;
+    output.write_line(&format!("{ACK_PREFIX}{line}"))?;
     Ok(None)
 }
 
-fn write_banner(stdout: &mut io::Stdout, fragment_size: usize) -> io::Result<()> {
-    write_fragmented(stdout, READY.as_bytes(), fragment_size)?;
-    write_fragmented(stdout, b" ", fragment_size)?;
-    write_winsize_fields(stdout, fragment_size)?;
-    write_fragmented(stdout, b"\n", fragment_size)?;
-
-    write_fragmented(stdout, PID_PREFIX.as_bytes(), fragment_size)?;
-    write_fragmented(
-        stdout,
-        std::process::id().to_string().as_bytes(),
-        fragment_size,
-    )?;
-    write_fragmented(stdout, b"\n", fragment_size)?;
-
-    write_fragmented(stdout, CWD_PREFIX.as_bytes(), fragment_size)?;
-    write_fragmented(stdout, cwd_display().as_bytes(), fragment_size)?;
-    write_fragmented(stdout, b"\n", fragment_size)?;
-    Ok(())
+fn write_banner(output: &ProtocolOut) -> io::Result<()> {
+    output.write_winsize(READY)?;
+    output.write_line(&format!("{PID_PREFIX}{}", std::process::id()))?;
+    output.write_line(&format!("{CWD_PREFIX}{}", cwd_display()))
 }
 
-fn write_winsize_line(
-    stdout: &mut io::Stdout,
-    prefix: &str,
+struct ProtocolOut {
+    stdout: Mutex<io::Stdout>,
     fragment_size: usize,
-) -> io::Result<()> {
-    write_fragmented(stdout, prefix.as_bytes(), fragment_size)?;
-    write_fragmented(stdout, b" ", fragment_size)?;
-    write_winsize_fields(stdout, fragment_size)?;
-    write_fragmented(stdout, b"\n", fragment_size)
 }
 
-fn write_winsize_fields(stdout: &mut io::Stdout, fragment_size: usize) -> io::Result<()> {
-    let (cols, rows) = current_winsize();
-    write_fragmented(
-        stdout,
-        format!("cols={cols} rows={rows}").as_bytes(),
-        fragment_size,
-    )
+impl ProtocolOut {
+    fn new(fragment_size: usize) -> Self {
+        Self {
+            stdout: Mutex::new(io::stdout()),
+            fragment_size: fragment_size.max(1),
+        }
+    }
+
+    fn write_line(&self, line: &str) -> io::Result<()> {
+        let mut stdout = self
+            .stdout
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        write_fragmented(&mut stdout, line.as_bytes(), self.fragment_size)?;
+        write_fragmented(&mut stdout, b"\n", self.fragment_size)
+    }
+
+    fn write_winsize(&self, prefix: &str) -> io::Result<()> {
+        let (cols, rows) = current_winsize();
+        self.write_line(&format!("{prefix} cols={cols} rows={rows}"))
+    }
 }
 
 fn current_winsize() -> (u16, u16) {
@@ -287,20 +289,14 @@ fn write_fragmented(stdout: &mut io::Stdout, bytes: &[u8], fragment_size: usize)
     Ok(())
 }
 
-fn park_until_terminate() -> io::Result<i32> {
+fn park_until_terminate(output: &ProtocolOut) -> io::Result<i32> {
     let mut signals = Signals::new([SIGTERM, SIGINT])?;
     for signal in &mut signals {
         if signal == SIGTERM {
             return Ok(143);
         }
         if signal == SIGINT {
-            let mut stdout_handle = io::stdout();
-            write_fragmented(
-                &mut stdout_handle,
-                INTERRUPT.as_bytes(),
-                DEFAULT_FRAGMENT_SIZE,
-            )?;
-            write_fragmented(&mut stdout_handle, b"\n", DEFAULT_FRAGMENT_SIZE)?;
+            output.write_line(INTERRUPT)?;
         }
     }
     Ok(0)
