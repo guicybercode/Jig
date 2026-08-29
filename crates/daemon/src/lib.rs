@@ -13,9 +13,11 @@ mod config;
 mod error;
 mod lock;
 mod paths;
+mod preflight;
 mod server;
 
 pub use cli_master_core::wire::{HelloResponse, StateSnapshotResponse};
 pub use config::DaemonConfig;
 pub use error::DaemonError;
+pub use preflight::{DependencyStatus, DirectoryStatus, PreflightReport, run as run_preflight};
 pub use server::{Daemon, MAX_FRAME_LENGTH};
