@@ -466,6 +466,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cli-master-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "cli-master-desktop"
 version = "0.1.0"
 dependencies = [
