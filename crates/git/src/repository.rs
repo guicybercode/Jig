@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
 
 use crate::{Git, GitError, GitErrorKind, os};
 
@@ -97,26 +100,119 @@ pub(crate) fn require_root(git: &Git, path: &Path) -> Result<PathBuf, GitError> 
         })
 }
 
+pub(crate) fn require_common_dir(git: &Git, root: &Path) -> Result<PathBuf, GitError> {
+    let output = git.checked(
+        Some(root),
+        [
+            os("rev-parse"),
+            os("--path-format=absolute"),
+            os("--git-common-dir"),
+        ],
+        "resolve the Git common directory",
+    )?;
+    let common_dir = parse_single_path(&output.stdout)?;
+    common_dir.canonicalize().map_err(|error| {
+        GitError::io("resolve the Git common directory", error).with_path(common_dir)
+    })
+}
+
+pub(crate) fn resolve_head_commit(git: &Git, root: &Path) -> Result<String, GitError> {
+    let output = git.checked(
+        Some(root),
+        [os("rev-parse"), os("--verify"), os("HEAD^{commit}")],
+        "resolve the initial worktree commit",
+    )?;
+    parse_object_id(&output.stdout)
+}
+
+pub(crate) fn verify_commit(git: &Git, root: &Path, object_id: &str) -> Result<(), GitError> {
+    let commit = format!("{object_id}^{{commit}}");
+    let result = git.checked(
+        Some(root),
+        [os("cat-file"), os("-e"), os(commit)],
+        "verify the planned worktree commit",
+    );
+    match result {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == GitErrorKind::CommandFailed => Err(GitError::new(
+            GitErrorKind::InvalidInput,
+            format!("Planned initial commit is no longer available: {object_id}"),
+            "Discard the stale plan and generate a new worktree plan",
+        )
+        .with_path(root)
+        .with_exit_status(error.exit_status())),
+        Err(error) => Err(error),
+    }
+}
+
 fn parse_single_path(bytes: &[u8]) -> Result<PathBuf, GitError> {
-    let value = parse_single_line(bytes, "repository root")?;
-    Ok(PathBuf::from(value))
+    let value = trim_single_record(bytes, "repository path")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        Ok(PathBuf::from(OsString::from_vec(value.to_vec())))
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(PathBuf::from(String::from_utf8_lossy(value).into_owned()))
+    }
 }
 
 fn parse_single_line(bytes: &[u8], label: &'static str) -> Result<String, GitError> {
-    let value = std::str::from_utf8(bytes).map_err(|_| {
+    let value = trim_single_record(bytes, label)?;
+    let value = std::str::from_utf8(value).map_err(|_| {
         GitError::new(
             GitErrorKind::InvalidOutput,
             format!("Git returned a non-UTF-8 {label}"),
-            "Move the repository to a UTF-8-compatible path and try again",
+            "Verify the repository with the Git command line",
         )
     })?;
-    let value = value.trim_end_matches(['\r', '\n']);
-    if value.is_empty() || value.contains('\n') || value.contains('\r') {
+    Ok(value.to_owned())
+}
+
+fn parse_object_id(bytes: &[u8]) -> Result<String, GitError> {
+    let value = parse_single_line(bytes, "commit object ID")?;
+    if !matches!(value.len(), 40 | 64) || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(GitError::new(
+            GitErrorKind::InvalidOutput,
+            "Git returned an invalid commit object ID",
+            "Verify the repository with the Git command line",
+        ));
+    }
+    Ok(value)
+}
+
+fn trim_single_record<'a>(bytes: &'a [u8], label: &'static str) -> Result<&'a [u8], GitError> {
+    let value = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    let value = value.strip_suffix(b"\r").unwrap_or(value);
+    if value.is_empty() || value.contains(&b'\n') || value.contains(&b'\r') {
         return Err(GitError::new(
             GitErrorKind::InvalidOutput,
             format!("Git returned an invalid {label}"),
             "Verify the repository with the Git command line",
         ));
     }
-    Ok(value.to_owned())
+    Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn repository_paths_preserve_non_utf8_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let parsed = parse_single_path(b"/tmp/repository-\xff\n").expect("path should parse");
+
+        assert_eq!(parsed.as_os_str().as_bytes(), b"/tmp/repository-\xff");
+    }
+
+    #[test]
+    fn object_ids_must_be_full_hex_values() {
+        assert!(parse_object_id(format!("{}\n", "a".repeat(40)).as_bytes()).is_ok());
+        assert!(parse_object_id(b"abc123\n").is_err());
+        assert!(parse_object_id(format!("{}z\n", "a".repeat(39)).as_bytes()).is_err());
+    }
 }
