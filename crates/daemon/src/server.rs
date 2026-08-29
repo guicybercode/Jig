@@ -61,6 +61,16 @@ impl Daemon {
 
         let mut storage = Storage::open(config.database_path())?;
         storage.migrate()?;
+        let instance_id = DaemonInstanceId::new();
+        let recovered =
+            storage.recover_stale_sessions_for_daemon(&instance_id.to_string(), unix_now_ms())?;
+        if recovered > 0 {
+            info!(
+                %instance_id,
+                recovered,
+                "reconciled live sessions from a prior daemon lifetime to unknown"
+            );
+        }
         let schema_version = storage.schema_version()?;
 
         let listener = UnixListener::bind(config.socket_path())
@@ -69,7 +79,6 @@ impl Daemon {
             |error| DaemonError::io("secure daemon socket", config.socket_path(), error),
         )?;
         let socket_owner = SocketOwner::new(config.socket_path())?;
-        let instance_id = DaemonInstanceId::new();
         let state = Arc::new(ServerState {
             hello: HelloResponse {
                 protocol_version: PROTOCOL_V1,
@@ -377,6 +386,14 @@ fn remove_stale_socket(path: &Path) -> Result<(), DaemonError> {
     }
     fs::remove_file(path)
         .map_err(|error| DaemonError::io("remove stale daemon socket", path, error))
+}
+
+fn unix_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .unwrap_or(0)
 }
 
 struct SocketOwner {
