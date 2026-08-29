@@ -215,6 +215,26 @@ mod tests {
     }
 
     #[test]
+    fn empty_executable_and_nul_bytes_are_rejected() {
+        assert_eq!(
+            CommandSpec::new("", "/tmp").expect_err("empty executable"),
+            CommandSpecError::EmptyExecutable
+        );
+        assert_eq!(
+            CommandSpec::new("codex\0", "/tmp").expect_err("nul executable"),
+            CommandSpecError::ContainsNul("executable")
+        );
+        assert_eq!(
+            CommandSpec::new("codex", "").expect_err("empty cwd"),
+            CommandSpecError::EmptyWorkingDirectory
+        );
+        let error =
+            CommandSpec::try_from_parts("codex", ["ok", "bad\0arg"], "/tmp", BTreeMap::new())
+                .expect_err("nul argument");
+        assert_eq!(error, CommandSpecError::ContainsNul("argument"));
+    }
+
+    #[test]
     fn deserialization_rejects_invalid_environment_keys() {
         let json = r#"{
             "executable":"codex",

@@ -200,3 +200,44 @@ fn later_executable_path_entry_wins_over_non_executable_candidate() {
         }
     );
 }
+
+#[test]
+fn build_command_rejects_missing_working_directory() {
+    let temp = TempDir::new().expect("temporary directory should be created");
+    executable(temp.path(), "codex");
+    let missing = temp.path().join("gone");
+    let context = LaunchContext::new(
+        &missing,
+        LaunchEnvironment::from_search_paths([temp.path()]),
+    );
+    assert_eq!(
+        CodexAdapter.build_command(&context),
+        Err(AgentError::InvalidWorkingDirectory(missing))
+    );
+}
+
+#[test]
+fn registry_rejects_duplicate_and_empty_keys() {
+    use cli_master_agents::{CustomAgentAdapter, CustomAgentDefinition, RegistryError};
+
+    let mut registry = AgentRegistry::new();
+    let error = registry
+        .register(CodexAdapter)
+        .expect_err("duplicate built-in key");
+    assert!(matches!(error, RegistryError::DuplicateKey(key) if key == "codex"));
+
+    let definition = CustomAgentDefinition::new("ok", "Ok", "ok").expect("definition");
+    let mut empty = AgentRegistry::empty();
+    empty
+        .register(CustomAgentAdapter::new(definition))
+        .expect("custom adapter should register");
+}
+
+#[test]
+fn custom_definition_rejects_relative_path_with_separator() {
+    use cli_master_agents::CustomAgentDefinition;
+
+    let error = CustomAgentDefinition::new("agent", "Agent", "bin/agent")
+        .expect_err("relative path with separator");
+    assert_eq!(error.field(), "executable");
+}

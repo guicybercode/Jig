@@ -6,7 +6,11 @@ use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 use std::time::Duration;
 
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::{Connection, ErrorCode, TransactionBehavior, params};
+
+mod records;
+
+pub use records::{AgentRecord, ProjectRecord, SessionRecord, WorktreeRecord};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -66,6 +70,17 @@ impl Error for StorageError {
 impl From<rusqlite::Error> for StorageError {
     fn from(error: rusqlite::Error) -> Self {
         Self::Database(error)
+    }
+}
+
+impl StorageError {
+    /// Returns whether the error is a `SQLite` constraint violation.
+    #[must_use]
+    pub fn is_constraint_violation(&self) -> bool {
+        matches!(
+            self,
+            Self::Database(error) if error.sqlite_error_code() == Some(ErrorCode::ConstraintViolation)
+        )
     }
 }
 
@@ -387,6 +402,91 @@ mod tests {
 
         assert_eq!(tables, expected_tables);
         assert!(expected_indexes.is_subset(&indexes));
+    }
+
+    #[test]
+    fn repositories_round_trip_and_reload_from_disk() {
+        use super::{AgentRecord, ProjectRecord, SessionRecord, WorktreeRecord};
+
+        let temporary_directory = TempDir::new().expect("temporary directory should be created");
+        let database_path = temporary_directory.path().join("cli-master.db");
+        {
+            let mut storage = Storage::open(&database_path).expect("database should open");
+            storage.migrate().expect("database should migrate");
+            storage
+                .insert_project(&ProjectRecord {
+                    id: "project-1".to_owned(),
+                    name: "Demo".to_owned(),
+                    path: "/tmp/demo".to_owned(),
+                    created_at: TIMESTAMP.to_owned(),
+                    last_opened_at: TIMESTAMP.to_owned(),
+                })
+                .expect("project should insert");
+            storage
+                .insert_agent(&AgentRecord {
+                    id: "agent-1".to_owned(),
+                    source: "custom".to_owned(),
+                    name: "Fake".to_owned(),
+                    executable: "/tmp/fake-agent".to_owned(),
+                    args_json: "[]".to_owned(),
+                    env_json: "{}".to_owned(),
+                    enabled: true,
+                    created_at: TIMESTAMP.to_owned(),
+                    updated_at: TIMESTAMP.to_owned(),
+                })
+                .expect("agent should insert");
+            storage
+                .insert_session(&SessionRecord {
+                    id: "session-1".to_owned(),
+                    project_id: "project-1".to_owned(),
+                    agent_id: "agent-1".to_owned(),
+                    name: "Main flow".to_owned(),
+                    cwd: "/tmp/demo".to_owned(),
+                    status: "running".to_owned(),
+                    runtime_pid: Some(42),
+                    daemon_instance_id: Some("daemon-1".to_owned()),
+                    exit_code: None,
+                    error_code: None,
+                    created_at: TIMESTAMP.to_owned(),
+                    updated_at: TIMESTAMP.to_owned(),
+                    last_activity_at: Some(TIMESTAMP.to_owned()),
+                })
+                .expect("session should insert");
+            storage
+                .insert_worktree(&WorktreeRecord {
+                    id: "worktree-1".to_owned(),
+                    project_id: "project-1".to_owned(),
+                    session_id: Some("session-1".to_owned()),
+                    path: "/tmp/worktree".to_owned(),
+                    branch: "agent/demo".to_owned(),
+                    state: "active".to_owned(),
+                    created_at: TIMESTAMP.to_owned(),
+                    updated_at: TIMESTAMP.to_owned(),
+                })
+                .expect("worktree should insert");
+        }
+
+        let reopened = Storage::open(&database_path).expect("database should reopen");
+        let project = reopened
+            .get_project("project-1")
+            .expect("project query")
+            .expect("project exists");
+        assert_eq!(project.name, "Demo");
+        let session = reopened
+            .get_session("session-1")
+            .expect("session query")
+            .expect("session exists");
+        assert_eq!(session.status, "running");
+        let worktree = reopened
+            .get_worktree("worktree-1")
+            .expect("worktree query")
+            .expect("worktree exists");
+        assert_eq!(worktree.branch, "agent/demo");
+
+        let error = reopened
+            .remove_project("project-1")
+            .expect_err("project with sessions must not delete");
+        assert!(error.is_constraint_violation());
     }
 
     fn migrated_memory_storage() -> Storage {

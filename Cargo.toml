@@ -1,5 +1,14 @@
 [workspace]
-members = ["apps/desktop/src-tauri", "crates/core", "crates/storage"]
+members = [
+    "apps/desktop/src-tauri",
+    "crates/core",
+    "crates/storage",
+    "crates/agents",
+    "crates/git",
+    "crates/session",
+    "crates/fake-agent",
+    "crates/e2e",
+]
 resolver = "2"
 
 [workspace.package]
