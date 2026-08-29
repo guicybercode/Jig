@@ -98,7 +98,10 @@ export interface WorkspaceOperations {
   renameProject(input: RenameProjectInput): Promise<Project>;
   removeProject(projectId: string): Promise<void>;
   createCustomAgent(input: CreateCustomAgentInput): Promise<AgentRecord>;
-  createSession(input: CreateSessionInput): Promise<Session>;
+  createSession(
+    input: CreateSessionInput,
+    options?: { readonly select?: boolean },
+  ): Promise<Session>;
   startSession(input: SessionIdInput): Promise<Session>;
   stopSession(input: SessionIdInput): Promise<Session>;
   restartSession(input: SessionIdInput): Promise<Session>;
@@ -571,8 +574,14 @@ export function WorkspaceProvider({
   );
 
   const createSession = useCallback(
-    (input: CreateSessionInput) => {
-      const selectIfRevision = navigationRevisionRef.current;
+    (
+      input: CreateSessionInput,
+      options?: { readonly select?: boolean },
+    ) => {
+      const selectIfRevision =
+        options?.select === false
+          ? undefined
+          : navigationRevisionRef.current;
       return execute(
         () => client.createSession(input),
         (session) => dispatch({

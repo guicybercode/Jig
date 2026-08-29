@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { App } from "../App";
 import { IpcError } from "../ipc/client";
+import { CANVAS_STORAGE_KEY } from "./features/canvas/canvas-state";
 import type {
   AgentRecord,
   AgentDetection,
@@ -28,6 +29,57 @@ vi.mock("./features/terminal/LiveTerminal", () => ({
 const TEST_TIME = 1_725_000_000_000;
 
 describe("AppShell project and session workflows", () => {
+  it("starts a terminal inside the canvas without opening the session view", async () => {
+    localStorage.removeItem(CANVAS_STORAGE_KEY);
+    const project = createProject();
+    const shellAgent: AgentRecord = {
+      ...createAgent(),
+      id: "agent-shell",
+      displayName: "Shell",
+      command: { executable: "/bin/zsh", args: ["-l"], env: {} },
+    };
+    const createdSession = createSession({
+      id: "canvas-terminal-session",
+      name: "Terminal 1",
+      agentId: shellAgent.id,
+      status: "unknown",
+    });
+    const client = createMockIpcClient({
+      bootstrap: createBootstrap({
+        projects: [project],
+        agents: [shellAgent],
+      }),
+      handlers: {
+        createSession: async () => createdSession,
+        startSession: async () => ({
+          ...createdSession,
+          status: "running",
+          pid: 123,
+        }),
+      },
+    });
+    const user = userEvent.setup();
+    render(<App client={client} />);
+    const terminal = await screen.findByRole("article", {
+      name: "Terminal 1, terminal canvas item",
+    });
+
+    await user.click(
+      within(terminal).getByRole("button", { name: "Start terminal" }),
+    );
+
+    expect(await screen.findByTestId("live-terminal-canvas-terminal-session"))
+      .toBeVisible();
+    expect(screen.getByRole("main")).toHaveClass("canvas-workspace");
+    expect(
+      screen.getByRole("heading", { name: project.name, level: 1 }),
+    ).toBeVisible();
+    expect(client.createSession).toHaveBeenCalledOnce();
+    expect(client.startSession).toHaveBeenCalledWith({
+      sessionId: createdSession.id,
+    });
+  });
+
   it("keeps settings inside the minimal canvas shell", async () => {
     const client = createMockIpcClient({ bootstrap: EMPTY_BOOTSTRAP });
     const user = await renderApp(client);

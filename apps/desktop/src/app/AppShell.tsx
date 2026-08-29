@@ -481,7 +481,9 @@ export function AppShell() {
           onSelectProject={selectProject}
           onSelectSession={selectSession}
           onCreateCustomAgent={workspace.createCustomAgent}
-          onCreateSession={workspace.createSession}
+          onCreateSession={(input) =>
+            workspace.createSession(input, { select: false })
+          }
           onStartSession={(sessionId) => workspace.startSession({ sessionId })}
           subscribeTerminal={workspace.subscribeTerminal}
           writeTerminal={workspace.writeTerminal}
