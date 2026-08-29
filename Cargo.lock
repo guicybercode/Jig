@@ -550,6 +550,8 @@ name = "cli-master-session"
 version = "0.1.0"
 dependencies = [
  "cli-master-core",
+ "cli-master-git",
+ "cli-master-storage",
  "nix 0.30.1",
  "portable-pty",
  "tempfile",

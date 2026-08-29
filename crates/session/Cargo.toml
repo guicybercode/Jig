@@ -3,17 +3,26 @@ name = "cli-master-session"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "PTY session manager for CLI Master"
+description = "Recoverable worktree orchestration and PTY session runtime for CLI Master"
+
+[lints]
+workspace = true
+
+[lib]
+name = "cli_master_session"
+path = "src/lib.rs"
 
 [dependencies]
 cli-master-core = { path = "../core" }
+cli-master-git = { path = "../git" }
+cli-master-storage = { path = "../storage" }
 nix = { version = "0.30.1", features = ["process", "signal"] }
 portable-pty = "0.9.0"
 tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1.41"
 
 [dev-dependencies]
-tempfile = "3.23.0"
-
-[lints]
-workspace = true
+cli-master-core = { path = "../core" }
+cli-master-git = { path = "../git" }
+cli-master-storage = { path = "../storage" }
+tempfile = "3"

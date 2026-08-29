@@ -53,6 +53,10 @@ ignore unknown events. Do not invent behavior for a name you do not know.
 - write status transitions
 - signal a process group
 
+`SessionWorktreeSaga` coordinates Git and SQLite effects for isolated session
+creation, recovery, and two-step worktree removal. It delegates every process
+spawn and rollback to `SessionManager`; it must not open PTYs or signal PIDs.
+
 React may call `session.start` / `session.stop` / `session.write`. Unmounting a
 terminal view must not stop the session. Do not store PTY bytes in React
 state. Do not kill a PID from the UI. Although the local public session DTO
