@@ -1,6 +1,6 @@
 mod support;
 
-use std::{fs, path::Path};
+use std::fs;
 
 use cli_master_git::{Git, GitErrorKind};
 use support::{RepositoryFixture, branch_exists, command, configure_identity};
@@ -285,7 +285,7 @@ fn macos_var_alias_is_canonicalized_before_prefix_checks() {
     let Ok(relative) = canonical_temp.strip_prefix("/private/var") else {
         return;
     };
-    let logical_temp = Path::new("/var").join(relative);
+    let logical_temp = std::path::PathBuf::from("/var").join(relative);
     let git = Git::discover().unwrap();
     let plan = git
         .plan_worktree(
