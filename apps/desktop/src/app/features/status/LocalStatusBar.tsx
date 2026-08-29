@@ -1,7 +1,11 @@
 import { Icon } from "../../components/Icon";
 
+interface LocalStatusBarProps {
+  daemonConnected: boolean;
+}
+
 /** Reports the current local-only application and daemon state. */
-export function LocalStatusBar() {
+export function LocalStatusBar({ daemonConnected }: LocalStatusBarProps) {
   return (
     <footer className="status-bar">
       <div className="status-bar__item">
@@ -9,13 +13,17 @@ export function LocalStatusBar() {
         <span>Local-first</span>
       </div>
       <div
-        className="status-bar__item status-bar__item--unavailable"
+        className={
+          daemonConnected
+            ? "status-bar__item"
+            : "status-bar__item status-bar__item--unavailable"
+        }
         role="status"
         aria-live="polite"
         aria-atomic="true"
       >
         <span className="status-bar__indicator" aria-hidden="true" />
-        <span>Daemon unavailable</span>
+        <span>{daemonConnected ? "Daemon connected" : "Daemon unavailable"}</span>
       </div>
     </footer>
   );
