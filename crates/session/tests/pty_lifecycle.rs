@@ -9,7 +9,7 @@ use std::time::Duration;
 use cli_master_core::wire::MAX_PTY_OUTPUT_BYTES;
 use cli_master_core::{AgentId, CommandSpec, ProjectId, Session, SessionId, SessionStatus};
 use cli_master_session::{
-    CreateSession, SessionError, SessionEvent, SessionManager, SessionManagerConfig,
+    SessionError, SessionEvent, SessionLaunchRequest, SessionManager, SessionManagerConfig,
     SessionSubscription,
 };
 use tempfile::TempDir;
@@ -323,7 +323,7 @@ impl Fixture {
     }
 
     fn create(&self, command: CommandSpec) -> Result<Session, SessionError> {
-        self.manager.create(CreateSession {
+        self.manager.create(SessionLaunchRequest {
             project_id: ProjectId::new(),
             agent_id: AgentId::new(),
             name: "test".to_owned(),
