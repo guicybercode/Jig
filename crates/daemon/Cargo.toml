@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 cli-master-core = { path = "../core" }
 cli-master-git = { path = "../git" }
+cli-master-session = { path = "../session" }
 cli-master-storage = { path = "../storage" }
 futures-util = { version = "0.3.31", features = ["sink"] }
 rustix = { version = "1.1.4", features = ["fs", "net", "process"] }
