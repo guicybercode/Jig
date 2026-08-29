@@ -7,23 +7,32 @@
 html,
 body,
 #root {
-  min-width: 20rem;
-  min-height: 100%;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
   margin: 0;
 }
 
 body {
   min-height: 100vh;
   min-height: 100dvh;
-  overflow-x: hidden;
+  overflow: hidden;
   color: var(--color-text);
   background: var(--color-background);
   font-size: 0.875rem;
   line-height: 1.45;
 }
 
-button {
+button,
+input,
+select,
+textarea {
   font: inherit;
+}
+
+button {
+  color: inherit;
 }
 
 button:not(:disabled) {
@@ -35,9 +44,55 @@ button:disabled {
   cursor: not-allowed;
 }
 
+:where(button, input, select, textarea, [tabindex]):focus-visible {
+  position: relative;
+  z-index: 1;
+}
+
 :focus-visible {
   outline: 2px solid var(--color-focus-ring);
   outline-offset: 2px;
+}
+
+::selection {
+  color: var(--color-on-accent);
+  background: var(--color-accent-strong);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-scrollbar) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 0.625rem;
+  height: 0.625rem;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--color-scrollbar);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-scrollbar-hover);
+  background-clip: padding-box;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .icon {
@@ -59,7 +114,7 @@ button:disabled {
   font-weight: 600;
   text-decoration: none;
   transform: translateY(calc(-100% - var(--space-4)));
-  transition: transform var(--duration-feedback) ease-out;
+  transition: transform var(--duration-feedback) var(--ease-feedback);
 }
 
 .skip-link:focus {
@@ -67,7 +122,8 @@ button:disabled {
 }
 
 .button {
-  min-height: 2rem;
+  min-width: 0;
+  min-height: var(--control-height);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -81,9 +137,9 @@ button:disabled {
   font-weight: 600;
   white-space: nowrap;
   transition:
-    background-color var(--duration-feedback) ease-out,
-    border-color var(--duration-feedback) ease-out,
-    color var(--duration-feedback) ease-out;
+    background-color var(--duration-feedback) var(--ease-feedback),
+    border-color var(--duration-feedback) var(--ease-feedback),
+    color var(--duration-feedback) var(--ease-feedback);
 }
 
 .button--primary {
@@ -95,6 +151,24 @@ button:disabled {
 .button--secondary {
   border-color: var(--color-border-strong);
   background: var(--color-surface);
+}
+
+.button--quiet {
+  border-color: transparent;
+  color: var(--color-text-muted);
+  background: transparent;
+}
+
+.button--danger {
+  border-color: var(--color-danger);
+  color: var(--color-background);
+  background: var(--color-danger);
+}
+
+.button--danger-secondary {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+  background: var(--color-danger-muted);
 }
 
 .button--full {
@@ -118,6 +192,79 @@ button:disabled {
     border-color: var(--color-accent);
     color: var(--color-accent-strong);
     background: var(--color-surface-raised);
+  }
+
+  .button--quiet:not(:disabled):hover {
+    border-color: var(--color-border);
+    color: var(--color-text);
+    background: var(--color-surface-hover);
+  }
+
+  .button--danger:not(:disabled):hover,
+  .button--danger-secondary:not(:disabled):hover {
+    border-color: var(--color-danger);
+    color: var(--color-text);
+    background: var(--color-danger-muted);
+  }
+}
+
+.button:not(:disabled):active {
+  background: var(--color-surface-active);
+}
+
+.button--primary:not(:disabled):active {
+  color: var(--color-on-accent);
+  background: var(--color-accent-strong);
+}
+
+.button--danger:not(:disabled):active {
+  color: var(--color-text);
+  background: var(--color-danger-muted);
+}
+
+.mono,
+code,
+kbd {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+kbd {
+  border: 1px solid var(--color-border-strong);
+  border-bottom-color: var(--color-text-disabled);
+  border-radius: var(--radius-small);
+  padding: 0.0625rem var(--space-1);
+  color: var(--color-text-muted);
+  background: var(--color-inset);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  white-space: nowrap;
+}
+
+.path-value,
+.path-context,
+.mono {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.text-warning {
+  color: var(--color-warning);
+}
+
+@media (pointer: coarse) {
+  .button,
+  .icon-button,
+  .dialog__close,
+  .pane-footer__action,
+  .status-bar__diagnostics {
+    min-height: 2.75rem;
+  }
+
+  .icon-button,
+  .dialog__close {
+    min-width: 2.75rem;
   }
 }
 

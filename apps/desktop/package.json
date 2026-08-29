@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "check": "tsc --noEmit && vitest run && vite build",
+    "lint": "tsc --noEmit",
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",

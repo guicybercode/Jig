@@ -7,6 +7,7 @@
     "build": "pnpm --filter @cli-master/desktop build",
     "check": "pnpm --filter @cli-master/desktop check && cargo check --workspace",
     "dev": "pnpm --filter @cli-master/desktop dev",
+    "lint": "pnpm --filter @cli-master/desktop lint",
     "tauri": "pnpm --filter @cli-master/desktop tauri",
     "test": "pnpm --filter @cli-master/desktop test && cargo test --workspace"
   }

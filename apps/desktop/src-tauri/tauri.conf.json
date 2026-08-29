@@ -15,7 +15,7 @@
         "title": "CLI Master",
         "width": 1280,
         "height": 800,
-        "minWidth": 960,
+        "minWidth": 375,
         "minHeight": 640,
         "center": true
       }
