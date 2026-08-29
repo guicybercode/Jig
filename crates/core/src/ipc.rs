@@ -221,10 +221,9 @@ mod tests {
 
     #[test]
     fn rust_catalog_matches_shared_protocol_file() {
-        let catalog: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../protocol/catalog.json"
-        ))
-        .expect("catalog fixture should parse");
+        let catalog: serde_json::Value =
+            serde_json::from_str(include_str!("../../../protocol/catalog.json"))
+                .expect("catalog fixture should parse");
         assert_eq!(catalog["protocolVersion"], 1);
 
         let mut methods: Vec<_> = IpcMethod::ALL
