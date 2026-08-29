@@ -1,3 +1,5 @@
+mod common;
+
 use std::{
     collections::BTreeMap,
     env, fs,
@@ -12,6 +14,8 @@ use cli_master_agents::{
     LaunchEnvironment, OpenCodeAdapter, RegistryError,
 };
 use tempfile::TempDir;
+
+use common::{context, executable};
 
 static CURRENT_DIR_LOCK: Mutex<()> = Mutex::new(());
 
@@ -29,25 +33,6 @@ impl Drop for CurrentDirGuard {
     fn drop(&mut self) {
         env::set_current_dir(&self.0).expect("original current directory should be restored");
     }
-}
-
-fn executable(directory: &Path, name: &str) -> PathBuf {
-    let path = directory.join(name);
-    fs::write(&path, b"#!/bin/sh\n").expect("fixture executable should be written");
-    let mut permissions = fs::metadata(&path)
-        .expect("fixture metadata should exist")
-        .permissions();
-    permissions.set_mode(0o700);
-    fs::set_permissions(&path, permissions).expect("fixture should become executable");
-    path.canonicalize()
-        .expect("fixture executable should canonicalize")
-}
-
-fn context(temp: &TempDir) -> LaunchContext {
-    LaunchContext::new(
-        temp.path(),
-        LaunchEnvironment::from_search_paths([temp.path()]),
-    )
 }
 
 #[test]
@@ -72,7 +57,7 @@ fn detects_executable_in_explicit_path_and_builds_in_context_cwd() {
     );
     assert!(command.args().is_empty());
     assert!(command.env().is_empty());
-    assert_eq!(command.cwd(), &temp.path());
+    assert_eq!(command.cwd(), temp.path());
 }
 
 #[test]
@@ -258,11 +243,14 @@ fn built_in_registry_keys_and_commands_are_stable() {
         assert_eq!(adapter.key(), direct_key);
         assert_eq!(adapter.display_name(), display_name);
         assert_eq!(adapter.source(), AgentSource::BuiltIn);
+        assert!(adapter.capabilities().requires_pty);
         let command = adapter
             .build_command(&launch_context)
             .expect("built-in command should build");
         assert!(command.args().is_empty());
         assert!(command.env().is_empty());
+        assert!(command.env_removals().is_empty());
+        assert!(command.startup_input().is_none());
     }
 }
 
@@ -279,6 +267,103 @@ fn later_executable_path_entry_wins_over_non_executable_candidate() {
         DetectionResult::Found {
             executable: executable_path
         }
+    );
+}
+
+#[test]
+fn missing_built_ins_do_not_panic_and_report_not_installed() {
+    let temp = TempDir::new().expect("temporary directory should be created");
+    let environment = LaunchEnvironment::from_search_paths([temp.path()]);
+    let registry = AgentRegistry::new();
+    for key in ["codex", "claude", "gemini", "opencode"] {
+        let snapshot = registry
+            .get(key)
+            .expect("built-in")
+            .resolve_definition(&environment);
+        assert!(!snapshot.installed);
+        assert!(snapshot.resolved_path.is_none());
+        assert_eq!(snapshot.version, None);
+    }
+}
+
+#[test]
+fn executable_with_spaces_in_path_is_preserved() {
+    let temp = TempDir::new().expect("temporary directory should be created");
+    let bin_dir = temp.path().join("my tools");
+    let expected = executable(&bin_dir, "my agent");
+    let environment = LaunchEnvironment::from_search_paths([&bin_dir]);
+    let context = LaunchContext::new(temp.path(), environment);
+
+    let definition =
+        CustomAgentDefinition::new("spaced", "Spaced Agent", expected.to_str().expect("UTF-8"))
+            .expect("definition should be valid");
+    let command = CustomAgentAdapter::new(definition)
+        .build_command(&context)
+        .expect("spaced path should build");
+    assert_eq!(command.executable(), expected.to_str().expect("UTF-8"));
+}
+
+#[test]
+fn extra_args_are_appended_without_shell_joining() {
+    let temp = TempDir::new().expect("temporary directory should be created");
+    executable(temp.path(), "codex");
+    let context = context(&temp)
+        .with_extra_args(["--search", "foo bar", "$(uname)"])
+        .expect("extra args should be valid");
+    let command = CodexAdapter
+        .build_command(&context)
+        .expect("command should build");
+    assert_eq!(command.args(), ["--search", "foo bar", "$(uname)"]);
+}
+
+#[test]
+fn cwd_error_is_returned_when_directory_is_missing() {
+    let temp = TempDir::new().expect("temporary directory should be created");
+    executable(temp.path(), "codex");
+    let missing = temp.path().join("gone");
+    let context = LaunchContext::new(
+        &missing,
+        LaunchEnvironment::from_search_paths([temp.path()]),
+    );
+    assert_eq!(
+        CodexAdapter.build_command(&context),
+        Err(AgentError::InvalidWorkingDirectory(missing))
+    );
+}
+
+#[test]
+fn binary_removed_after_registration_fails_detection() {
+    let temp = TempDir::new().expect("temporary directory should be created");
+    let path = executable(temp.path(), "company-agent");
+    let definition = CustomAgentDefinition::new("company-agent", "Company Agent", "company-agent")
+        .expect("definition should be valid");
+    let mut registry = AgentRegistry::new();
+    registry
+        .register_custom(definition)
+        .expect("custom agent should register");
+    let environment = LaunchEnvironment::from_search_paths([temp.path()]);
+    assert!(
+        registry
+            .get("company-agent")
+            .expect("registered")
+            .detect(&environment)
+            .is_found()
+    );
+    fs::remove_file(&path).expect("fixture should be removable");
+    assert_eq!(
+        registry
+            .get("company-agent")
+            .expect("registered")
+            .detect(&environment),
+        DetectionResult::NotFound
+    );
+    let context = LaunchContext::new(temp.path(), environment);
+    assert_eq!(
+        registry
+            .get("company-agent")
+            .expect("registered")
+            .build_command(&context),
+        Err(AgentError::ExecutableNotFound)
     );
 }
 
@@ -313,6 +398,18 @@ fn deserialization_rejects_nul_and_invalid_environment_name() {
             .to_string()
             .contains("variable names must be non-empty")
     );
+}
+
+#[test]
+fn executable_override_skips_path_lookup() {
+    let temp = TempDir::new().expect("temporary directory should be created");
+    let override_path = executable(temp.path(), "codex-override");
+    let context = LaunchContext::new(temp.path(), LaunchEnvironment::default())
+        .with_executable_override(&override_path);
+    let command = CodexAdapter
+        .build_command(&context)
+        .expect("override should build");
+    assert_eq!(command.executable(), override_path.to_str().expect("UTF-8"));
 }
 
 #[test]
