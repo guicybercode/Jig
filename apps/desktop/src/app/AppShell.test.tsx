@@ -782,7 +782,8 @@ describe("AppShell project and session workflows", () => {
 
     await waitFor(() => {
       expect(client.initialize).toHaveBeenCalledTimes(2);
-      expect(screen.getByText("Daemon connected · v0.1.0-test")).toBeVisible();
+      expect(screen.queryByText(/^Daemon connected/)).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     });
     expect(client.subscribe).toHaveBeenCalledTimes(2);
     expect(client.listenerCount()).toBe(1);
@@ -1068,7 +1069,8 @@ describe("AppShell project and session workflows", () => {
 async function renderApp(client: MockIpcClient) {
   const user = userEvent.setup();
   render(<App client={client} initialView="session" />);
-  await screen.findByText("Daemon connected · v0.1.0-test");
+  await screen.findByRole("button", { name: "Settings" });
+  expect(screen.queryByText(/^Daemon connected/)).not.toBeInTheDocument();
   return user;
 }
 

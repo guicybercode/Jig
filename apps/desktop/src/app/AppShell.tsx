@@ -501,7 +501,6 @@ export function AppShell() {
       </div>
       <LocalStatusBar
         connection={workspace.connection.status}
-        hello={workspace.hello ?? undefined}
         project={workspace.selectedProject ?? undefined}
         sessions={workspace.sessions}
         selectedWorktree={workspace.selectedWorktree ?? undefined}

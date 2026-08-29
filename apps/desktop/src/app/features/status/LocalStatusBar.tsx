@@ -1,11 +1,10 @@
-import type { HelloResponse, Project, Session, Worktree } from "../../../ipc/types";
+import type { Project, Session, Worktree } from "../../../ipc/types";
 import { Icon } from "../../components/Icon";
 
 type ConnectionState = "connecting" | "connected" | "disconnected" | "fatal";
 
 interface LocalStatusBarProps {
   readonly connection: ConnectionState;
-  readonly hello?: HelloResponse;
   readonly project?: Project;
   readonly sessions: readonly Session[];
   readonly selectedWorktree?: Worktree;
@@ -15,7 +14,6 @@ interface LocalStatusBarProps {
 /** Reports local daemon, repository, and active process state outside terminal output. */
 export function LocalStatusBar({
   connection,
-  hello,
   project,
   sessions,
   selectedWorktree,
@@ -25,13 +23,11 @@ export function LocalStatusBar({
     ["starting", "running", "idle"].includes(session.status),
   ).length;
   const connectionLabel =
-    connection === "connected"
-      ? `Daemon connected${hello ? ` · v${hello.daemonVersion}` : ""}`
-      : connection === "connecting"
-        ? "Connecting to daemon"
-        : connection === "fatal"
-          ? "Daemon protocol error"
-          : "Daemon disconnected";
+    connection === "connecting"
+      ? "Connecting to daemon"
+      : connection === "fatal"
+        ? "Daemon protocol error"
+        : "Daemon disconnected";
 
   return (
     <footer className="status-bar">
@@ -52,24 +48,26 @@ export function LocalStatusBar({
           {activeCount} active {activeCount === 1 ? "session" : "sessions"}
         </span>
       </div>
-      <div
-        className={`status-bar__connection status-bar__connection--${connection}`}
-        role="status"
-        aria-live="polite"
-        aria-atomic="true"
-      >
-        <span className="status-bar__indicator" aria-hidden="true" />
-        <span>{connectionLabel}</span>
-        <button
-          className="status-bar__diagnostics"
-          type="button"
-          aria-label="Open Diagnostics"
-          title="Open Diagnostics"
-          onClick={onOpenDiagnostics}
+      {connection === "connected" ? null : (
+        <div
+          className={`status-bar__connection status-bar__connection--${connection}`}
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
         >
-          <Icon name="diagnostics" />
-        </button>
-      </div>
+          <span className="status-bar__indicator" aria-hidden="true" />
+          <span>{connectionLabel}</span>
+          <button
+            className="status-bar__diagnostics"
+            type="button"
+            aria-label="Open Diagnostics"
+            title="Open Diagnostics"
+            onClick={onOpenDiagnostics}
+          >
+            <Icon name="diagnostics" />
+          </button>
+        </div>
+      )}
     </footer>
   );
 }
