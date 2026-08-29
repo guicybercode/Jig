@@ -15,10 +15,15 @@ mkdir -p "$artifact_dir"
 
 case "$(uname -s)" in
   Linux)
-    find "$root/target/release/bundle" -type f \( -name '*.AppImage' -o -name '*.deb' \) -exec cp {} "$artifact_dir/" \;
+    find "$root/target/release/bundle" -type f -name '*.AppImage' -exec cp {} "$artifact_dir/" \;
     ;;
   Darwin)
     find "$root/target/release/bundle" -type f -name '*.dmg' -exec cp {} "$artifact_dir/" \;
+    app="$(find "$root/target/release/bundle" -type d -name '*.app' | LC_ALL=C sort | head -n 1)"
+    if [[ -n "$app" ]]; then
+      zip_name="$(basename "$app").zip"
+      ditto -c -k --keepParent "$app" "$artifact_dir/$zip_name"
+    fi
     ;;
   *)
     echo "unsupported packaging host: $(uname -s)" >&2
