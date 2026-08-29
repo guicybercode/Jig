@@ -547,6 +547,7 @@ dependencies = [
  "cli-master-git",
  "cli-master-session",
  "cli-master-storage",
+ "rustix",
  "tempfile",
  "tokio",
 ]

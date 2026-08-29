@@ -13,11 +13,11 @@ compile_error!("cli-master-fake-agent supports Linux and macOS only");
 
 use std::env;
 use std::io::{self, BufRead, BufReader, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
 
 use rustix::termios::{Winsize, tcgetwinsize};
 use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGTERM, SIGWINCH};
@@ -100,32 +100,30 @@ where
     Ok(parsed)
 }
 
-/// Locates the compiled `cli-master-fake-agent` binary for tests.
+/// Locates the compiled `cli-master-fake-agent` binary without consulting
+/// `PATH` or waiting for another build process.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics when the binary cannot be found. Integration tests that live in a
-/// different package should run `cargo build -p cli-master-fake-agent` first,
-/// or `cargo test --workspace` after that package's tests have compiled it.
-#[must_use]
-pub fn compiled_executable() -> PathBuf {
-    if let Some(path) = cargo_bin_from_env() {
-        return path;
+/// Returns [`io::ErrorKind::NotFound`] with every inspected path when no
+/// executable file exists. Cross-package acceptance tests must build the
+/// binary first with `cargo build -p cli-master-fake-agent`.
+pub fn compiled_executable() -> io::Result<PathBuf> {
+    let candidates = binary_candidates();
+    if let Some(path) = candidates.iter().find(|path| is_executable(path)) {
+        return path.canonicalize();
     }
-
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        for candidate in binary_candidates() {
-            if candidate.is_file() {
-                return candidate;
-            }
-        }
-        assert!(
-            Instant::now() < deadline,
-            "cli-master-fake-agent was not found; run `cargo build -p cli-master-fake-agent` first"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!(
+            "cli-master-fake-agent was not found; build it first; inspected: {}",
+            candidates
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    ))
 }
 
 /// Runs the interactive protocol until exit, EOF, or a terminating signal.
@@ -302,25 +300,31 @@ fn park_until_terminate(output: &ProtocolOut) -> io::Result<i32> {
     Ok(0)
 }
 
-fn cargo_bin_from_env() -> Option<PathBuf> {
-    option_env!("CARGO_BIN_EXE_cli-master-fake-agent")
-        .or(option_env!("CARGO_BIN_EXE_cli_master_fake_agent"))
-        .map(PathBuf::from)
-        .filter(|path| path.is_file())
-}
-
 fn binary_candidates() -> Vec<PathBuf> {
     let name = executable_name();
     let mut directories = Vec::new();
-    if let Ok(target) = env::var("CARGO_TARGET_DIR") {
-        directories.push(PathBuf::from(target));
+    let mut candidates = [
+        "CLI_MASTER_FAKE_AGENT_BIN",
+        "CARGO_BIN_EXE_cli-master-fake-agent",
+        "CARGO_BIN_EXE_cli_master_fake_agent",
+    ]
+    .into_iter()
+    .filter_map(env::var_os)
+    .map(PathBuf::from)
+    .map(absolute_path)
+    .collect::<Vec<_>>();
+    if let Some(path) = option_env!("CARGO_BIN_EXE_cli-master-fake-agent") {
+        candidates.push(absolute_path(PathBuf::from(path)));
     }
-    if let Ok(manifest) = env::var("CARGO_MANIFEST_DIR") {
-        let manifest = PathBuf::from(manifest);
-        directories.push(manifest.join("target"));
-        if let Some(workspace) = manifest.parent().and_then(Path::parent) {
-            directories.push(workspace.join("target"));
-        }
+    if let Some(path) = option_env!("CARGO_BIN_EXE_cli_master_fake_agent") {
+        candidates.push(absolute_path(PathBuf::from(path)));
+    }
+    if let Some(target) = env::var_os("CARGO_TARGET_DIR") {
+        directories.push(absolute_path(PathBuf::from(target)));
+    }
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if let Some(workspace) = manifest.parent().and_then(Path::parent) {
+        directories.push(workspace.join("target"));
     }
     if let Ok(exe) = env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -333,13 +337,26 @@ fn binary_candidates() -> Vec<PathBuf> {
         }
     }
 
-    let mut candidates = Vec::new();
     for directory in directories {
         candidates.push(directory.join(name));
         candidates.push(directory.join("debug").join(name));
         candidates.push(directory.join("release").join(name));
     }
+    candidates.dedup();
     candidates
+}
+
+fn absolute_path(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        env::current_dir().map_or(path.clone(), |cwd| cwd.join(path))
+    }
+}
+
+fn is_executable(path: &Path) -> bool {
+    path.metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
 fn executable_name() -> &'static str {

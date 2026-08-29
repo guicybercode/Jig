@@ -17,6 +17,7 @@ cli-master-fake-agent = { path = "../fake-agent" }
 cli-master-git = { path = "../git" }
 cli-master-session = { path = "../session" }
 cli-master-storage = { path = "../storage" }
+rustix = { version = "1.1.4", features = ["process"] }
 tempfile = "3.23.0"
 tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 

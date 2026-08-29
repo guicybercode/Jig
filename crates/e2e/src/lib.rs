@@ -10,14 +10,13 @@
 compile_error!("cli-master-e2e supports Linux and macOS only");
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::Duration;
 
-use cli_master_core::{AgentId, CommandSpec, ProjectId, Session, SessionId, SessionStatus};
+use cli_master_core::{CommandSpec, Session, SessionId, SessionStatus};
 use cli_master_fake_agent::compiled_executable;
-use cli_master_session::{
-    SessionError, SessionLaunchRequest, SessionManager, SessionManagerConfig, SessionSubscription,
-};
+use cli_master_session::{SessionManager, SessionSubscription};
+use rustix::process::{Pid, test_kill_process};
 use tempfile::TempDir;
 
 /// Default deadline used by readiness probes.
@@ -30,6 +29,8 @@ pub struct RepositoryFixture {
     pub repository: PathBuf,
     /// Directory that must contain every managed worktree.
     pub managed: PathBuf,
+    /// `SQLite` database used by the production session saga.
+    pub database: PathBuf,
 }
 
 impl RepositoryFixture {
@@ -43,6 +44,7 @@ impl RepositoryFixture {
         let temp = TempDir::new().expect("temporary directory should be created");
         let repository = temp.path().join("repository");
         let managed = temp.path().join("managed");
+        let database = temp.path().join("cli-master.db");
         std::fs::create_dir(&repository).expect("repository directory should be created");
         git(&repository, ["init", "-b", "main"]);
         git(
@@ -58,6 +60,7 @@ impl RepositoryFixture {
             _temp: temp,
             repository,
             managed,
+            database,
         }
     }
 }
@@ -91,69 +94,6 @@ where
     );
 }
 
-/// Session manager plus an isolated working directory.
-pub struct SessionFixture {
-    _tempdir: TempDir,
-    /// Scratch directory used when a test does not attach a worktree cwd.
-    pub cwd: PathBuf,
-    /// Production session manager.
-    pub manager: SessionManager,
-}
-
-impl SessionFixture {
-    /// Creates a manager with the same test timeouts used by PTY lifecycle tests.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a temporary directory cannot be created. Also panics if called
-    /// outside a Tokio runtime, because [`SessionManager::new`] requires one.
-    #[must_use]
-    pub fn new() -> Self {
-        let tempdir = TempDir::new().expect("temporary directory");
-        let cwd = tempdir.path().to_path_buf();
-        let manager = SessionManager::new(SessionManagerConfig::for_tests());
-        Self {
-            _tempdir: tempdir,
-            cwd,
-            manager,
-        }
-    }
-
-    /// Starts the fake agent in `cwd`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a session error when spawn fails.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the fake-agent binary cannot be located or the command spec
-    /// is invalid.
-    pub fn start_fake_agent(
-        &self,
-        project_id: ProjectId,
-        agent_id: AgentId,
-        name: &str,
-        cwd: &Path,
-        extra_args: &[&str],
-    ) -> Result<Session, SessionError> {
-        self.manager.create(SessionLaunchRequest {
-            project_id,
-            agent_id,
-            name: name.to_owned(),
-            command: fake_agent_command(cwd, extra_args),
-            cols: 80,
-            rows: 24,
-        })
-    }
-}
-
-impl Default for SessionFixture {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Builds a `CommandSpec` for the compiled fake agent.
 ///
 /// # Panics
@@ -167,7 +107,10 @@ pub fn fake_agent_command(cwd: &Path, extra_args: &[&str]) -> CommandSpec {
         "must-not-appear-in-output".to_owned(),
     );
     CommandSpec::try_from_parts(
-        compiled_executable().to_string_lossy().into_owned(),
+        compiled_executable()
+            .expect("fake-agent binary should be built before runtime acceptance")
+            .to_string_lossy()
+            .into_owned(),
         extra_args.iter().map(ToString::to_string),
         cwd.to_path_buf(),
         env,
@@ -288,26 +231,92 @@ pub fn now_ms() -> i64 {
 /// Returns whether `pid` still exists without signaling it.
 #[must_use]
 pub fn process_is_alive(pid: u32) -> bool {
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+    i32::try_from(pid)
+        .ok()
+        .and_then(Pid::from_raw)
+        .is_some_and(|pid| test_kill_process(pid).is_ok())
 }
 
-/// Locates a Unix executable used by leftover-process fixtures.
+/// Locates a Unix executable used by leftover-process fixtures in a fixed
+/// system directory, without consulting `PATH`.
 ///
 /// # Panics
 ///
 /// Panics if `name` is not present in the usual Unix binary directories.
 #[must_use]
-pub fn which(name: &str) -> PathBuf {
+pub fn system_executable(name: &str) -> PathBuf {
     ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
         .into_iter()
         .map(|directory| Path::new(directory).join(name))
         .find(|path| path.is_file())
         .unwrap_or_else(|| panic!("{name} not found"))
+}
+
+/// Child process that is always terminated and reaped during unwinding.
+pub struct ChildGuard {
+    child: Option<Child>,
+}
+
+impl ChildGuard {
+    /// Spawns a fixture process from an absolute path with closed standard I/O.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `executable` is relative or the process cannot be started.
+    #[must_use]
+    pub fn spawn(executable: &Path, args: &[&str]) -> Self {
+        assert!(
+            executable.is_absolute(),
+            "fixture executable path must be absolute"
+        );
+        let child = Command::new(executable)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("fixture process should start");
+        Self { child: Some(child) }
+    }
+
+    /// Returns the operating-system process identifier.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the guarded child has already been terminated.
+    #[must_use]
+    pub fn id(&self) -> u32 {
+        self.child.as_ref().expect("child should be present").id()
+    }
+
+    /// Terminates and reaps the guarded child.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the status cannot be inspected or the child cannot be reaped.
+    pub fn terminate(&mut self) -> ExitStatus {
+        let mut child = self.child.take().expect("child should be present");
+        if child
+            .try_wait()
+            .expect("child status should be readable")
+            .is_none()
+        {
+            child.kill().expect("fixture process should terminate");
+        }
+        child.wait().expect("fixture process should be reaped")
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        if child.try_wait().ok().flatten().is_none() {
+            let _ = child.kill();
+        }
+        let _ = child.wait();
+    }
 }
 
 #[cfg(test)]
