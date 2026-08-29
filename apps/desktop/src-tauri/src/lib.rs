@@ -11,6 +11,16 @@ use daemon_bridge::{
 /// Panics when Tauri cannot initialize or run the desktop application.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    tracing_subscriber::fmt()
+        .json()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_target(true)
+        .try_init()
+        .ok();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -29,6 +39,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use cli_master_core::{PROTOCOL_V1, wire};
 
     #[test]
     fn rust_catalog_matches_desktop_mirror() {
