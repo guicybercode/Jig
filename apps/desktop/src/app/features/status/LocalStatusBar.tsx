@@ -1,11 +1,12 @@
 import { Icon } from "../../components/Icon";
-
-interface LocalStatusBarProps {
-  daemonConnected: boolean;
-}
+import { useConnection, useConnectionLabel } from "../../workspace";
 
 /** Reports the current local-only application and daemon state. */
-export function LocalStatusBar({ daemonConnected }: LocalStatusBarProps) {
+export function LocalStatusBar() {
+  const connection = useConnection();
+  const label = useConnectionLabel();
+  const ready = connection.phase === "ready";
+
   return (
     <footer className="status-bar">
       <div className="status-bar__item">
@@ -14,7 +15,7 @@ export function LocalStatusBar({ daemonConnected }: LocalStatusBarProps) {
       </div>
       <div
         className={
-          daemonConnected
+          ready
             ? "status-bar__item"
             : "status-bar__item status-bar__item--unavailable"
         }
@@ -23,7 +24,7 @@ export function LocalStatusBar({ daemonConnected }: LocalStatusBarProps) {
         aria-atomic="true"
       >
         <span className="status-bar__indicator" aria-hidden="true" />
-        <span>{daemonConnected ? "Daemon connected" : "Daemon unavailable"}</span>
+        <span>{label}</span>
       </div>
     </footer>
   );

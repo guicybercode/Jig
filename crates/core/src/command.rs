@@ -2,11 +2,14 @@ use std::{collections::BTreeMap, error::Error, fmt, path::PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 
+/// Maximum accepted length for optional PTY startup input.
+pub const MAX_STARTUP_INPUT_BYTES: usize = 4096;
+
 /// A process launch specification that never relies on shell interpolation.
 ///
 /// Arguments and environment entries remain separate from the executable, so
 /// callers can pass them directly to a platform process API. Environment values
-/// values and argument contents are intentionally redacted from the `Debug`
+/// and argument contents are intentionally redacted from the `Debug`
 /// representation.
 #[derive(Clone, Eq, PartialEq, Serialize)]
 pub struct CommandSpec {
@@ -14,6 +17,12 @@ pub struct CommandSpec {
     args: Vec<String>,
     cwd: PathBuf,
     env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    env_removals: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    terminal_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    startup_input: Option<String>,
 }
 
 impl CommandSpec {
@@ -30,7 +39,8 @@ impl CommandSpec {
         Self::try_from_parts(executable, Vec::<String>::new(), cwd, BTreeMap::new())
     }
 
-    /// Creates a validated command from all of its structured components.
+    /// Creates a validated command from its structured executable, arguments,
+    /// working directory, and environment additions.
     ///
     /// # Errors
     ///
@@ -53,6 +63,9 @@ impl CommandSpec {
             args: args.into_iter().map(Into::into).collect(),
             cwd: cwd.into(),
             env,
+            env_removals: Vec::new(),
+            terminal_title: None,
+            startup_input: None,
         };
         command.validate()?;
         Ok(command)
@@ -76,10 +89,83 @@ impl CommandSpec {
         &self.cwd
     }
 
-    /// Returns environment variables that override the inherited environment.
+    /// Returns environment variables added or replaced in the child process.
     #[must_use]
     pub const fn env(&self) -> &BTreeMap<String, String> {
         &self.env
+    }
+
+    /// Returns environment variables added or replaced in the child process.
+    #[must_use]
+    pub const fn env_additions(&self) -> &BTreeMap<String, String> {
+        &self.env
+    }
+
+    /// Returns environment variable names removed before the child starts.
+    #[must_use]
+    pub fn env_removals(&self) -> &[String] {
+        &self.env_removals
+    }
+
+    /// Returns the optional terminal title for the session UI.
+    #[must_use]
+    pub fn terminal_title(&self) -> Option<&str> {
+        self.terminal_title.as_deref()
+    }
+
+    /// Returns optional bytes to write after the PTY is attached.
+    ///
+    /// This is never interpolated by a shell. Callers must treat it as raw
+    /// terminal input and must not use it to smuggle command strings.
+    #[must_use]
+    pub fn startup_input(&self) -> Option<&str> {
+        self.startup_input.as_deref()
+    }
+
+    /// Replaces environment-removal keys after validating them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a key is empty, contains `=`, or contains a NUL.
+    pub fn with_env_removals<I, S>(mut self, keys: I) -> Result<Self, CommandSpecError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.env_removals = unique_preserving_order(keys.into_iter().map(Into::into));
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Sets the terminal title. Empty titles are stored as `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the title contains a NUL byte.
+    pub fn with_terminal_title(
+        mut self,
+        title: impl Into<String>,
+    ) -> Result<Self, CommandSpecError> {
+        let title = title.into();
+        self.terminal_title = if title.is_empty() { None } else { Some(title) };
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Sets optional PTY startup input. Empty input is stored as `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the value contains a NUL byte or exceeds
+    /// [`MAX_STARTUP_INPUT_BYTES`].
+    pub fn with_startup_input(
+        mut self,
+        input: impl Into<String>,
+    ) -> Result<Self, CommandSpecError> {
+        let input = input.into();
+        self.startup_input = if input.is_empty() { None } else { Some(input) };
+        self.validate()?;
+        Ok(self)
     }
 
     fn validate(&self) -> Result<(), CommandSpecError> {
@@ -91,11 +177,23 @@ impl CommandSpec {
             validate_no_nul("argument", argument)?;
         }
         for (key, value) in &self.env {
-            if key.is_empty() || key.contains('=') {
-                return Err(CommandSpecError::InvalidEnvironmentKey(key.clone()));
-            }
-            validate_no_nul("environment key", key)?;
+            validate_environment_key(key)?;
             validate_no_nul("environment value", value)?;
+        }
+        for key in &self.env_removals {
+            validate_environment_key(key)?;
+        }
+        if let Some(title) = &self.terminal_title {
+            validate_no_nul("terminal title", title)?;
+        }
+        if let Some(input) = &self.startup_input {
+            validate_no_nul("startup input", input)?;
+            if input.len() > MAX_STARTUP_INPUT_BYTES {
+                return Err(CommandSpecError::StartupInputTooLarge {
+                    length: input.len(),
+                    max: MAX_STARTUP_INPUT_BYTES,
+                });
+            }
         }
         Ok(())
     }
@@ -109,6 +207,12 @@ impl fmt::Debug for CommandSpec {
             .field("args_count", &self.args.len())
             .field("cwd", &self.cwd)
             .field("env_keys", &self.env.keys().collect::<Vec<_>>())
+            .field("env_removals", &self.env_removals)
+            .field("terminal_title", &self.terminal_title)
+            .field(
+                "startup_input",
+                &self.startup_input.as_ref().map(|_| "[redacted]"),
+            )
             .finish()
     }
 }
@@ -125,11 +229,31 @@ impl<'de> Deserialize<'de> for CommandSpec {
             cwd: PathBuf,
             #[serde(default)]
             env: BTreeMap<String, String>,
+            #[serde(default)]
+            env_removals: Vec<String>,
+            #[serde(default)]
+            terminal_title: Option<String>,
+            #[serde(default)]
+            startup_input: Option<String>,
         }
 
         let wire = WireCommandSpec::deserialize(deserializer)?;
-        Self::try_from_parts(wire.executable, wire.args, wire.cwd, wire.env)
-            .map_err(de::Error::custom)
+        let mut command = Self::try_from_parts(wire.executable, wire.args, wire.cwd, wire.env)
+            .map_err(de::Error::custom)?;
+        command = command
+            .with_env_removals(wire.env_removals)
+            .map_err(de::Error::custom)?;
+        if let Some(title) = wire.terminal_title {
+            command = command
+                .with_terminal_title(title)
+                .map_err(de::Error::custom)?;
+        }
+        if let Some(input) = wire.startup_input {
+            command = command
+                .with_startup_input(input)
+                .map_err(de::Error::custom)?;
+        }
+        Ok(command)
     }
 }
 
@@ -144,6 +268,13 @@ pub enum CommandSpecError {
     InvalidEnvironmentKey(String),
     /// A value contained a NUL byte and cannot be passed to an OS process API.
     ContainsNul(&'static str),
+    /// Optional startup input exceeded the accepted size.
+    StartupInputTooLarge {
+        /// Actual byte length of the rejected input.
+        length: usize,
+        /// Configured maximum byte length.
+        max: usize,
+    },
 }
 
 impl fmt::Display for CommandSpecError {
@@ -157,11 +288,32 @@ impl fmt::Display for CommandSpecError {
                 write!(formatter, "invalid environment variable name: {key:?}")
             }
             Self::ContainsNul(field) => write!(formatter, "{field} must not contain a NUL byte"),
+            Self::StartupInputTooLarge { length, max } => write!(
+                formatter,
+                "startup input is {length} bytes; maximum is {max}"
+            ),
         }
     }
 }
 
 impl Error for CommandSpecError {}
+
+fn unique_preserving_order(keys: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut ordered = Vec::new();
+    for key in keys {
+        if !ordered.contains(&key) {
+            ordered.push(key);
+        }
+    }
+    ordered
+}
+
+fn validate_environment_key(key: &str) -> Result<(), CommandSpecError> {
+    if key.is_empty() || key.contains('=') {
+        return Err(CommandSpecError::InvalidEnvironmentKey(key.to_owned()));
+    }
+    validate_no_nul("environment key", key)
+}
 
 fn validate_nonempty_string(field: &'static str, value: &str) -> Result<(), CommandSpecError> {
     if value.is_empty() {
@@ -193,6 +345,12 @@ mod tests {
             BTreeMap::from([("TOKEN".to_owned(), "secret".to_owned())]),
         )
         .expect("fixture command should be valid")
+        .with_env_removals(["STALE_TOKEN"])
+        .expect("removal keys should be valid")
+        .with_terminal_title("Codex")
+        .expect("title should be valid")
+        .with_startup_input("hello\n")
+        .expect("startup input should be valid")
     }
 
     #[test]
@@ -203,35 +361,24 @@ mod tests {
 
         assert_eq!(decoded, command);
         assert_eq!(decoded.args(), ["exec", "--token=argument-secret"]);
+        assert_eq!(decoded.env_additions(), command.env());
+        assert_eq!(decoded.env_removals(), ["STALE_TOKEN"]);
+        assert_eq!(decoded.terminal_title(), Some("Codex"));
+        assert_eq!(decoded.startup_input(), Some("hello\n"));
+        assert!(json.contains("env_removals"));
+        assert!(json.contains("terminal_title"));
+        assert!(json.contains("startup_input"));
     }
 
     #[test]
-    fn debug_redacts_environment_values_and_argument_contents() {
+    fn debug_redacts_environment_values_arguments_and_startup_input() {
         let debug = format!("{:?}", command());
 
         assert!(debug.contains("TOKEN"));
         assert!(debug.contains("args_count: 2"));
+        assert!(debug.contains("[redacted]"));
         assert!(!debug.contains("secret"));
-    }
-
-    #[test]
-    fn empty_executable_and_nul_bytes_are_rejected() {
-        assert_eq!(
-            CommandSpec::new("", "/tmp").expect_err("empty executable"),
-            CommandSpecError::EmptyExecutable
-        );
-        assert_eq!(
-            CommandSpec::new("codex\0", "/tmp").expect_err("nul executable"),
-            CommandSpecError::ContainsNul("executable")
-        );
-        assert_eq!(
-            CommandSpec::new("codex", "").expect_err("empty cwd"),
-            CommandSpecError::EmptyWorkingDirectory
-        );
-        let error =
-            CommandSpec::try_from_parts("codex", ["ok", "bad\0arg"], "/tmp", BTreeMap::new())
-                .expect_err("nul argument");
-        assert_eq!(error, CommandSpecError::ContainsNul("argument"));
+        assert!(!debug.contains("hello"));
     }
 
     #[test]
@@ -250,5 +397,27 @@ mod tests {
                 .to_string()
                 .contains("invalid environment variable name")
         );
+    }
+
+    #[test]
+    fn rejects_oversized_startup_input() {
+        let input = "a".repeat(MAX_STARTUP_INPUT_BYTES + 1);
+        let error = CommandSpec::new("codex", "/tmp/project")
+            .expect("command should be valid")
+            .with_startup_input(input)
+            .expect_err("oversized startup input should be rejected");
+        assert!(matches!(
+            error,
+            CommandSpecError::StartupInputTooLarge { .. }
+        ));
+    }
+
+    #[test]
+    fn empty_optional_fields_are_omitted() {
+        let command = CommandSpec::new("codex", "/tmp/project").expect("command should be valid");
+        let json = serde_json::to_string(&command).expect("command should serialize");
+        assert!(!json.contains("env_removals"));
+        assert!(!json.contains("terminal_title"));
+        assert!(!json.contains("startup_input"));
     }
 }

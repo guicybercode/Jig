@@ -1,149 +1,119 @@
-use std::error::Error;
-use std::fmt::{self, Display, Formatter};
-use std::path::PathBuf;
-use std::process::ExitStatus;
+use std::{error::Error, fmt, io, path::PathBuf};
 
-/// Failure while locating Git or performing a repository operation.
-#[derive(Debug)]
-pub enum GitError {
-    /// No executable `git` was found in the supplied search path.
-    GitNotFound,
-    /// The Git executable could not be started.
-    Spawn(std::io::Error),
-    /// Git ran and returned a non-zero status.
-    CommandFailed {
-        /// Subcommand name for diagnostics.
-        operation: String,
-        /// Process status.
-        status: ExitStatus,
-        /// Sanitized stderr, truncated and without secrets.
-        stderr: String,
-    },
-    /// The selected path is not inside a Git work tree.
-    NotARepository(PathBuf),
-    /// Output was not valid UTF-8.
-    InvalidUtf8(&'static str),
-    /// A worktree path escaped the managed root after normalization.
-    PathOutsideManagedRoot {
-        /// Requested worktree path.
-        path: PathBuf,
-        /// Configured managed root.
-        root: PathBuf,
-    },
-    /// Removal was refused because the worktree has uncommitted or untracked files.
-    DirtyWorktree {
-        /// Worktree path that is dirty.
-        path: PathBuf,
-    },
-    /// The confirmation token no longer matches the observed Git state.
-    StaleRemovalToken,
-    /// The path is the repository's primary worktree and cannot be removed.
-    PrimaryWorktree(PathBuf),
-    /// The path is not registered as a worktree of the repository.
-    UnknownWorktree(PathBuf),
+/// Stable category for a Git integration failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitErrorKind {
+    /// Git could not be located or a required path does not exist.
+    NotFound,
+    /// Caller input or a filesystem path failed validation.
+    InvalidInput,
+    /// The directory is not a Git repository.
+    NotRepository,
+    /// Git exited unsuccessfully.
+    CommandFailed,
+    /// Git exceeded the configured execution deadline.
+    Timeout,
+    /// Git returned output that could not be interpreted safely.
+    InvalidOutput,
+    /// Filesystem or process I/O failed.
+    Io,
+    /// Removal was refused because the worktree contains changes.
+    DirtyWorktree,
+    /// Removal was refused because the worktree is running or in use.
+    WorktreeInUse,
+    /// A path escaped its configured managed worktree root.
+    UnsafePath,
+    /// Git created a worktree, but cleanup after a failed confirmation could not be proven.
+    PartialWorktree,
 }
 
-impl Display for GitError {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::GitNotFound => formatter.write_str("git executable was not found in PATH"),
-            Self::Spawn(error) => write!(formatter, "failed to start git: {error}"),
-            Self::CommandFailed {
-                operation,
-                status,
-                stderr,
-            } => write!(
-                formatter,
-                "git {operation} failed with status {status}: {stderr}"
-            ),
-            Self::NotARepository(path) => {
-                write!(
-                    formatter,
-                    "path is not a Git repository: {}",
-                    path.display()
-                )
-            }
-            Self::InvalidUtf8(operation) => {
-                write!(formatter, "git {operation} produced non-UTF-8 output")
-            }
-            Self::PathOutsideManagedRoot { path, root } => write!(
-                formatter,
-                "worktree path {} is outside managed root {}",
-                path.display(),
-                root.display()
-            ),
-            Self::DirtyWorktree { path } => write!(
-                formatter,
-                "worktree {} has uncommitted or untracked changes",
-                path.display()
-            ),
-            Self::StaleRemovalToken => {
-                formatter.write_str("worktree state changed since prepare_remove")
-            }
-            Self::PrimaryWorktree(path) => write!(
-                formatter,
-                "refusing to remove the primary worktree {}",
-                path.display()
-            ),
-            Self::UnknownWorktree(path) => {
-                write!(
-                    formatter,
-                    "path is not a managed worktree: {}",
-                    path.display()
-                )
-            }
+/// An actionable failure from the Git integration.
+#[derive(Debug)]
+pub struct GitError {
+    kind: GitErrorKind,
+    message: String,
+    action: String,
+    path: Option<PathBuf>,
+    exit_status: Option<i32>,
+    source: Option<io::Error>,
+}
+
+impl GitError {
+    pub(crate) fn new(
+        kind: GitErrorKind,
+        message: impl Into<String>,
+        action: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            action: action.into(),
+            path: None,
+            exit_status: None,
+            source: None,
         }
+    }
+
+    pub(crate) fn io(operation: &'static str, error: io::Error) -> Self {
+        Self {
+            kind: GitErrorKind::Io,
+            message: format!("Could not {operation}: {error}"),
+            action: "Check filesystem permissions and try again".to_owned(),
+            path: None,
+            exit_status: None,
+            source: Some(error),
+        }
+    }
+
+    pub(crate) fn with_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
+    pub(crate) const fn with_exit_status(mut self, status: Option<i32>) -> Self {
+        self.exit_status = status;
+        self
+    }
+
+    /// Returns the stable error category.
+    #[must_use]
+    pub const fn kind(&self) -> GitErrorKind {
+        self.kind
+    }
+
+    /// Returns the concise user-facing failure description.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Returns a suggested recovery action.
+    #[must_use]
+    pub fn action(&self) -> &str {
+        &self.action
+    }
+
+    /// Returns the relevant local path, when one is safe and useful to expose.
+    #[must_use]
+    pub fn path(&self) -> Option<&std::path::Path> {
+        self.path.as_deref()
+    }
+
+    /// Returns the Git exit status, when the process exited normally.
+    #[must_use]
+    pub const fn exit_status(&self) -> Option<i32> {
+        self.exit_status
+    }
+}
+
+impl fmt::Display for GitError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}. Action: {}", self.message, self.action)
     }
 }
 
 impl Error for GitError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Spawn(error) => Some(error),
-            _ => None,
-        }
-    }
-}
-
-pub(crate) fn truncate_stderr(stderr: &[u8]) -> String {
-    const LIMIT: usize = 2_048;
-    let mut text = String::from_utf8_lossy(stderr).into_owned();
-    if truncate_utf8(&mut text, LIMIT) {
-        text.push('…');
-    }
-    text
-}
-
-pub(crate) fn truncate_utf8(text: &mut String, limit: usize) -> bool {
-    if text.len() <= limit {
-        return false;
-    }
-
-    let mut boundary = limit;
-    while !text.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
-    text.truncate(boundary);
-    true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::truncate_stderr;
-
-    #[test]
-    fn stderr_truncation_preserves_a_utf8_boundary() {
-        let stderr = format!("{}é followed by diagnostics", "x".repeat(2_047));
-        let truncated = truncate_stderr(stderr.as_bytes());
-
-        assert!(truncated.ends_with('…'));
-        assert!(!truncated.contains('é'));
-        assert_eq!(
-            truncated
-                .chars()
-                .filter(|character| *character == 'x')
-                .count(),
-            2_047
-        );
+        self.source.as_ref().map(|error| error as _)
     }
 }

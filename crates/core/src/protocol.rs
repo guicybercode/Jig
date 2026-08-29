@@ -19,7 +19,7 @@ pub enum EnvelopeKind {
 
 /// Versioned request sent by a client to the local daemon.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RequestEnvelope<T> {
     /// Stable envelope discriminator. Constructors always set this to `request`.
     pub kind: EnvelopeKind,
@@ -260,5 +260,16 @@ mod tests {
         };
 
         assert!(!request.is_supported());
+    }
+
+    #[test]
+    fn request_envelope_rejects_unknown_top_level_fields() {
+        let request = RequestEnvelope::v1("system.hello", json!({}));
+        let mut value = serde_json::to_value(request).expect("request should serialize");
+        assert!(
+            serde_json::from_value::<RequestEnvelope<serde_json::Value>>(value.clone()).is_ok()
+        );
+        value["unexpected"] = json!(true);
+        assert!(serde_json::from_value::<RequestEnvelope<serde_json::Value>>(value).is_err());
     }
 }

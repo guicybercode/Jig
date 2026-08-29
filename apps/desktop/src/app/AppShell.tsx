@@ -1,58 +1,86 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-import type { IpcClient } from "../ipc/client";
 import { AppHeader } from "./components/AppHeader";
-import { CommandPalette } from "./features/commands/CommandPalette";
-import { ConfirmDialog } from "./features/confirm/ConfirmDialog";
-import { ErrorBanner } from "./features/errors/ErrorBanner";
-import { ProjectSidebar } from "./features/navigation/ProjectSidebar";
-import { CreateSessionDialog } from "./features/sessions/CreateSessionDialog";
-import { LocalStatusBar } from "./features/status/LocalStatusBar";
-import { TerminalGrid } from "./features/terminal/TerminalGrid";
-import { WorkspaceEmptyState } from "./features/workspace/WorkspaceEmptyState";
 import {
-  disconnectedWorkspace,
-  type WorkspaceCommandId,
-  type WorkspaceModel,
-} from "./workspace/model";
+  CommandPalette,
+  type CommandPaletteCommand,
+} from "./features/commands/CommandPalette";
+import { ProjectSidebar } from "./features/navigation/ProjectSidebar";
+import { LocalStatusBar } from "./features/status/LocalStatusBar";
+import { CustomAgentDialog } from "./features/workspace/CustomAgentDialog";
+import { NewSessionDialog } from "./features/workspace/NewSessionDialog";
+import { WorkspaceEmptyState } from "./features/workspace/WorkspaceEmptyState";
+import { WorkspaceMain } from "./features/workspace/WorkspaceMain";
+import {
+  WorkspaceProvider,
+  useDaemonReady,
+  useNotifications,
+  useSelectedProject,
+  useWorkspaceActions,
+} from "./workspace";
+import type { IpcClient } from "../ipc";
 
 interface AppShellProps {
-  initial?: WorkspaceModel;
-  ipc?: IpcClient;
+  readonly client?: IpcClient;
 }
 
 /** Composes the persistent desktop application regions. */
-export function AppShell({
-  initial = disconnectedWorkspace,
-  ipc,
-}: AppShellProps) {
-  const [workspace, setWorkspace] = useState(initial);
-  const [paletteOpen, setPaletteOpen] = useState(false);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [confirmRemove, setConfirmRemove] = useState(false);
-  const [projectAdded, setProjectAdded] = useState(false);
-
-  const selectedProject =
-    workspace.projects.find(
-      (project) => project.id === workspace.selectedProjectId,
-    ) ?? null;
-  const newSessionDisabledReason = getNewSessionDisabledReason(
-    workspace.daemonConnected,
-    selectedProject !== null,
+export function AppShell({ client }: AppShellProps) {
+  return (
+    <WorkspaceProvider client={client}>
+      <AppShellLayout />
+    </WorkspaceProvider>
   );
-  const canCreateSession = newSessionDisabledReason === null;
+}
 
-  function runCommand(commandId: WorkspaceCommandId) {
-    if (commandId === "project.add" && workspace.daemonConnected) {
-      setProjectAdded(true);
+function AppShellLayout() {
+  const project = useSelectedProject();
+  const daemonReady = useDaemonReady();
+  const notifications = useNotifications();
+  const actions = useWorkspaceActions();
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+
+  useEffect(() => {
+    function handleShortcut(event: KeyboardEvent) {
+      if (!isCommandPaletteShortcut(event)) {
+        return;
+      }
+      event.preventDefault();
+      setCommandPaletteOpen(true);
     }
-    if (commandId === "session.create" && canCreateSession) {
-      setCreateOpen(true);
-    }
-    if (commandId === "worktree.remove") {
-      setConfirmRemove(true);
-    }
-  }
+
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  }, []);
+
+  const commandPaletteCommands: readonly CommandPaletteCommand[] = [
+    {
+      id: "session.create",
+      label: "New Session",
+      disabled: !daemonReady || project === null,
+      disabledReason: "Connect the daemon and select a project first.",
+      onSelect: () => actions.openDialog("newSession"),
+    },
+    {
+      id: "agent.create",
+      label: "Add Custom Agent",
+      disabled: !daemonReady,
+      disabledReason: "Connect the local daemon first.",
+      onSelect: () => actions.openDialog("customAgent"),
+    },
+    {
+      id: "workspace.refresh",
+      label: "Refresh Workspace",
+      disabled: !daemonReady,
+      disabledReason: "Connect the local daemon first.",
+      onSelect: () => void actions.refresh(),
+    },
+    {
+      id: "daemon.reconnect",
+      label: "Reconnect to Daemon",
+      onSelect: () => void actions.reconnect(),
+    },
+  ];
 
   return (
     <div className="app-shell">
@@ -60,104 +88,72 @@ export function AppShell({
         Skip to workspace
       </a>
       <AppHeader
-        newSessionDisabledReason={newSessionDisabledReason}
-        onNewSession={() => setCreateOpen(true)}
-        onOpenCommandPalette={() => setPaletteOpen(true)}
+        commandPaletteOpen={commandPaletteOpen}
+        onOpenCommandPalette={() => setCommandPaletteOpen(true)}
       />
-      <ErrorBanner error={workspace.error} />
-      {projectAdded ? (
-        <p
-          className="app-notice"
-          role="status"
-          aria-live="polite"
-          aria-atomic="true"
-        >
-          Project picker is available from the desktop bridge.
-        </p>
-      ) : null}
       <div className="app-shell__body">
-        <ProjectSidebar
-          daemonConnected={workspace.daemonConnected}
-          projects={workspace.projects}
-          sessions={workspace.sessions}
-          selectedProjectId={workspace.selectedProjectId}
-          onSelectProject={(projectId) =>
-            setWorkspace((current) => ({
-              ...current,
-              selectedProjectId: projectId,
-            }))
-          }
-          onAddProject={() => runCommand("project.add")}
-          onSelectSession={() => undefined}
-        />
-        {workspace.terminals.length > 0 ? (
-          <main id="workspace" className="workspace" tabIndex={-1}>
-            <header className="workspace__header">
-              <div>
-                <p className="workspace__eyebrow">Workspace</p>
-                <h1>{selectedProject?.name ?? "Sessions"}</h1>
-              </div>
-              <span className="workspace__mode">Local</span>
-            </header>
-            <TerminalGrid terminals={workspace.terminals} ipc={ipc} />
-          </main>
-        ) : (
-          <WorkspaceEmptyState selectedProject={selectedProject} />
-        )}
+        <ProjectSidebar />
+        {project ? <WorkspaceMain project={project} /> : <WorkspaceEmptyState />}
       </div>
-      <LocalStatusBar daemonConnected={workspace.daemonConnected} />
+      <LocalStatusBar />
+      {notifications.length > 0 ? (
+        <ul className="notification-list" aria-label="Workspace notifications">
+          {notifications.map((notification) => (
+            <li key={notification.id}>
+              <p
+                className={
+                  notification.kind === "error" ? "form-error" : "workspace__meta"
+                }
+                role={notification.kind === "error" ? "alert" : undefined}
+              >
+                {notification.message}
+              </p>
+              <button
+                type="button"
+                className="button button--secondary"
+                onClick={() => actions.dismissNotification(notification.id)}
+              >
+                Dismiss
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <NewSessionDialog />
+      <CustomAgentDialog />
       <CommandPalette
-        open={paletteOpen}
-        onClose={() => setPaletteOpen(false)}
-        onRun={runCommand}
-      />
-      <CreateSessionDialog
-        open={createOpen}
-        projectName={selectedProject?.name ?? "this project"}
-        onCancel={() => setCreateOpen(false)}
-        onCreate={async (input) => {
-          if (!ipc || !selectedProject) {
-            setCreateOpen(false);
-            return;
-          }
-
-          await ipc.createSession({
-            projectId: selectedProject.id,
-            name: input.name,
-            agentId: input.agentId,
-            isolateWorktree: input.isolateWorktree,
-          });
-          setCreateOpen(false);
-        }}
-      />
-      <ConfirmDialog
-        open={confirmRemove}
-        title="Remove worktree"
-        message="Remove the selected worktree from disk? CLI Master will refuse if it has uncommitted changes. This cannot be undone."
-        confirmLabel="Remove worktree"
-        onCancel={() => setConfirmRemove(false)}
-        onConfirm={() => setConfirmRemove(false)}
+        open={commandPaletteOpen}
+        commands={commandPaletteCommands}
+        onClose={() => setCommandPaletteOpen(false)}
       />
     </div>
   );
 }
 
-/** Explains the nearest action required before a session can be created. */
-function getNewSessionDisabledReason(
-  daemonConnected: boolean,
-  hasSelectedProject: boolean,
-): string | null {
-  if (!daemonConnected && !hasSelectedProject) {
-    return "Connect the local daemon and add a project first.";
+/** Preserves terminal and text-editing chords while exposing the global launcher. */
+function isCommandPaletteShortcut(event: KeyboardEvent): boolean {
+  if (
+    event.defaultPrevented ||
+    event.isComposing ||
+    event.altKey ||
+    event.shiftKey ||
+    event.key.toLocaleLowerCase() !== "k" ||
+    event.metaKey === event.ctrlKey
+  ) {
+    return false;
   }
 
-  if (!daemonConnected) {
-    return "Connect the local daemon first.";
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) {
+    return true;
   }
-
-  if (!hasSelectedProject) {
-    return "Add a project first.";
+  if (
+    target.isContentEditable ||
+    target.closest("input, textarea, select, [contenteditable]")
+  ) {
+    return false;
   }
-
-  return null;
+  return !(
+    event.ctrlKey && target.closest("[data-terminal-root='true'], .xterm")
+  );
 }

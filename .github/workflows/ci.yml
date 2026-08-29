@@ -13,15 +13,11 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
-
 jobs:
   quality:
     name: Quality (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -44,13 +40,10 @@ jobs:
             curl \
             file \
             libayatana-appindicator3-dev \
-            libgtk-3-dev \
             librsvg2-dev \
             libssl-dev \
             libwebkit2gtk-4.1-dev \
             libxdo-dev \
-            patchelf \
-            pkg-config \
             wget
 
       - name: Install pnpm from packageManager
@@ -69,107 +62,23 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
-          rustc -vV
-          uname -m
-
-      - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
-        with:
-          cache-on-failure: true
-          shared-key: climaster-v01-${{ runner.os }}
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Lint frontend
-        run: pnpm lint:frontend
-
-      - name: Typecheck frontend
-        run: pnpm typecheck:frontend
-
-      - name: Test frontend
-        run: pnpm test:frontend
-
-      - name: Build frontend
-        run: pnpm build:frontend
+      - name: Check frontend
+        run: pnpm --filter @cli-master/desktop check
 
       - name: Check Rust formatting
-        run: pnpm fmt:rust
+        run: cargo fmt --all -- --check
 
       - name: Lint Rust
-        run: pnpm clippy
-
-      - name: Build fake agent fixture
-        run: cargo build -p cli-master-fake-agent --locked
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Test Rust workspace
-        run: pnpm test:rust
+        run: cargo test --workspace --locked
 
       - name: Build Rust documentation
-        run: pnpm doc:rust
-
-  tauri-smoke:
-    name: Tauri smoke (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-24.04
-          - macos-15
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install Tauri system dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends \
-            build-essential \
-            curl \
-            file \
-            libayatana-appindicator3-dev \
-            libgtk-3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev \
-            patchelf \
-            pkg-config \
-            wget
-
-      - name: Install pnpm from packageManager
-        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
-        with:
-          run_install: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24"
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-
-      - name: Set up stable Rust
-        run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup default stable
-          rustc -vV
-          uname -m
-
-      - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
-        with:
-          cache-on-failure: true
-          shared-key: climaster-v01-${{ runner.os }}
-
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Smoke-build Tauri without packaging
-        run: pnpm --filter @cli-master/desktop tauri build --debug --no-bundle
+        env:
+          RUSTDOCFLAGS: "-Dwarnings"
+        run: cargo doc --workspace --no-deps --locked

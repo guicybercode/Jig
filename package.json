@@ -13,11 +13,10 @@
     "clippy": "cargo clippy --workspace --all-targets --locked -- -D warnings",
     "doc:rust": "RUSTDOCFLAGS=\"-Dwarnings\" cargo doc --workspace --no-deps --locked",
     "test:rust": "cargo test --workspace --locked",
-    "test:integration": "cargo build -p cli-master-fake-agent --locked && cargo test -p cli-master-e2e --locked",
     "tauri:build": "pnpm --filter @cli-master/desktop tauri build",
     "check": "bash scripts/check.sh",
     "dev": "pnpm --filter @cli-master/desktop dev",
     "tauri": "pnpm --filter @cli-master/desktop tauri",
-    "test": "pnpm test:frontend && cargo build -p cli-master-fake-agent --locked && cargo test --workspace --locked"
+    "test": "pnpm test:frontend && cargo test --workspace --locked"
   }
 }

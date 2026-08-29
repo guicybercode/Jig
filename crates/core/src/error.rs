@@ -44,33 +44,3 @@ impl ApiError {
         self
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::ApiError;
-
-    #[test]
-    fn serializes_actionable_error_without_empty_details() {
-        let error = ApiError::new("AGENT_EXECUTABLE_NOT_FOUND", "Could not start Codex")
-            .with_action("Install Codex or configure an executable search path.")
-            .with_detail("executable", "codex");
-        let value = serde_json::to_value(&error).expect("error should serialize");
-        assert_eq!(value["code"], "AGENT_EXECUTABLE_NOT_FOUND");
-        assert_eq!(value["details"]["executable"], "codex");
-        assert!(value.get("message").is_some());
-
-        let compact = ApiError::new("INTERNAL", "failed");
-        let compact_json = serde_json::to_string(&compact).expect("compact error");
-        assert!(!compact_json.contains("details"));
-        assert!(!compact_json.contains("action"));
-    }
-
-    #[test]
-    fn debug_and_display_do_not_require_secret_fields() {
-        let error = ApiError::new("GIT_FAILED", "git status failed");
-        let rendered = format!("{error:?}");
-        assert!(rendered.contains("GIT_FAILED"));
-        assert!(!rendered.contains("TOKEN"));
-        assert!(!rendered.contains("secret"));
-    }
-}

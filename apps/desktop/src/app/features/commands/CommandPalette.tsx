@@ -1,46 +1,51 @@
-import {
-  useId,
-  useRef,
-  useState,
-  type KeyboardEvent,
-} from "react";
+import { useId, useRef, useState, type KeyboardEvent } from "react";
 
-import { ModalDialog } from "../../components/ModalDialog";
-import {
-  workspaceCommands,
-  type WorkspaceCommandId,
-} from "../../workspace/model";
+import { Dialog } from "../../components/Dialog";
+
+/** Describes one action exposed by the command palette. */
+export interface CommandPaletteCommand {
+  readonly id: string;
+  readonly label: string;
+  readonly onSelect: () => void;
+  readonly disabled?: boolean;
+  readonly disabledReason?: string;
+}
 
 interface CommandPaletteProps {
   readonly open: boolean;
+  readonly commands: readonly CommandPaletteCommand[];
   readonly onClose: () => void;
-  readonly onRun: (commandId: WorkspaceCommandId) => void;
 }
 
-/** Keyboard-first command launcher shared by menus and shortcuts. */
-export function CommandPalette({ open, onClose, onRun }: CommandPaletteProps) {
+/** Keyboard-first launcher for actions backed by the current workspace controller. */
+export function CommandPalette({
+  open,
+  commands,
+  onClose,
+}: CommandPaletteProps) {
   const [query, setQuery] = useState("");
-  const searchRef = useRef<HTMLInputElement>(null);
+  const searchId = useId();
+  const resultsId = useId();
   const resultsRef = useRef<HTMLUListElement>(null);
-  const titleId = useId();
-  const summaryId = useId();
-  const normalizedQuery = query.trim().toLowerCase();
-  const commands = workspaceCommands.filter((command) =>
-    command.label.toLowerCase().includes(normalizedQuery),
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const matchingCommands = commands.filter((command) =>
+    command.label.toLocaleLowerCase().includes(normalizedQuery),
   );
-
-  if (!open) {
-    return null;
-  }
+  const availableCommandCount = matchingCommands.filter(
+    (command) => !command.disabled,
+  ).length;
 
   function close() {
     setQuery("");
     onClose();
   }
 
-  function run(commandId: WorkspaceCommandId) {
+  function run(command: CommandPaletteCommand) {
+    if (command.disabled) {
+      return;
+    }
     close();
-    onRun(commandId);
+    command.onSelect();
   }
 
   function focusResult(index: number) {
@@ -48,14 +53,19 @@ export function CommandPalette({ open, onClose, onRun }: CommandPaletteProps) {
   }
 
   function handleSearchKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    const buttons = getResultButtons(resultsRef.current);
+    if (buttons.length === 0) {
+      return;
+    }
     if (event.key === "ArrowDown") {
       event.preventDefault();
       focusResult(0);
+      return;
     }
 
     if (event.key === "ArrowUp") {
       event.preventDefault();
-      focusResult(commands.length - 1);
+      focusResult(buttons.length - 1);
     }
   }
 
@@ -82,71 +92,94 @@ export function CommandPalette({ open, onClose, onRun }: CommandPaletteProps) {
     buttons[nextIndex]?.focus();
   }
 
-  const resultSummary = `${commands.length} ${
-    commands.length === 1 ? "command" : "commands"
-  } available.`;
+  const resultSummary = `${matchingCommands.length} matching ${
+    matchingCommands.length === 1 ? "command" : "commands"
+  }; ${availableCommandCount} available.`;
 
   return (
-    <ModalDialog
-      labelledBy={titleId}
-      describedBy={summaryId}
-      initialFocusRef={searchRef}
-      onDismiss={close}
-    >
-      <h2 id={titleId}>Command palette</h2>
-      <label className="dialog__field">
-        Search commands
+    <Dialog title="Command palette" open={open} onClose={close}>
+      <div className="command-palette">
+        <label htmlFor={searchId}>Search commands</label>
         <input
-          ref={searchRef}
+          id={searchId}
           type="search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={handleSearchKeyDown}
-          aria-controls="command-palette-results"
+          aria-controls={resultsId}
+          autoComplete="off"
         />
-      </label>
-      <p
-        id={summaryId}
-        className="dialog__status"
-        role="status"
-        aria-live="polite"
-        aria-atomic="true"
-      >
-        {resultSummary}
-      </p>
-      <ul
-        ref={resultsRef}
-        id="command-palette-results"
-        className="dialog__results"
-        aria-label="Commands"
-        onKeyDown={handleResultsKeyDown}
-      >
-        {commands.map((command) => (
-          <li key={command.id}>
-            <button
-              type="button"
-              className="button button--secondary button--full"
-              onClick={() => run(command.id)}
-            >
-              {command.label}
-            </button>
-          </li>
-        ))}
-      </ul>
-      <button className="button button--secondary" type="button" onClick={close}>
-        Close
-      </button>
-    </ModalDialog>
+        <p
+          className="command-palette__summary"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          {resultSummary}
+        </p>
+        <ul
+          ref={resultsRef}
+          id={resultsId}
+          className="command-palette__results"
+          aria-label="Commands"
+          onKeyDown={handleResultsKeyDown}
+        >
+          {matchingCommands.length === 0 ? (
+            <li className="command-palette__empty">No matching commands.</li>
+          ) : (
+            matchingCommands.map((command, index) => {
+              const reasonId = `${resultsId}-reason-${index}`;
+              return (
+                <li key={command.id}>
+                  <button
+                    type="button"
+                    className="button button--secondary button--full"
+                    disabled={command.disabled}
+                    aria-describedby={
+                      command.disabled && command.disabledReason
+                        ? reasonId
+                        : undefined
+                    }
+                    onClick={() => run(command)}
+                  >
+                    {command.label}
+                  </button>
+                  {command.disabled && command.disabledReason ? (
+                    <span
+                      id={reasonId}
+                      className="command-palette__unavailable"
+                    >
+                      {command.disabledReason}
+                    </span>
+                  ) : null}
+                </li>
+              );
+            })
+          )}
+        </ul>
+        <div className="dialog__actions">
+          <button
+            className="button button--secondary"
+            type="button"
+            onClick={close}
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </Dialog>
   );
 }
 
-/** Returns command buttons in their visual and keyboard order. */
+/** Returns enabled command buttons in visual and keyboard order. */
 function getResultButtons(list: HTMLUListElement | null): HTMLButtonElement[] {
   if (!list) {
     return [];
   }
 
-  return Array.from(list.querySelectorAll<HTMLButtonElement>("button"));
+  return Array.from(
+    list.querySelectorAll<HTMLButtonElement>("button:not([disabled])"),
+  );
 }
 
 /** Resolves wraparound arrow-key navigation for command results. */

@@ -9,10 +9,9 @@ Read these files:
 
 1. [README.md](README.md) for setup and validation commands.
 2. [ARCHITECTURE.md](ARCHITECTURE.md) for accepted system boundaries.
-3. [design-system/cli-master/MASTER.md](design-system/cli-master/MASTER.md) for
+3. [AGENTS.md](AGENTS.md) for crate ownership and the IPC catalog.
+4. [design-system/cli-master/MASTER.md](design-system/cli-master/MASTER.md) for
    interface and accessibility rules.
-4. [docs/PACKAGING.md](docs/PACKAGING.md) and
-   [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) for ship criteria.
 
 Windows support and the future features listed as out of scope in the
 architecture are not accepted for Beta v0.1 unless the core acceptance flow is
@@ -29,11 +28,10 @@ already complete and stable.
 ```bash
 pnpm install --frozen-lockfile
 pnpm check
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
-
-`pnpm check` is the aggregator. It runs frontend lint, typecheck, tests, and
-build, then Rust format, clippy, the fake-agent build, workspace tests, and
-rustdoc with warnings denied. Individual commands are listed in the README.
 
 Use commit titles such as:
 
@@ -58,23 +56,18 @@ feature in one commit.
 - Do not add a dependency when the platform or standard library already solves
   the problem clearly.
 - Preserve Linux and macOS behavior in shared abstractions.
-- Do not depend on Codex, Claude, Gemini, or OpenCode being installed.
 
 ## Tests
 
 Tests must be headless, deterministic, and independent. Use temporary
 directories and databases for filesystem, Git, and SQLite integration tests.
-Use `cli-master-fake-agent` for interactive PTY lifecycle tests. Do not use
-timeouts so short that a loaded CI runner flakes.
+Use short-lived real child programs for PTY lifecycle tests.
 
 Frontend tests should query semantic roles and labels. Mock the project-owned
-IPC client rather than scattering Tauri mocks through components. Do not
-unit-test xterm.js internals. Unmounting a terminal pane must unsubscribe and
-must not stop the session.
+backend client rather than scattering Tauri mocks through components. Do not
+unit-test xterm.js internals.
 
 Bug fixes require a regression test that fails without the fix.
-
-Do not hide failures with `continue-on-error` in CI.
 
 ## User interface changes
 
@@ -98,12 +91,8 @@ partial completion. Never introduce automatic force deletion, `git reset
 When an operation spans SQLite and Git, represent intermediate states and make
 recovery visible. Do not claim atomic behavior that the system cannot provide.
 
-A test may remove a dirty worktree only after it has already proven that
-unconfirmed dirty removal is rejected.
-
 ## Documentation
 
 Write in clear, direct language. Update README setup commands when tooling
 changes and update ARCHITECTURE.md only when an accepted boundary or tradeoff
-changes. Keep examples safe to paste into a shell. Do not configure real
-signing secrets in the repository.
+changes. Keep examples safe to paste into a shell.

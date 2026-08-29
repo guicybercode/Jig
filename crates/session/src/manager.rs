@@ -1,523 +1,1029 @@
 use std::collections::HashMap;
-use std::io::{Read, Write};
-#[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::io::{self, Read, Write};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use cli_master_core::{CommandSpec, SessionId, SessionStatus};
-use nix::sys::signal::{Signal, kill};
-use nix::unistd::Pid;
-use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
+use cli_master_core::wire::MAX_PTY_OUTPUT_BYTES;
+use cli_master_core::{AgentId, CommandSpec, ProjectId, Session, SessionId, SessionStatus};
+use portable_pty::{ChildKiller, ExitStatus};
+use tokio::sync::{broadcast, mpsc};
 
-use crate::SessionError;
+use crate::buffer::ReplayBuffer;
+use crate::config::SessionManagerConfig;
+use crate::error::SessionError;
+use crate::event::{OutputChunk, SessionEvent, SessionSubscription, StatusReason};
+use crate::pty::{NativePtyBackend, PtyBackend, PtySize, SpawnedPty};
 
-#[cfg(test)]
-static SIGNAL_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
-
-/// PTY dimensions applied at spawn and resize.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TerminalSize {
-    /// Column count.
+/// Parameters for creating a managed session and spawning its process.
+pub struct CreateSession {
+    /// Project that owns the session metadata.
+    pub project_id: ProjectId,
+    /// Agent definition used to build the command.
+    pub agent_id: AgentId,
+    /// User-visible session name.
+    pub name: String,
+    /// Structured executable, arguments, cwd, and env overrides.
+    pub command: CommandSpec,
+    /// Initial PTY columns.
     pub cols: u16,
-    /// Row count.
+    /// Initial PTY rows.
     pub rows: u16,
 }
 
-impl Default for TerminalSize {
-    fn default() -> Self {
-        Self { cols: 80, rows: 24 }
-    }
+/// Runtime owner of live PTY sessions.
+///
+/// Cloning shares the same session table. Dropping the last clone best-effort
+/// kills remaining process groups so tests and daemon shutdown do not leak
+/// children.
+#[derive(Clone)]
+pub struct SessionManager {
+    inner: Arc<Inner>,
 }
 
-impl TerminalSize {
-    fn to_pty(self) -> PtySize {
-        PtySize {
-            rows: self.rows,
-            cols: self.cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        }
-    }
-}
-
-/// Tunables for replay buffering and cooperative stop.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SessionManagerConfig {
-    /// Maximum retained replay bytes per session.
-    pub max_buffer_bytes: usize,
-    /// How long `stop` waits after SIGTERM before SIGKILL.
-    pub stop_grace: Duration,
-}
-
-impl Default for SessionManagerConfig {
-    fn default() -> Self {
-        Self {
-            max_buffer_bytes: 8 * 1024 * 1024,
-            stop_grace: Duration::from_secs(2),
-        }
-    }
-}
-
-struct OutputBuffer {
-    bytes: Vec<u8>,
-    max_bytes: usize,
-}
-
-impl OutputBuffer {
-    fn new(max_bytes: usize) -> Self {
-        Self {
-            bytes: Vec::new(),
-            max_bytes,
-        }
-    }
-
-    fn push(&mut self, data: &[u8]) {
-        self.bytes.extend_from_slice(data);
-        if self.bytes.len() > self.max_bytes {
-            let overflow = self.bytes.len() - self.max_bytes;
-            self.bytes.drain(..overflow);
-        }
-    }
+struct Inner {
+    config: SessionManagerConfig,
+    backend: Arc<dyn PtyBackend>,
+    sessions: Mutex<HashMap<SessionId, Arc<LiveSession>>>,
+    events: broadcast::Sender<SessionEvent>,
 }
 
 struct LiveSession {
-    spec: CommandSpec,
-    size: TerminalSize,
-    child: Box<dyn portable_pty::Child + Send + Sync>,
-    writer: Box<dyn Write + Send>,
-    master: Box<dyn MasterPty + Send>,
-    buffer: Arc<Mutex<OutputBuffer>>,
-    pid: Option<u32>,
-    exit_code: Option<i32>,
-    state: SessionStatus,
+    id: SessionId,
+    config: SessionManagerConfig,
+    state: Mutex<LiveState>,
+    output: broadcast::Sender<OutputChunk>,
+    writer_tx: Mutex<Option<std::sync::mpsc::SyncSender<WriteOp>>>,
+    events: broadcast::Sender<SessionEvent>,
 }
 
-/// Owns live PTY sessions and their replay buffers.
-pub struct SessionManager {
-    config: SessionManagerConfig,
-    sessions: Mutex<HashMap<SessionId, LiveSession>>,
+struct LiveState {
+    record: Session,
+    command: CommandSpec,
+    buffer: ReplayBuffer,
+    master: Option<Box<dyn portable_pty::MasterPty + Send>>,
+    killer: Option<Box<dyn ChildKiller + Send + Sync>>,
+    pid: Option<u32>,
+    pgid: Option<i32>,
+    generation: u64,
+    last_activity: Instant,
+    cols: u16,
+    rows: u16,
+    stop_requested: bool,
+    kill_requested: bool,
+}
+
+enum WriteOp {
+    Bytes(Vec<u8>),
+    Shutdown,
 }
 
 impl SessionManager {
-    /// Creates a manager with default buffer and grace settings.
+    /// Creates a manager that uses the native PTY backend.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a Tokio runtime.
     #[must_use]
-    pub fn new() -> Self {
-        Self::with_config(SessionManagerConfig::default())
+    pub fn new(config: SessionManagerConfig) -> Self {
+        Self::with_backend(config, Arc::new(NativePtyBackend))
     }
 
-    /// Creates a manager with explicit tunables.
-    #[must_use]
-    pub fn with_config(config: SessionManagerConfig) -> Self {
-        Self {
+    fn with_backend(config: SessionManagerConfig, backend: Arc<dyn PtyBackend>) -> Self {
+        let idle_scan = config.idle_scan;
+        let (events, _) = broadcast::channel(config.event_capacity.max(1));
+        let inner = Arc::new(Inner {
             config,
+            backend,
             sessions: Mutex::new(HashMap::new()),
-        }
+            events,
+        });
+        spawn_idle_scanner(Arc::downgrade(&inner), idle_scan);
+        Self { inner }
     }
 
-    /// Spawns `spec` in a PTY and starts an output reader.
+    /// Subscribes to manager-wide lifecycle and output events.
+    #[must_use]
+    pub fn subscribe_events(&self) -> broadcast::Receiver<SessionEvent> {
+        self.inner.events.subscribe()
+    }
+
+    /// Creates a session, inserts it as `starting`, and spawns the process.
     ///
     /// # Errors
     ///
-    /// Returns an error when the working directory is invalid or the PTY layer
-    /// cannot spawn the process.
-    pub fn start(
-        &self,
-        session_id: SessionId,
-        spec: CommandSpec,
-        size: TerminalSize,
-    ) -> Result<(), SessionError> {
-        if !spec.cwd().is_dir() {
-            return Err(SessionError::InvalidWorkingDirectory(spec.cwd().clone()));
+    /// Returns an error when the request is invalid or spawn fails.
+    pub fn create(&self, request: CreateSession) -> Result<Session, SessionError> {
+        let size = PtySize::new(request.cols, request.rows)?;
+        let name = request.name.trim();
+        if name.is_empty() {
+            return Err(SessionError::InvalidName);
         }
 
-        let mut sessions = self.lock()?;
-        if sessions.contains_key(&session_id) {
-            return Err(SessionError::DuplicateSession(session_id));
-        }
-
-        let system = NativePtySystem::default();
-        let pair = system
-            .openpty(size.to_pty())
-            .map_err(|error| SessionError::Pty(error.to_string()))?;
-
-        let mut command = CommandBuilder::new(spec.executable());
-        for argument in spec.args() {
-            command.arg(argument);
-        }
-        command.cwd(spec.cwd());
-        for (key, value) in spec.env() {
-            command.env(key, value);
-        }
-
-        let mut child = pair
-            .slave
-            .spawn_command(command)
-            .map_err(|error| SessionError::Pty(error.to_string()))?;
-        drop(pair.slave);
-
-        let mut reader = match pair.master.try_clone_reader() {
-            Ok(reader) => reader,
-            Err(error) => {
-                let _ = child.kill();
-                return Err(SessionError::Pty(error.to_string()));
-            }
-        };
-        let writer = match pair.master.take_writer() {
-            Ok(writer) => writer,
-            Err(error) => {
-                let _ = child.kill();
-                return Err(SessionError::Pty(error.to_string()));
-            }
-        };
-        let buffer = Arc::new(Mutex::new(OutputBuffer::new(self.config.max_buffer_bytes)));
-        let reader_buffer = Arc::clone(&buffer);
-        if let Err(error) = thread::Builder::new()
-            .name(format!("pty-reader-{session_id}"))
-            .spawn(move || read_output(&mut *reader, &reader_buffer))
-        {
-            let _ = child.kill();
-            return Err(SessionError::Pty(error.to_string()));
-        }
-
-        let pid = child.process_id();
-        let live = LiveSession {
-            spec,
-            size,
-            child,
-            writer,
-            master: pair.master,
-            buffer,
-            pid,
+        let id = SessionId::new();
+        let now = unix_now_ms();
+        let record = Session {
+            id,
+            project_id: request.project_id,
+            name: name.to_owned(),
+            agent_id: request.agent_id,
+            cwd: request.command.cwd().clone(),
+            pid: None,
+            pty_id: None,
+            branch: None,
+            worktree_id: None,
+            worktree_path: None,
+            status: SessionStatus::Starting,
             exit_code: None,
-            state: SessionStatus::Running,
+            created_at_ms: now,
+            updated_at_ms: now,
+            last_activity_at_ms: None,
+            error_code: None,
         };
 
-        sessions.insert(session_id, live);
-        Ok(())
+        tracing::info!(
+            event = "session.created",
+            session_id = %id,
+            executable = request.command.executable(),
+            cols = size.cols,
+            rows = size.rows,
+            "created session"
+        );
+
+        let live = Arc::new(LiveSession {
+            id,
+            config: self.inner.config.clone(),
+            state: Mutex::new(LiveState {
+                record: record.clone(),
+                command: request.command,
+                buffer: ReplayBuffer::new(self.inner.config.replay_buffer_bytes),
+                master: None,
+                killer: None,
+                pid: None,
+                pgid: None,
+                generation: 0,
+                last_activity: Instant::now(),
+                cols: size.cols,
+                rows: size.rows,
+                stop_requested: false,
+                kill_requested: false,
+            }),
+            output: broadcast::channel(self.inner.config.subscriber_capacity.max(1)).0,
+            writer_tx: Mutex::new(None),
+            events: self.inner.events.clone(),
+        });
+
+        lock(&self.inner.sessions).insert(id, Arc::clone(&live));
+        let _ = self.inner.events.send(SessionEvent::Created(record));
+        self.spawn_into(&live)
     }
 
-    /// Writes bytes to the PTY master. Ctrl+C is the byte `0x03`.
+    /// Spawns a process for a session that is not live.
     ///
     /// # Errors
     ///
-    /// Returns an error when the session is unknown or the write fails.
-    pub fn write(&self, session_id: SessionId, bytes: &[u8]) -> Result<(), SessionError> {
-        let mut sessions = self.lock()?;
-        let live = sessions
-            .get_mut(&session_id)
-            .ok_or(SessionError::UnknownSession(session_id))?;
-        live.writer.write_all(bytes)?;
-        live.writer.flush()?;
-        Ok(())
-    }
-
-    /// Resizes the PTY.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the session is unknown or the PTY cannot resize.
-    pub fn resize(&self, session_id: SessionId, size: TerminalSize) -> Result<(), SessionError> {
-        let mut sessions = self.lock()?;
-        let live = sessions
-            .get_mut(&session_id)
-            .ok_or(SessionError::UnknownSession(session_id))?;
-        live.master
-            .resize(size.to_pty())
-            .map_err(|error| SessionError::Pty(error.to_string()))?;
-        live.size = size;
-        Ok(())
-    }
-
-    /// Returns a copy of the bounded replay buffer.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the session is unknown.
-    pub fn snapshot(&self, session_id: SessionId) -> Result<Vec<u8>, SessionError> {
-        let sessions = self.lock()?;
-        let live = sessions
-            .get(&session_id)
-            .ok_or(SessionError::UnknownSession(session_id))?;
-        let buffer = live
-            .buffer
-            .lock()
-            .map_err(|_| SessionError::Pty("output buffer lock poisoned".to_owned()))?;
-        Ok(buffer.bytes.clone())
-    }
-
-    /// Polls until `needle` appears in the replay buffer or `timeout` elapses.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SessionError::Timeout`] when the needle is not observed.
-    pub fn wait_for_output(
-        &self,
-        session_id: SessionId,
-        needle: &str,
-        timeout: Duration,
-    ) -> Result<Vec<u8>, SessionError> {
-        let started = Instant::now();
-        loop {
-            let snapshot = self.snapshot(session_id)?;
-            if String::from_utf8_lossy(&snapshot).contains(needle) {
-                return Ok(snapshot);
+    /// Returns [`SessionError::AlreadyRunning`] when the session is live, or a
+    /// spawn error.
+    pub fn start(&self, id: SessionId) -> Result<Session, SessionError> {
+        let live = self.lookup(id)?;
+        let event = {
+            let mut state = lock(&live.state);
+            if state.record.status.is_live() {
+                return Err(SessionError::AlreadyRunning(id));
             }
-            if started.elapsed() >= timeout {
-                return Err(SessionError::Timeout {
-                    session_id,
-                    observed: String::from_utf8_lossy(&snapshot).into_owned(),
-                });
-            }
-            thread::sleep(Duration::from_millis(25));
-        }
-    }
-
-    /// Returns the inferred lifecycle state, refreshing from the child status.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the session is unknown.
-    pub fn status(&self, session_id: SessionId) -> Result<SessionStatus, SessionError> {
-        let mut sessions = self.lock()?;
-        let live = sessions
-            .get_mut(&session_id)
-            .ok_or(SessionError::UnknownSession(session_id))?;
-        refresh_child(live);
-        Ok(live.state)
-    }
-
-    /// Returns the recorded exit code once the process has ended.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the session is unknown.
-    pub fn exit_code(&self, session_id: SessionId) -> Result<Option<i32>, SessionError> {
-        let mut sessions = self.lock()?;
-        let live = sessions
-            .get_mut(&session_id)
-            .ok_or(SessionError::UnknownSession(session_id))?;
-        refresh_child(live);
-        Ok(live.exit_code)
-    }
-
-    /// Sends interrupt, SIGTERM, then SIGKILL after the configured grace period.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the session is unknown.
-    pub fn stop(&self, session_id: SessionId) -> Result<Option<i32>, SessionError> {
-        self.terminate(session_id, self.config.stop_grace)
-    }
-
-    /// Sends SIGKILL immediately.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the session is unknown.
-    pub fn kill(&self, session_id: SessionId) -> Result<Option<i32>, SessionError> {
-        self.terminate(session_id, Duration::ZERO)
-    }
-
-    /// Stops the current process and starts a new PTY with the same command.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when stop or start fails.
-    pub fn restart(&self, session_id: SessionId) -> Result<(), SessionError> {
-        let (spec, size) = {
-            let sessions = self.lock()?;
-            let live = sessions
-                .get(&session_id)
-                .ok_or(SessionError::UnknownSession(session_id))?;
-            (live.spec.clone(), live.size)
+            state.generation += 1;
+            state.stop_requested = false;
+            state.kill_requested = false;
+            state.record.exit_code = None;
+            state.record.error_code = None;
+            state.transition(SessionStatus::Starting, StatusReason::RestartRequested)
         };
-        let _ = self.stop(session_id)?;
-        {
-            let mut sessions = self.lock()?;
-            sessions.remove(&session_id);
-        }
-        self.start(session_id, spec, size)
+        publish(&live, event);
+        self.spawn_into(&live)
     }
 
-    /// Drops session bookkeeping after the process has exited.
+    /// Returns a copy of the public session record.
+    #[must_use]
+    pub fn get(&self, id: SessionId) -> Option<Session> {
+        let live = lock(&self.inner.sessions).get(&id).cloned()?;
+        Some(lock(&live.state).record.clone())
+    }
+
+    /// Returns every known session, including exited ones still retained.
+    #[must_use]
+    pub fn list(&self) -> Vec<Session> {
+        lock(&self.inner.sessions)
+            .values()
+            .map(|live| lock(&live.state).record.clone())
+            .collect()
+    }
+
+    /// Counts sessions whose status implies a live process.
+    #[must_use]
+    pub fn live_count(&self) -> usize {
+        lock(&self.inner.sessions)
+            .values()
+            .filter(|live| lock(&live.state).record.status.is_live())
+            .count()
+    }
+
+    /// Subscribes to replay history plus live output without stopping the session.
     ///
     /// # Errors
     ///
-    /// Returns an error when the session is still running.
-    pub fn forget(&self, session_id: SessionId) -> Result<(), SessionError> {
-        let mut sessions = self.lock()?;
-        let live = sessions
-            .get_mut(&session_id)
-            .ok_or(SessionError::UnknownSession(session_id))?;
-        refresh_child(live);
-        if matches!(
-            live.state,
-            SessionStatus::Running | SessionStatus::Starting | SessionStatus::Idle
-        ) {
-            return Err(SessionError::Pty(
-                "cannot forget a live session; stop it first".to_owned(),
-            ));
+    /// Returns [`SessionError::NotFound`] when the session is unknown.
+    pub fn subscribe(&self, id: SessionId) -> Result<SessionSubscription, SessionError> {
+        let live = self.lookup(id)?;
+        let receiver = live.output.subscribe();
+        let (session, snapshot) = {
+            let state = lock(&live.state);
+            (state.record.clone(), state.buffer.snapshot())
+        };
+        Ok(SessionSubscription::new(session, snapshot, receiver))
+    }
+
+    /// Writes raw bytes to the PTY master. `0x03` is Ctrl+C and `0x04` is Ctrl+D.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session is not running or the writer queue
+    /// stays full past the write timeout.
+    pub fn write(&self, id: SessionId, bytes: &[u8]) -> Result<(), SessionError> {
+        if bytes.is_empty() {
+            return Ok(());
         }
-        sessions.remove(&session_id);
+        let live = self.lookup(id)?;
+        let sender = lock(&live.writer_tx)
+            .clone()
+            .ok_or(SessionError::NotRunning(id))?;
+        sender
+            .try_send(WriteOp::Bytes(bytes.to_vec()))
+            .map_err(|error| match error {
+                std::sync::mpsc::TrySendError::Full(_) => SessionError::WriteTimeout,
+                std::sync::mpsc::TrySendError::Disconnected(_) => SessionError::NotRunning(id),
+            })?;
+        let event = {
+            let mut state = lock(&live.state);
+            state.mark_activity();
+            if state.record.status == SessionStatus::Idle {
+                state.transition(SessionStatus::Running, StatusReason::Activity)
+            } else {
+                None
+            }
+        };
+        publish(&live, event);
         Ok(())
     }
 
-    fn terminate(
-        &self,
-        session_id: SessionId,
-        grace: Duration,
-    ) -> Result<Option<i32>, SessionError> {
-        {
-            let mut sessions = self.lock()?;
-            let live = sessions
-                .get_mut(&session_id)
-                .ok_or(SessionError::UnknownSession(session_id))?;
-            refresh_child(live);
-            if matches!(live.state, SessionStatus::Exited | SessionStatus::Failed) {
-                return Ok(live.exit_code);
+    /// Updates the PTY grid size. The size is stored even if the process has
+    /// already exited so a later restart can reuse it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the size is invalid, the session is missing, or
+    /// the kernel rejects the resize.
+    pub fn resize(&self, id: SessionId, cols: u16, rows: u16) -> Result<(), SessionError> {
+        let size = PtySize::new(cols, rows)?;
+        let live = self.lookup(id)?;
+        let mut state = lock(&live.state);
+        state.cols = size.cols;
+        state.rows = size.rows;
+        if let Some(master) = state.master.as_ref() {
+            master
+                .resize(portable_pty::PtySize {
+                    rows: size.rows,
+                    cols: size.cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(|error| SessionError::Pty(error.to_string()))?;
+        }
+        tracing::info!(
+            event = "session.resize",
+            session_id = %id,
+            cols = size.cols,
+            rows = size.rows,
+            "resized PTY"
+        );
+        Ok(())
+    }
+
+    /// Requests graceful shutdown, then escalates the signal if needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::NotFound`] when the session is unknown.
+    pub async fn stop(&self, id: SessionId) -> Result<Session, SessionError> {
+        self.request_stop(id, false).await
+    }
+
+    /// Sends SIGKILL to the session process group.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError::NotFound`] when the session is unknown.
+    pub async fn kill(&self, id: SessionId) -> Result<Session, SessionError> {
+        self.request_stop(id, true).await
+    }
+
+    /// Stops a live session if needed, then spawns it again with the same id.
+    ///
+    /// # Errors
+    ///
+    /// Returns spawn or stop errors.
+    pub async fn restart(&self, id: SessionId) -> Result<Session, SessionError> {
+        let live = self.lookup(id)?;
+        if lock(&live.state).record.status.is_live() {
+            self.stop(id).await?;
+        }
+        self.start(id)
+    }
+
+    /// Removes an exited session and its replay buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session is missing or still live.
+    pub fn delete(&self, id: SessionId) -> Result<Session, SessionError> {
+        let mut sessions = lock(&self.inner.sessions);
+        let live = sessions
+            .get(&id)
+            .cloned()
+            .ok_or(SessionError::NotFound(id))?;
+        if lock(&live.state).record.status.is_live() {
+            return Err(SessionError::StillRunning(id));
+        }
+        let record = lock(&live.state).record.clone();
+        sessions.remove(&id);
+        drop(sessions);
+        tracing::info!(event = "session.cleanup", session_id = %id, "removed session record");
+        let _ = self
+            .inner
+            .events
+            .send(SessionEvent::Deleted(record.clone()));
+        Ok(record)
+    }
+
+    /// Force-kills every live session. Used by daemon shutdown.
+    pub async fn shutdown(&self) {
+        let ids: Vec<SessionId> = lock(&self.inner.sessions).keys().copied().collect();
+        for id in ids {
+            let _ = self.kill(id).await;
+        }
+    }
+
+    fn spawn_into(&self, live: &Arc<LiveSession>) -> Result<Session, SessionError> {
+        let (command, size, generation) = {
+            let state = lock(&live.state);
+            (
+                state.command.clone(),
+                PtySize {
+                    cols: state.cols,
+                    rows: state.rows,
+                },
+                state.generation,
+            )
+        };
+
+        tracing::info!(
+            event = "session.spawn",
+            session_id = %live.id,
+            executable = command.executable(),
+            cols = size.cols,
+            rows = size.rows,
+            generation,
+            "spawning process"
+        );
+
+        let spawned = match self.inner.backend.spawn(&command, size) {
+            Ok(spawned) => spawned,
+            Err(error) => {
+                fail_session(live, generation, StatusReason::SpawnFailed);
+                return Err(error);
             }
-            let _ = live.writer.write_all(&[0x03]);
-            let _ = live.writer.flush();
-            if let Some(pid) = live.pid {
-                send_signal(pid, Signal::SIGTERM);
-            }
+        };
+
+        tracing::info!(
+            event = "session.spawned",
+            session_id = %live.id,
+            pid = spawned.pid,
+            pgid = spawned.pgid,
+            generation,
+            "process spawned"
+        );
+
+        if let Err(error) = start_io(live, spawned, generation) {
+            live.force_cleanup();
+            fail_session(live, generation, StatusReason::SpawnFailed);
+            return Err(error);
         }
 
-        let deadline = Instant::now() + grace;
-        while Instant::now() < deadline {
-            if matches!(
-                self.status(session_id)?,
-                SessionStatus::Exited | SessionStatus::Failed
-            ) {
-                return self.exit_code(session_id);
-            }
-            thread::sleep(Duration::from_millis(25));
+        let mismatch = {
+            let state = lock(&live.state);
+            state.generation != generation
+        };
+        if mismatch {
+            live.force_cleanup();
+            return Err(SessionError::AlreadyRunning(live.id));
         }
 
+        let (record, event) = {
+            let mut state = lock(&live.state);
+            state.record.pid = state.pid;
+            state.record.pty_id = Some(format!("{}:{generation}", live.id));
+            let event = if state.kill_requested || state.stop_requested {
+                None
+            } else {
+                state.transition(SessionStatus::Running, StatusReason::Spawned)
+            };
+            (state.record.clone(), event)
+        };
+        publish(live, event);
+        Ok(record)
+    }
+
+    async fn request_stop(&self, id: SessionId, force: bool) -> Result<Session, SessionError> {
+        let live = self.lookup(id)?;
         {
-            let mut sessions = self.lock()?;
-            if let Some(live) = sessions.get_mut(&session_id) {
-                if let Some(pid) = live.pid {
-                    send_signal(pid, Signal::SIGKILL);
+            let mut state = lock(&live.state);
+            if !state.record.status.is_live() {
+                return Ok(state.record.clone());
+            }
+            state.stop_requested = true;
+            state.kill_requested = force || state.kill_requested;
+        }
+
+        tracing::info!(
+            event = "session.stop",
+            session_id = %id,
+            force,
+            "stop requested"
+        );
+
+        let pgid = wait_for_pgid(&live, self.inner.config.interrupt_timeout).await;
+        let mut killer = lock(&live.state)
+            .killer
+            .as_mut()
+            .map(|killer| killer.clone_killer());
+
+        if force {
+            if let Some(pgid) = pgid {
+                crate::unix::signal_group(pgid, crate::unix::kill_signal())?;
+            }
+            if let Some(killer) = killer.as_mut() {
+                let _ = killer.kill();
+            }
+            if !wait_until_stopped(&live, self.inner.config.kill_timeout).await {
+                return Err(SessionError::StopTimeout(id));
+            }
+        } else {
+            if let Some(pgid) = pgid {
+                crate::unix::signal_group(pgid, crate::unix::interrupt_signal())?;
+            }
+            if !wait_until_stopped(&live, self.inner.config.interrupt_timeout).await {
+                if let Some(pgid) = pgid {
+                    crate::unix::signal_group(pgid, crate::unix::terminate_signal())?;
                 }
-                let _ = live.child.kill();
+            }
+            if !wait_until_stopped(&live, self.inner.config.terminate_timeout).await {
+                if let Some(pgid) = pgid {
+                    crate::unix::signal_group(pgid, crate::unix::kill_signal())?;
+                }
+                if let Some(killer) = killer.as_mut() {
+                    let _ = killer.kill();
+                }
+                if !wait_until_stopped(&live, self.inner.config.kill_timeout).await {
+                    return Err(SessionError::StopTimeout(id));
+                }
             }
         }
 
-        let wait_deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < wait_deadline {
-            if matches!(
-                self.status(session_id)?,
-                SessionStatus::Exited | SessionStatus::Failed
-            ) {
-                return self.exit_code(session_id);
-            }
-            thread::sleep(Duration::from_millis(25));
+        self.get(id).ok_or(SessionError::NotFound(id))
+    }
+
+    fn lookup(&self, id: SessionId) -> Result<Arc<LiveSession>, SessionError> {
+        lock(&self.inner.sessions)
+            .get(&id)
+            .cloned()
+            .ok_or(SessionError::NotFound(id))
+    }
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        let sessions = std::mem::take(&mut *lock(&self.sessions));
+        for live in sessions.into_values() {
+            live.force_cleanup();
         }
-        self.exit_code(session_id)
-    }
-
-    fn lock(
-        &self,
-    ) -> Result<std::sync::MutexGuard<'_, HashMap<SessionId, LiveSession>>, SessionError> {
-        self.sessions
-            .lock()
-            .map_err(|_| SessionError::Pty("session map lock poisoned".to_owned()))
     }
 }
 
-impl Default for SessionManager {
-    fn default() -> Self {
-        Self::new()
+impl LiveSession {
+    fn force_cleanup(&self) {
+        let (pgid, mut killer, master) = {
+            let mut state = lock(&self.state);
+            let pgid = state.pgid;
+            let killer = state.killer.take();
+            let master = state.master.take();
+            (pgid, killer, master)
+        };
+        if let Some(pgid) = pgid {
+            let _ = crate::unix::signal_group(pgid, crate::unix::kill_signal());
+        }
+        if let Some(killer) = killer.as_mut() {
+            let _ = killer.kill();
+        }
+        if let Some(sender) = lock(&self.writer_tx).take() {
+            let _ = sender.send(WriteOp::Shutdown);
+        }
+        drop(master);
     }
 }
 
-fn read_output(reader: &mut dyn Read, buffer: &Arc<Mutex<OutputBuffer>>) {
-    let mut chunk = [0_u8; 4096];
+impl LiveState {
+    fn mark_activity(&mut self) {
+        self.last_activity = Instant::now();
+        self.record.last_activity_at_ms = Some(unix_now_ms());
+    }
+
+    fn transition(&mut self, next: SessionStatus, reason: StatusReason) -> Option<SessionEvent> {
+        let previous = self.record.status;
+        if previous == next {
+            return None;
+        }
+        let at_ms = unix_now_ms();
+        self.record.status = next;
+        self.record.updated_at_ms = at_ms;
+        Some(SessionEvent::StatusChanged {
+            session_id: self.record.id,
+            previous,
+            current: next,
+            reason,
+            at_ms,
+        })
+    }
+}
+
+fn start_io(
+    live: &Arc<LiveSession>,
+    spawned: SpawnedPty,
+    generation: u64,
+) -> Result<(), SessionError> {
+    let SpawnedPty {
+        pid,
+        pgid,
+        mut child,
+        master,
+        reader,
+        writer,
+    } = spawned;
+
+    {
+        let mut state = lock(&live.state);
+        state.pid = pid;
+        state.pgid = pgid;
+        state.master = Some(master);
+        state.killer = Some(child.clone_killer());
+        state.record.pid = pid;
+    }
+
+    let short_id = short_id(live.id);
+    let writer_queue = live.config.writer_queue.max(1);
+    let (writer_tx, writer_rx) = std::sync::mpsc::sync_channel(writer_queue);
+    *lock(&live.writer_tx) = Some(writer_tx);
+
+    std::thread::Builder::new()
+        .name(format!("pty-w-{short_id}"))
+        .spawn(move || writer_loop(&writer_rx, writer))
+        .map_err(|error| SessionError::io(&error))?;
+
+    let reader_queue = live.config.reader_queue.max(1);
+    let (byte_tx, byte_rx) = mpsc::channel(reader_queue);
+    tracing::info!(
+        event = "session.reader_start",
+        session_id = %live.id,
+        pid,
+        "PTY reader started"
+    );
+    let session_id = live.id;
+    std::thread::Builder::new()
+        .name(format!("pty-r-{short_id}"))
+        .spawn(move || {
+            reader_loop(reader, &byte_tx);
+            tracing::info!(
+                event = "session.reader_end",
+                session_id = %session_id,
+                "PTY reader ended"
+            );
+        })
+        .map_err(|error| SessionError::io(&error))?;
+
+    let live_batch = Arc::clone(live);
+    tokio::spawn(async move {
+        batch_loop(live_batch, byte_rx, generation).await;
+    });
+
+    let live_wait = Arc::clone(live);
+    tokio::spawn(async move {
+        let wait_result = tokio::task::spawn_blocking(move || child.wait()).await;
+        on_child_exit(&live_wait, generation, wait_result);
+    });
+
+    Ok(())
+}
+
+fn reader_loop(mut reader: Box<dyn Read + Send>, tx: &mpsc::Sender<Vec<u8>>) {
+    let mut buf = vec![0_u8; 8192];
     loop {
-        match reader.read(&mut chunk) {
+        match reader.read(&mut buf) {
             Ok(0) => break,
-            Ok(count) => {
-                if let Ok(mut buffer) = buffer.lock() {
-                    buffer.push(&chunk[..count]);
+            Ok(n) => {
+                if tx.blocking_send(buf[..n].to_vec()).is_err() {
+                    break;
                 }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(_) => break,
         }
     }
 }
 
-fn refresh_child(live: &mut LiveSession) {
-    if !matches!(
-        live.state,
-        SessionStatus::Running | SessionStatus::Starting | SessionStatus::Idle
-    ) {
-        return;
-    }
-    if let Ok(Some(status)) = live.child.try_wait() {
-        let code = i32::try_from(status.exit_code()).unwrap_or(1);
-        live.exit_code = Some(code);
-        live.state = if status.success() {
-            SessionStatus::Exited
-        } else {
-            SessionStatus::Failed
-        };
+fn writer_loop(rx: &std::sync::mpsc::Receiver<WriteOp>, mut writer: Box<dyn Write + Send>) {
+    while let Ok(op) = rx.recv() {
+        match op {
+            WriteOp::Bytes(bytes) => {
+                if writer.write_all(&bytes).is_err() {
+                    break;
+                }
+                let _ = writer.flush();
+            }
+            WriteOp::Shutdown => break,
+        }
     }
 }
 
-fn send_signal(pid: u32, signal: Signal) {
-    #[cfg(test)]
-    SIGNAL_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
-    if let Ok(raw) = i32::try_from(pid) {
-        let _ = kill(Pid::from_raw(raw), signal);
+async fn batch_loop(live: Arc<LiveSession>, mut rx: mpsc::Receiver<Vec<u8>>, generation: u64) {
+    let window = live.config.output_batch_window;
+    let max_bytes = live
+        .config
+        .output_batch_bytes
+        .clamp(1, MAX_PTY_OUTPUT_BYTES);
+    let mut pending = Vec::new();
+
+    loop {
+        if pending.is_empty() {
+            match rx.recv().await {
+                Some(bytes) => {
+                    queue_output(&live, generation, &mut pending, bytes, max_bytes);
+                }
+                None => break,
+            }
+            continue;
+        }
+
+        tokio::select! {
+            sample = rx.recv() => {
+                if let Some(bytes) = sample {
+                    queue_output(&live, generation, &mut pending, bytes, max_bytes);
+                } else {
+                    flush_output(&live, generation, std::mem::take(&mut pending));
+                    break;
+                }
+            }
+            () = tokio::time::sleep(window) => {
+                flush_output(&live, generation, std::mem::take(&mut pending));
+            }
+        }
     }
+}
+
+fn queue_output(
+    live: &LiveSession,
+    generation: u64,
+    pending: &mut Vec<u8>,
+    bytes: Vec<u8>,
+    max_bytes: usize,
+) {
+    pending.extend(bytes);
+    while pending.len() >= max_bytes {
+        let remainder = pending.split_off(max_bytes);
+        let chunk = std::mem::replace(pending, remainder);
+        flush_output(live, generation, chunk);
+    }
+}
+
+fn flush_output(live: &LiveSession, generation: u64, bytes: Vec<u8>) {
+    if bytes.is_empty() {
+        return;
+    }
+
+    let (chunk, event) = {
+        let mut state = lock(&live.state);
+        if state.generation != generation {
+            return;
+        }
+        let sequence = state.buffer.push(bytes.clone());
+        state.mark_activity();
+        let event = if state.record.status == SessionStatus::Idle {
+            state.transition(SessionStatus::Running, StatusReason::Activity)
+        } else {
+            None
+        };
+        (
+            OutputChunk {
+                sequence,
+                data: bytes,
+            },
+            event,
+        )
+    };
+
+    let _ = live.output.send(chunk.clone());
+    let _ = live.events.send(SessionEvent::Output {
+        session_id: live.id,
+        chunk,
+    });
+    publish(live, event);
+}
+
+fn on_child_exit(
+    live: &LiveSession,
+    generation: u64,
+    wait_result: Result<Result<ExitStatus, std::io::Error>, tokio::task::JoinError>,
+) {
+    let (exit_code, wait_failed) = match wait_result {
+        Ok(Ok(status)) => (i32::try_from(status.exit_code()).ok(), false),
+        Ok(Err(error)) => {
+            tracing::warn!(
+                event = "session.wait_failed",
+                session_id = %live.id,
+                error = %error,
+                "wait on child failed"
+            );
+            (None, true)
+        }
+        Err(error) => {
+            tracing::warn!(
+                event = "session.wait_join_failed",
+                session_id = %live.id,
+                error = %error,
+                "wait task join failed"
+            );
+            (None, true)
+        }
+    };
+
+    let (master, record, status_event, exited_at_ms) = {
+        let mut state = lock(&live.state);
+        if state.generation != generation {
+            return;
+        }
+        let master = state.master.take();
+        state.killer.take();
+        state.pid = None;
+        state.pgid = None;
+        state.record.pid = None;
+        state.record.pty_id = None;
+        state.record.exit_code = exit_code;
+        let requested_stop = state.stop_requested || state.kill_requested;
+        let successful_exit = exit_code == Some(0);
+        let (status, reason) = if state.kill_requested {
+            (SessionStatus::Exited, StatusReason::KillRequested)
+        } else if state.stop_requested {
+            (SessionStatus::Exited, StatusReason::StopRequested)
+        } else if !wait_failed && successful_exit {
+            (SessionStatus::Exited, StatusReason::ProcessExited)
+        } else {
+            (SessionStatus::Failed, StatusReason::ProcessFailed)
+        };
+        state.record.error_code = if requested_stop || successful_exit {
+            None
+        } else {
+            Some("session_process_failed".to_owned())
+        };
+        let status_event = state.transition(status, reason);
+        let exited_at_ms = state.record.updated_at_ms;
+        (master, state.record.clone(), status_event, exited_at_ms)
+    };
+    drop(master);
+    if let Some(sender) = lock(&live.writer_tx).take() {
+        let _ = sender.send(WriteOp::Shutdown);
+    }
+
+    tracing::info!(
+        event = "session.exit",
+        session_id = %live.id,
+        exit_code,
+        "session process exited"
+    );
+
+    publish(live, status_event);
+    let _ = live.events.send(SessionEvent::Exited {
+        session_id: live.id,
+        exit_code,
+        status: record.status,
+        at_ms: exited_at_ms,
+    });
+    tracing::info!(
+        event = "session.cleanup",
+        session_id = %live.id,
+        "released PTY handles"
+    );
+}
+
+fn fail_session(live: &LiveSession, generation: u64, reason: StatusReason) {
+    tracing::warn!(
+        event = "session.failed",
+        session_id = %live.id,
+        reason = ?reason,
+        "session failed"
+    );
+    let event = {
+        let mut state = lock(&live.state);
+        if state.generation != generation {
+            return;
+        }
+        state.record.pid = None;
+        state.record.pty_id = None;
+        state.record.error_code = Some(format!("session_{}", reason.code()));
+        state.transition(SessionStatus::Failed, reason)
+    };
+    publish(live, event);
+}
+
+fn publish(live: &LiveSession, event: Option<SessionEvent>) {
+    let Some(event) = event else {
+        return;
+    };
+    let _ = live.events.send(event);
+    let record = lock(&live.state).record.clone();
+    let _ = live.events.send(SessionEvent::Updated(record));
+}
+
+fn spawn_idle_scanner(inner: Weak<Inner>, idle_scan: Duration) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(idle_scan);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            let Some(inner) = inner.upgrade() else {
+                break;
+            };
+            scan_idle(&inner);
+        }
+    });
+}
+
+fn scan_idle(inner: &Inner) {
+    let sessions: Vec<Arc<LiveSession>> = lock(&inner.sessions).values().cloned().collect();
+    for live in sessions {
+        let event = {
+            let mut state = lock(&live.state);
+            if state.record.status != SessionStatus::Running
+                || state.last_activity.elapsed() < inner.config.idle_after
+            {
+                None
+            } else {
+                state.transition(SessionStatus::Idle, StatusReason::IdleTimeout)
+            }
+        };
+        publish(&live, event);
+    }
+}
+
+async fn wait_for_pgid(live: &LiveSession, timeout: Duration) -> Option<i32> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        {
+            let state = lock(&live.state);
+            if let Some(pgid) = state.pgid {
+                return Some(pgid);
+            }
+            if !state.record.status.is_live() {
+                return None;
+            }
+        }
+        if Instant::now() >= deadline {
+            return lock(&live.state).pgid;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn wait_until_stopped(live: &LiveSession, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if !lock(&live.state).record.status.is_live() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return !lock(&live.state).record.status.is_live();
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn unix_now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .unwrap_or(0)
+}
+
+fn short_id(id: SessionId) -> String {
+    let rendered = id.to_string();
+    rendered.chars().take(8).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-
-    use tempfile::TempDir;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 
-    #[test]
-    fn stop_does_not_signal_a_process_that_already_exited() {
-        let temp = TempDir::new().expect("temporary directory");
-        let executable = std::env::current_exe().expect("current test executable");
-        let spec = CommandSpec::try_from_parts(
-            executable.to_string_lossy(),
-            ["--list"],
-            temp.path(),
-            BTreeMap::new(),
-        )
-        .expect("test command");
-        let manager = SessionManager::with_config(SessionManagerConfig {
-            max_buffer_bytes: 64 * 1024,
-            stop_grace: Duration::from_secs(30),
-        });
-        let session_id = SessionId::new();
-        manager
-            .start(session_id, spec, TerminalSize::default())
-            .expect("session should start");
+    #[derive(Clone, Debug)]
+    struct TrackingKiller {
+        calls: Arc<AtomicUsize>,
+    }
 
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            if manager.status(session_id).expect("session status") == SessionStatus::Exited {
-                break;
-            }
-            assert!(Instant::now() < deadline, "test child did not exit");
-            thread::sleep(Duration::from_millis(10));
+    impl ChildKiller for TrackingKiller {
+        fn kill(&mut self) -> io::Result<()> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
 
-        SIGNAL_ATTEMPTS.store(0, Ordering::Relaxed);
-        assert_eq!(
-            manager.stop(session_id).expect("stop completed session"),
-            Some(0)
-        );
-        assert_eq!(SIGNAL_ATTEMPTS.load(Ordering::Relaxed), 0);
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    fn force_cleanup_uses_child_killer_without_a_process_group() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let id = SessionId::new();
+        let cwd = std::env::current_dir().expect("current directory should be available");
+        let command = CommandSpec::try_from_parts(
+            "unused",
+            Vec::<String>::new(),
+            cwd.clone(),
+            BTreeMap::new(),
+        )
+        .expect("test command should be valid");
+        let record = Session {
+            id,
+            project_id: ProjectId::new(),
+            name: "cleanup-test".to_owned(),
+            agent_id: AgentId::new(),
+            cwd,
+            pid: Some(42),
+            pty_id: Some("test-pty".to_owned()),
+            branch: None,
+            worktree_id: None,
+            worktree_path: None,
+            status: SessionStatus::Running,
+            exit_code: None,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            last_activity_at_ms: None,
+            error_code: None,
+        };
+        let (output, _) = broadcast::channel(1);
+        let (events, _) = broadcast::channel(1);
+        let live = LiveSession {
+            id,
+            config: SessionManagerConfig::for_tests(),
+            state: Mutex::new(LiveState {
+                record,
+                command,
+                buffer: ReplayBuffer::new(1),
+                master: None,
+                killer: Some(Box::new(TrackingKiller {
+                    calls: Arc::clone(&calls),
+                })),
+                pid: Some(42),
+                pgid: None,
+                generation: 0,
+                last_activity: Instant::now(),
+                cols: 80,
+                rows: 24,
+                stop_requested: false,
+                kill_requested: false,
+            }),
+            output,
+            writer_tx: Mutex::new(None),
+            events,
+        };
+
+        live.force_cleanup();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(lock(&live.state).killer.is_none());
     }
 }

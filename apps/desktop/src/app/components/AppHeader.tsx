@@ -1,20 +1,28 @@
 import { Icon } from "./Icon";
+import {
+  useDaemonReady,
+  useSelectedProject,
+  useWorkspaceActions,
+} from "../workspace";
 
 interface AppHeaderProps {
-  readonly newSessionDisabledReason: string | null;
-  readonly onNewSession: () => void;
+  readonly commandPaletteOpen: boolean;
   readonly onOpenCommandPalette: () => void;
 }
 
 /** Renders global product identity and session actions. */
 export function AppHeader({
-  newSessionDisabledReason,
-  onNewSession,
+  commandPaletteOpen,
   onOpenCommandPalette,
 }: AppHeaderProps) {
+  const ready = useDaemonReady();
+  const project = useSelectedProject();
+  const actions = useWorkspaceActions();
+  const canCreate = ready && project !== null;
+
   return (
     <header className="app-header">
-      <div className="app-header__brand">
+      <div className="app-header__brand" aria-label="CLI Master">
         <span className="app-header__mark" aria-hidden="true">
           <Icon name="terminal" />
         </span>
@@ -22,29 +30,28 @@ export function AppHeader({
         <span className="app-header__edition">Desktop</span>
       </div>
       <div className="app-header__actions">
-        {newSessionDisabledReason ? (
-          <span
-            id="new-session-requirement"
-            className="app-header__requirement"
-          >
-            {newSessionDisabledReason}
-          </span>
-        ) : null}
         <button
           className="button button--secondary"
           type="button"
+          aria-haspopup="dialog"
+          aria-expanded={commandPaletteOpen}
+          aria-keyshortcuts="Control+K Meta+K"
           onClick={onOpenCommandPalette}
         >
-          Command palette
+          <span>Commands</span>
+          <kbd className="app-header__shortcut" aria-hidden="true">
+            Ctrl/⌘ K
+          </kbd>
         </button>
+        <span id="new-session-requirement" className="app-header__requirement">
+          Add a project first
+        </span>
         <button
           className="button button--primary"
           type="button"
-          disabled={newSessionDisabledReason !== null}
-          aria-describedby={
-            newSessionDisabledReason ? "new-session-requirement" : undefined
-          }
-          onClick={onNewSession}
+          disabled={!canCreate}
+          aria-describedby="new-session-requirement"
+          onClick={() => actions.openDialog("newSession")}
         >
           <Icon name="plus" />
           <span>New Session</span>

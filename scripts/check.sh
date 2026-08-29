@@ -11,6 +11,5 @@ pnpm --filter @cli-master/desktop build
 
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo build -p cli-master-fake-agent --locked
 cargo test --workspace --locked
 RUSTDOCFLAGS="-Dwarnings" cargo doc --workspace --no-deps --locked

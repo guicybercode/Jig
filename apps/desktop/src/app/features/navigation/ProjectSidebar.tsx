@@ -1,33 +1,26 @@
-import type { ReactNode } from "react";
+import { useState } from "react";
 
 import { Icon } from "../../components/Icon";
-import type { ProjectView, SessionView } from "../../../ipc/types";
+import { formatApiError } from "../../../ipc";
+import {
+  useDaemonReady,
+  useProjects,
+  useSelectedSessions,
+  useSelection,
+  useWorkspaceActions,
+} from "../../workspace";
 
-interface ProjectSidebarProps {
-  readonly daemonConnected: boolean;
-  readonly projects: ProjectView[];
-  readonly sessions: SessionView[];
-  readonly selectedProjectId: string | null;
-  readonly onSelectProject: (projectId: string) => void;
-  readonly onAddProject: () => void;
-  readonly onSelectSession: (sessionId: string) => void;
-}
-
-/** Renders project and session navigation for empty and populated workspaces. */
-export function ProjectSidebar({
-  daemonConnected,
-  projects,
-  sessions,
-  selectedProjectId,
-  onSelectProject,
-  onAddProject,
-  onSelectSession,
-}: ProjectSidebarProps) {
-  const visibleSessions = selectedProjectId
-    ? sessions.filter((session) => session.projectId === selectedProjectId)
-    : [];
-  const activeCount = visibleSessions.filter((session) =>
-    ["starting", "running", "idle"].includes(session.status),
+/** Renders project and session navigation. */
+export function ProjectSidebar() {
+  const ready = useDaemonReady();
+  const projects = useProjects();
+  const selection = useSelection();
+  const projectSessions = useSelectedSessions();
+  const actions = useWorkspaceActions();
+  const [path, setPath] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
+  const activeCount = projectSessions.filter(
+    (session) => session.status === "running" || session.status === "idle",
   ).length;
 
   return (
@@ -37,9 +30,7 @@ export function ProjectSidebar({
         <span
           className="sidebar__count"
           aria-label={
-            projects.length === 0
-              ? "No projects"
-              : `${projects.length} ${projects.length === 1 ? "project" : "projects"}`
+            projects.length === 0 ? "No projects" : `${projects.length} projects`
           }
         >
           {projects.length}
@@ -62,37 +53,60 @@ export function ProjectSidebar({
                   <button
                     type="button"
                     className={
-                      project.id === selectedProjectId
+                      project.id === selection.projectId
                         ? "sidebar-list__item sidebar-list__item--active"
                         : "sidebar-list__item"
                     }
-                    aria-current={
-                      project.id === selectedProjectId ? "page" : undefined
-                    }
-                    onClick={() => onSelectProject(project.id)}
+                    onClick={() => actions.selectProject(project.id)}
                   >
-                    <Icon name="repository" />
-                    <span>{project.name}</span>
+                    <strong>{project.name}</strong>
+                    <span>{project.currentBranch ?? "unknown branch"}</span>
+                    <span className="sidebar-list__path">{project.path}</span>
                   </button>
                 </li>
               ))}
             </ul>
           )}
-          <button
-            className="button button--secondary button--full"
-            type="button"
-            disabled={!daemonConnected}
-            aria-describedby={
-              daemonConnected ? undefined : "add-project-requirement"
-            }
-            onClick={onAddProject}
+          <form
+            className="sidebar-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              setFormError(null);
+              void actions
+                .addProject(path.trim())
+                .then(() => setPath(""))
+                .catch((error: unknown) => {
+                  setFormError(formatApiError(error));
+                });
+            }}
           >
-            <Icon name="plus" />
-            <span>Add Project</span>
-          </button>
-          {!daemonConnected ? (
-            <p id="add-project-requirement" className="sidebar-section__hint">
-              Connect the local daemon to add a project.
+            <label htmlFor="project-path">Repository path</label>
+            <input
+              id="project-path"
+              value={path}
+              onChange={(event) => setPath(event.target.value)}
+              placeholder="/home/you/src/app"
+              autoComplete="off"
+              disabled={!ready}
+            />
+            <button
+              className="button button--secondary button--full"
+              type="submit"
+              disabled={!ready || path.trim().length === 0}
+              aria-describedby="add-project-requirement"
+            >
+              <Icon name="plus" />
+              <span>Add Project</span>
+            </button>
+          </form>
+          <p id="add-project-requirement" className="sidebar-section__hint">
+            {ready
+              ? "The directory stays on disk when you remove it from CLI Master."
+              : "Available when the local daemon is connected."}
+          </p>
+          {formError ? (
+            <p className="form-error" role="alert">
+              {formError}
             </p>
           ) : null}
         </section>
@@ -101,27 +115,32 @@ export function ProjectSidebar({
             <h2 id="sessions-heading">Sessions</h2>
             <span className="sidebar-section__meta">{activeCount} active</span>
           </div>
-          {visibleSessions.length === 0 ? (
+          {projectSessions.length === 0 ? (
             <div className="sidebar-section__empty">
               <Icon name="session" />
-              <p>
-                {selectedProjectId
-                  ? "No sessions in this project."
-                  : "Sessions appear here after you select a project."}
-              </p>
+              <p>Sessions appear here after you select a project.</p>
             </div>
           ) : (
             <ul className="sidebar-list">
-              {visibleSessions.map((session) => (
+              {projectSessions.map((session) => (
                 <li key={session.id}>
                   <button
                     type="button"
-                    className="sidebar-list__item"
-                    onClick={() => onSelectSession(session.id)}
+                    className={
+                      session.id === selection.sessionId
+                        ? "sidebar-list__item sidebar-list__item--active"
+                        : "sidebar-list__item"
+                    }
+                    onClick={() => {
+                      actions.focusSession(session.id);
+                      actions.toggleVisible(session.id);
+                    }}
                   >
-                    <Icon name="session" />
-                    <span>{session.name}</span>
-                    <SessionStatusBadge status={session.status} />
+                    <strong>{session.name}</strong>
+                    <span>
+                      {session.status}
+                      {session.branch ? ` · ${session.branch}` : ""}
+                    </span>
                   </button>
                 </li>
               ))}
@@ -130,25 +149,5 @@ export function ProjectSidebar({
         </section>
       </nav>
     </aside>
-  );
-}
-
-function SessionStatusBadge({
-  status,
-}: {
-  status: SessionView["status"];
-}): ReactNode {
-  const labels: Record<SessionView["status"], string> = {
-    starting: "Starting",
-    running: "Running",
-    idle: "Idle",
-    exited: "Exited",
-    failed: "Failed",
-    unknown: "Unknown",
-  };
-  return (
-    <span className={`status-badge status-badge--${status}`}>
-      {labels[status]}
-    </span>
   );
 }

@@ -1,37 +1,7 @@
 import { Icon } from "../../components/Icon";
-import type { ProjectView } from "../../../ipc/types";
-
-interface WorkspaceEmptyStateProps {
-  selectedProject: ProjectView | null;
-}
 
 /** Guides first-time setup without inventing project or session data. */
-export function WorkspaceEmptyState({
-  selectedProject,
-}: WorkspaceEmptyStateProps) {
-  if (selectedProject) {
-    return (
-      <main id="workspace" className="workspace" tabIndex={-1}>
-        <header className="workspace__header">
-          <div>
-            <p className="workspace__eyebrow">Workspace</p>
-            <h1>{selectedProject.name}</h1>
-          </div>
-          <span className="workspace__mode">Local</span>
-        </header>
-        <section className="empty-state" aria-labelledby="empty-state-title">
-          <div className="empty-state__copy">
-            <h2 id="empty-state-title">No session selected</h2>
-            <p>
-              Create a session to start the fake agent or an installed CLI in
-              this repository.
-            </p>
-          </div>
-        </section>
-      </main>
-    );
-  }
-
+export function WorkspaceEmptyState() {
   return (
     <main id="workspace" className="workspace" tabIndex={-1}>
       <header className="workspace__header">
@@ -54,21 +24,15 @@ export function WorkspaceEmptyState({
         </div>
         <div className="empty-state__steps" aria-label="Getting started">
           <div className="empty-state__step">
-            <span className="empty-state__step-number" aria-hidden="true">
-              1
-            </span>
+            <span className="empty-state__step-number" aria-hidden="true">1</span>
             <span>Connect the local daemon</span>
           </div>
           <div className="empty-state__step">
-            <span className="empty-state__step-number" aria-hidden="true">
-              2
-            </span>
+            <span className="empty-state__step-number" aria-hidden="true">2</span>
             <span>Add a repository</span>
           </div>
           <div className="empty-state__step">
-            <span className="empty-state__step-number" aria-hidden="true">
-              3
-            </span>
+            <span className="empty-state__step-number" aria-hidden="true">3</span>
             <span>Start a session</span>
           </div>
         </div>
