@@ -1,0 +1,23 @@
+[package]
+name = "cli-master-session"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "cli_master_session"
+path = "src/lib.rs"
+
+[dependencies]
+cli-master-core = { path = "../core" }
+cli-master-git = { path = "../git" }
+cli-master-storage = { path = "../storage" }
+
+[dev-dependencies]
+cli-master-core = { path = "../core" }
+cli-master-git = { path = "../git" }
+cli-master-storage = { path = "../storage" }
+tempfile = "3"

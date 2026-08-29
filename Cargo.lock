@@ -523,6 +523,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cli-master-session"
+version = "0.1.0"
+dependencies = [
+ "cli-master-core",
+ "cli-master-git",
+ "cli-master-storage",
+ "tempfile",
+]
+
+[[package]]
 name = "cli-master-storage"
 version = "0.1.0"
 dependencies = [
