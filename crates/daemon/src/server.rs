@@ -103,12 +103,21 @@ impl Daemon {
         ensure_private_directory(&log_path)?;
 
         let instance_lock = InstanceLock::acquire(config.lock_path())?;
-        remove_stale_socket(config.socket_path())?;
-
-        let mut storage = Storage::open(config.database_path())?;
-        storage.migrate()?;
+        let instance_id = DaemonInstanceId::new();
+        let instance_id_text = instance_id.to_string();
+        let storage = Storage::open_migrated(config.database_path())?;
+        let reconciliation = storage.reconcile_sessions(&RecoveryContext {
+            current_daemon_instance_id: &instance_id_text,
+            live_session_ids: &[],
+            updated_at_ms: unix_epoch_ms()?,
+        })?;
+        let recovered_sessions = reconciliation
+            .iter()
+            .filter(|event| event.previous_status != event.new_status)
+            .count();
         let schema_version = storage.schema_version()?;
 
+        remove_stale_socket(config.socket_path())?;
         let listener = UnixListener::bind(config.socket_path())
             .map_err(|error| DaemonError::io("bind daemon socket", config.socket_path(), error))?;
         fs::set_permissions(config.socket_path(), fs::Permissions::from_mode(0o600)).map_err(
@@ -155,6 +164,7 @@ impl Daemon {
             socket = %config.socket_path().display(),
             database = %config.database_path().display(),
             schema_version,
+            recovered_sessions,
             "daemon bound"
         );
 
@@ -220,9 +230,15 @@ impl Daemon {
         }
         self.state.sessions.shutdown();
         self.socket_owner.remove_if_owned();
+        self.storage.close()?;
         info!(instance_id = %self.state.hello.instance_id, "daemon stopped");
         Ok(())
     }
+}
+
+fn unix_epoch_ms() -> Result<i64, DaemonError> {
+    let elapsed = SystemTime::now().duration_since(UNIX_EPOCH)?;
+    i64::try_from(elapsed.as_millis()).map_err(|_| DaemonError::TimestampOverflow)
 }
 
 async fn serve_client(
