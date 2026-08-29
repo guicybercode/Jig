@@ -415,7 +415,12 @@ pub(crate) fn remove_worktree(
         return Err(GitError::ConfirmationMismatch);
     }
     if !inspection.blockers.is_empty() {
-        return Err(blocker_error(inspection.blockers[0], &inspection.info));
+        return Err(blocker_error(
+            inspection.blockers[0],
+            &inspection.info,
+            &request.path,
+            managed_root,
+        ));
     }
 
     if request.scope == RemoveScope::Directory {
@@ -446,10 +451,8 @@ fn inspect_for_remove(
     managed_root: &Path,
     request: &PrepareRemoveRequest,
 ) -> Result<RemoveInspection, GitError> {
-    if request.scope == RemoveScope::Directory {
-        crate::command::inspect_path(&request.path)?;
-        reject_symlink(&request.path)?;
-    }
+    let requested_path_is_symlink =
+        fs::symlink_metadata(&request.path).is_ok_and(|metadata| metadata.file_type().is_symlink());
 
     let detected = detect::detect_repository(executable, &request.path)?;
     let info = inspect_worktree(
@@ -468,10 +471,13 @@ fn inspect_for_remove(
     if let Err(GitError::PathOutsideManagedRoot { .. }) = ensure_within(&info.path, managed_root) {
         blockers.push(RemoveBlocker::OutsideManagedRoot);
     }
+    if requested_path_is_symlink {
+        blockers.push(RemoveBlocker::Symlink);
+    }
     if info.locked {
         blockers.push(RemoveBlocker::Locked);
     }
-    if request.session_is_active && request.scope == RemoveScope::Directory {
+    if request.session_is_active {
         blockers.push(RemoveBlocker::SessionActive);
     }
     if dirty && request.scope == RemoveScope::Directory {
@@ -717,7 +723,12 @@ fn parse_worktree_list(bytes: &[u8], git_common_dir: &Path) -> Result<Vec<Worktr
     Ok(worktrees)
 }
 
-fn blocker_error(blocker: RemoveBlocker, info: &WorktreeInfo) -> GitError {
+fn blocker_error(
+    blocker: RemoveBlocker,
+    info: &WorktreeInfo,
+    requested_path: &Path,
+    managed_root: &Path,
+) -> GitError {
     match blocker {
         RemoveBlocker::Dirty => GitError::WorktreeDirty {
             path: info.path.clone(),
@@ -734,10 +745,10 @@ fn blocker_error(blocker: RemoveBlocker, info: &WorktreeInfo) -> GitError {
         },
         RemoveBlocker::OutsideManagedRoot => GitError::PathOutsideManagedRoot {
             path: info.path.clone(),
-            root: PathBuf::new(),
+            root: managed_root.to_path_buf(),
         },
         RemoveBlocker::Symlink => GitError::SymlinkRejected {
-            path: info.path.clone(),
+            path: requested_path.to_path_buf(),
         },
     }
 }
@@ -748,4 +759,52 @@ fn instant_to_epoch_ms(deadline: Instant) -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     i64::try_from((now + remaining).as_millis()).unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::{RemoveBlocker, WorktreeInfo, blocker_error};
+    use crate::error::GitError;
+
+    #[test]
+    fn outside_managed_root_error_keeps_the_managed_root() {
+        let worktree_path = PathBuf::from("/outside/worktree");
+        let managed_root = Path::new("/managed/worktrees");
+        let info = WorktreeInfo {
+            path: worktree_path.clone(),
+            head: None,
+            branch: None,
+            bare: false,
+            detached: false,
+            locked: false,
+            lock_reason: None,
+            prunable: false,
+            prunable_reason: None,
+            dirty: Some(false),
+            is_primary: false,
+        };
+
+        let error = blocker_error(
+            RemoveBlocker::OutsideManagedRoot,
+            &info,
+            &worktree_path,
+            managed_root,
+        );
+
+        assert!(matches!(
+            &error,
+            GitError::PathOutsideManagedRoot { path, root }
+                if path == &worktree_path && root == managed_root
+        ));
+        let api_error = error.to_api_error();
+        assert_eq!(
+            api_error
+                .details
+                .get("root")
+                .and_then(|value| value.as_str()),
+            managed_root.to_str()
+        );
+    }
 }

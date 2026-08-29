@@ -72,7 +72,7 @@ Blockers:
 - the path is not a Git worktree of this repository
 - the path is the primary checkout
 - the path is outside the managed root
-- the path or an ancestor is a symlink
+- the requested worktree path itself is a symlink
 - Git reports the worktree as locked
 - a session is still using it (`session_is_active`)
 - the worktree is dirty (staged, unstaged, or untracked), for `RemoveScope::Directory`
@@ -92,7 +92,7 @@ Diff is capped at 2 MiB by default. Crossing the cap sets `truncated` and kills 
 - Executable and arguments stay separate. A path like `name; true` is a missing directory, not a shell command.
 - Refs cannot start with `-`. `--end-of-options` is passed to `rev-parse`.
 - Worktree paths are checked with lexical normalization plus resolving the longest existing prefix. That keeps `/var` vs `/private/var` on macOS from looking like an escape, without assuming a case-insensitive disk.
-- Symlinks on the worktree path itself are rejected for directory removal. System ancestor links such as macOS `/var` → `/private/var` are not treated as an attack.
+- A symlink passed as the worktree path is reported as a blocker for either removal scope, so prepare-remove never issues it a token. System ancestor links such as macOS `/var` → `/private/var` are not treated as an attack.
 - The primary repository worktree cannot be removed.
 - Dirty worktrees cannot be removed through this crate.
 
@@ -112,8 +112,8 @@ Integration tests in `crates/git/tests/git_service.rs` use real temporary reposi
 - binary files and truncated diffs
 - dirty removal refused, including an empty token
 - clean removal after an explicit token
-- metadata-only removal leaving the directory
-- primary worktree and active session blockers
+- metadata-only removal leaving the directory, unless a session is active
+- primary worktree, active session, and symlink blockers
 - `worktree add` failure on a read-only parent, with no leftover branch
 - paths with spaces and Unicode session names
 - detached `HEAD` as a base ref

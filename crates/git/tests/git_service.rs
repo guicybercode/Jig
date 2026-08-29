@@ -1,6 +1,6 @@
 use std::{
     fs,
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{PermissionsExt, symlink},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -399,6 +399,80 @@ fn metadata_only_removal_leaves_the_directory() {
             scope: RemoveScope::MetadataOnly,
         })
         .expect("metadata remove");
+    assert!(created.path.exists());
+}
+
+#[test]
+fn active_session_blocks_metadata_only_removal_and_recheck() {
+    let fixture = Fixture::new();
+    fixture.commit_readme();
+    let created = fixture.create("Active metadata");
+
+    let blocked = fixture
+        .service
+        .prepare_remove_worktree(PrepareRemoveRequest {
+            path: created.path.clone(),
+            session_is_active: true,
+            scope: RemoveScope::MetadataOnly,
+        })
+        .expect("prepare should report active session");
+    assert!(
+        blocked
+            .blockers
+            .contains(&cli_master_git::RemoveBlocker::SessionActive)
+    );
+    assert!(blocked.confirmation_token.is_none());
+
+    let prepared = fixture
+        .service
+        .prepare_remove_worktree(PrepareRemoveRequest {
+            path: created.path.clone(),
+            session_is_active: false,
+            scope: RemoveScope::MetadataOnly,
+        })
+        .expect("inactive metadata prepare");
+    let token = prepared.confirmation_token.expect("inactive session token");
+    let error = fixture
+        .service
+        .remove_worktree(RemoveWorktreeRequest {
+            path: created.path.clone(),
+            confirmation_token: token,
+            session_is_active: true,
+            scope: RemoveScope::MetadataOnly,
+        })
+        .expect_err("session becoming active must invalidate removal");
+    assert_eq!(error.code(), code::WORKTREE_IN_USE);
+    assert!(created.path.exists());
+}
+
+#[test]
+fn prepare_remove_reports_a_symlink_blocker() {
+    let fixture = Fixture::new();
+    fixture.commit_readme();
+    let created = fixture.create("Symlink blocker");
+    let alias = created
+        .path
+        .parent()
+        .expect("project directory")
+        .join("alias");
+    symlink(&created.path, &alias).expect("worktree symlink");
+
+    for scope in [RemoveScope::Directory, RemoveScope::MetadataOnly] {
+        let prepared = fixture
+            .service
+            .prepare_remove_worktree(PrepareRemoveRequest {
+                path: alias.clone(),
+                session_is_active: false,
+                scope,
+            })
+            .expect("prepare should return symlink findings");
+        assert!(
+            prepared
+                .blockers
+                .contains(&cli_master_git::RemoveBlocker::Symlink)
+        );
+        assert!(prepared.confirmation_token.is_none());
+    }
     assert!(created.path.exists());
 }
 
