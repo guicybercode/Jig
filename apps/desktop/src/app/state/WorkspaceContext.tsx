@@ -511,6 +511,8 @@ export function WorkspaceProvider({
           project,
           selectIfRevision,
         }),
+        true,
+        false,
       );
     },
     [client, execute],
@@ -524,6 +526,8 @@ export function WorkspaceProvider({
           type: "metadata/project-upserted",
           project,
         }),
+        true,
+        false,
       ),
     [client, execute],
   );
@@ -536,6 +540,8 @@ export function WorkspaceProvider({
           type: "metadata/project-removed",
           projectId,
         }),
+        true,
+        false,
       ),
     [client, execute],
   );

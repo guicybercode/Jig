@@ -717,6 +717,10 @@ describe("AppShell project and session workflows", () => {
     expect(error).toHaveTextContent(
       "Choose the repository root or initialize Git there first.",
     );
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(
+      screen.queryByRole("button", { name: "Dismiss operation error" }),
+    ).not.toBeInTheDocument();
     expect(dialog).toBeVisible();
   });
 
