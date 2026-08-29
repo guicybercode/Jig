@@ -1,27 +1,11 @@
+use std::collections::BTreeMap;
+use std::fmt;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentId, CommandSpec, ProjectId, SessionId, WorktreeId};
-
-/// Lifecycle state inferred for an agent session.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionStatus {
-    /// The session process is being prepared.
-    Starting,
-    /// The process is alive and has recent activity.
-    Running,
-    /// The process is alive but has no recent activity.
-    Idle,
-    /// The process exited successfully or was stopped.
-    Exited,
-    /// The process failed to start or exited unsuccessfully.
-    Failed,
-    /// The process state cannot currently be determined.
-    #[serde(other)]
-    Unknown,
-}
+use crate::session::SessionStatus;
+use crate::{AgentId, ProjectId, SessionId, WorktreeId};
 
 /// Origin of an agent definition.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -33,11 +17,28 @@ pub enum AgentSource {
     Custom,
 }
 
-/// Serializable definition of an available CLI coding agent.
+/// Lifecycle of a managed Git worktree record.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeState {
+    /// Git and SQLite have not both accepted the worktree yet.
+    Creating,
+    /// The worktree exists and may be used as a session cwd.
+    Active,
+    /// Removal was requested and is waiting on confirmation or cleanup.
+    RemovePending,
+    /// Git and SQLite disagree; recovery instructions should be shown.
+    Orphaned,
+}
+
+/// Catalog entry for a built-in or custom agent.
+///
+/// This is identity and enablement only. Launch argv is a [`crate::CommandSpec`]
+/// produced at session start. Custom argv lives on [`CustomAgent`].
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentDefinition {
-    /// Stable local identifier.
+    /// Stable catalog key for built-ins, `UUIDv7` string for custom agents.
     pub id: AgentId,
     /// User-facing agent name.
     pub display_name: String,
@@ -46,11 +47,81 @@ pub struct AgentDefinition {
     pub description: Option<String>,
     /// Whether this definition is built in or user supplied.
     pub source: AgentSource,
-    /// Structured default launch command.
-    pub command: CommandSpec,
+    /// When false, the agent cannot be used to start new sessions.
+    pub enabled: bool,
 }
 
-/// Serializable metadata for a registered local project.
+/// Persisted user-defined CLI adapter.
+///
+/// Environment values are sent to the local UI so the owner can edit them.
+/// Logs and `Debug` must not print those values.
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomAgent {
+    /// Stable custom-agent identifier.
+    pub id: AgentId,
+    /// User-facing name.
+    pub display_name: String,
+    /// Absolute path or bare executable name.
+    pub executable: String,
+    /// Ordered argument array. Never a shell string.
+    pub args: Vec<String>,
+    /// Non-secret environment overrides. Authentication tokens are not stored.
+    pub env: BTreeMap<String, String>,
+    /// When false, the agent cannot be used to start new sessions.
+    pub enabled: bool,
+    /// RFC 3339 UTC creation time.
+    pub created_at: String,
+    /// RFC 3339 UTC last edit time.
+    pub updated_at: String,
+}
+
+impl fmt::Debug for CustomAgent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CustomAgent")
+            .field("id", &self.id)
+            .field("display_name", &self.display_name)
+            .field("executable", &self.executable)
+            .field("args_count", &self.args.len())
+            .field("env_keys", &self.env.keys().collect::<Vec<_>>())
+            .field("enabled", &self.enabled)
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
+}
+
+/// Wire form of executable detection. Mapped from the agents crate at the
+/// daemon boundary; the UI never searches PATH itself.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DetectionStatus {
+    /// An executable regular file was resolved.
+    Found,
+    /// No candidate exists in the configured search path.
+    NotFound,
+    /// A candidate exists but is not executable.
+    NotExecutable,
+}
+
+/// Detection result for one catalog agent.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentDetection {
+    /// Catalog identifier that was probed.
+    pub agent_id: AgentId,
+    /// Outcome of PATH/absolute-path inspection.
+    pub status: DetectionStatus,
+    /// Resolved executable when [`DetectionStatus::Found`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executable: Option<PathBuf>,
+}
+
+/// Persisted metadata for a registered local project.
+///
+/// `path` is the canonical Git repository root. Observed branch and dirty
+/// state belong on [`GitStatus`], not here.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
@@ -58,21 +129,18 @@ pub struct Project {
     pub id: ProjectId,
     /// User-editable display name.
     pub name: String,
-    /// User-selected local path.
+    /// Canonical absolute repository root.
     pub path: PathBuf,
-    /// Canonical Git repository root, when the project is a repository.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub repository_root: Option<PathBuf>,
-    /// Current branch observed during the latest repository refresh.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub current_branch: Option<String>,
-    /// Creation time as Unix epoch milliseconds.
-    pub created_at_ms: i64,
-    /// Most recent open time as Unix epoch milliseconds.
-    pub last_opened_at_ms: i64,
+    /// RFC 3339 UTC creation time.
+    pub created_at: String,
+    /// RFC 3339 UTC last-open time.
+    pub last_opened_at: String,
 }
 
-/// Serializable metadata for one managed agent session.
+/// Public session metadata. Process handles and PTY masters are not included.
+///
+/// `status` is the last persisted snapshot. For live sessions the daemon
+/// reconciles it with `SessionManager` before returning this DTO.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
@@ -86,33 +154,29 @@ pub struct Session {
     pub agent_id: AgentId,
     /// Effective process working directory.
     pub cwd: PathBuf,
-    /// OS process identifier when a process is attached.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pid: Option<u32>,
-    /// Daemon-specific PTY handle when a PTY is attached.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pty_id: Option<String>,
-    /// Git branch associated with the session.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
-    /// Managed worktree associated with the session.
+    /// Managed worktree associated with the session, when isolation is used.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_id: Option<WorktreeId>,
-    /// Local path of the associated worktree, when Git isolation is enabled.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub worktree_path: Option<PathBuf>,
-    /// Current inferred lifecycle state.
+    /// Current lifecycle state.
     pub status: SessionStatus,
     /// Process exit code, once available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
-    /// Creation time as Unix epoch milliseconds.
-    pub created_at_ms: i64,
-    /// Most recent metadata update as Unix epoch milliseconds.
-    pub updated_at_ms: i64,
+    /// Stable error code when [`SessionStatus::Failed`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    /// RFC 3339 UTC creation time.
+    pub created_at: String,
+    /// RFC 3339 UTC last metadata update.
+    pub updated_at: String,
+    /// RFC 3339 UTC last PTY activity, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<String>,
 }
 
-/// Serializable metadata for a managed Git worktree.
+/// Persisted metadata for a managed Git worktree.
+///
+/// Dirty/clean is not stored here. Call `git.status` for observed tree state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Worktree {
@@ -127,17 +191,69 @@ pub struct Worktree {
     pub path: PathBuf,
     /// Checked-out branch name.
     pub branch: String,
-    /// Whether the latest Git inspection found uncommitted changes.
+    /// Recovery-aware lifecycle of the worktree record.
+    pub state: WorktreeState,
+    /// RFC 3339 UTC creation time.
+    pub created_at: String,
+    /// RFC 3339 UTC last metadata update.
+    pub updated_at: String,
+}
+
+/// Observed Git status for a project root or a managed worktree.
+///
+/// This is runtime observation, not persisted metadata. Counts come from
+/// `git status --porcelain=v2 -z`. Localized human Git output is never parsed.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatus {
+    /// Project whose repository was inspected.
+    pub project_id: ProjectId,
+    /// Worktree that was inspected, when not the project root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_id: Option<WorktreeId>,
+    /// Current branch name, when HEAD is not detached.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// Upstream branch name, when configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
+    /// Commits ahead of upstream.
+    pub ahead: u32,
+    /// Commits behind upstream.
+    pub behind: u32,
+    /// Changed tracked files, including staged and unstaged.
+    pub changed_files: u32,
+    /// Files with staged hunks.
+    pub staged_files: u32,
+    /// Untracked files.
+    pub untracked_files: u32,
+    /// Whether the tree has staged, unstaged, or untracked changes.
     pub is_dirty: bool,
-    /// Creation time as Unix epoch milliseconds.
-    pub created_at_ms: i64,
+    /// RFC 3339 UTC time this snapshot was observed.
+    pub observed_at: String,
+}
+
+/// Bounded textual diff for a project root or managed worktree.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitDiff {
+    /// Project whose repository was inspected.
+    pub project_id: ProjectId,
+    /// Worktree that was inspected, when not the project root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_id: Option<WorktreeId>,
+    /// Unified diff text. May be empty.
+    pub text: String,
+    /// True when the diff exceeded the daemon size cap.
+    pub truncated: bool,
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use super::*;
+    use crate::{AgentId, ProjectId, SessionId, WorktreeId};
+
+    const TIMESTAMP: &str = "2026-08-29T01:18:00Z";
 
     fn assert_json_round_trip<T>(value: &T)
     where
@@ -149,96 +265,89 @@ mod tests {
     }
 
     #[test]
-    fn unknown_session_status_is_forward_compatible() {
-        let status: SessionStatus =
-            serde_json::from_str("\"waiting_for_vendor\"").expect("unknown status should decode");
-        assert_eq!(status, SessionStatus::Unknown);
-    }
-
-    #[test]
-    fn project_round_trips_with_camel_case_wire_fields() {
+    fn project_round_trips_without_observed_git_fields() {
         let project = Project {
             id: ProjectId::new(),
             name: "core".to_owned(),
             path: PathBuf::from("/tmp/core"),
-            repository_root: Some(PathBuf::from("/tmp/core")),
-            current_branch: Some("main".to_owned()),
-            created_at_ms: 1,
-            last_opened_at_ms: 2,
+            created_at: TIMESTAMP.to_owned(),
+            last_opened_at: TIMESTAMP.to_owned(),
         };
         let value = serde_json::to_value(&project).expect("project should serialize");
-        let decoded: Project =
-            serde_json::from_value(value.clone()).expect("project should deserialize");
-
-        assert_eq!(decoded, project);
-        assert_eq!(value["lastOpenedAtMs"], 2);
+        assert_eq!(value["lastOpenedAt"], TIMESTAMP);
+        assert!(value.get("currentBranch").is_none());
+        assert!(value.get("repositoryRoot").is_none());
+        assert_json_round_trip(&project);
     }
 
     #[test]
-    fn all_known_session_statuses_have_stable_wire_values() {
-        let cases = [
-            (SessionStatus::Starting, "starting"),
-            (SessionStatus::Running, "running"),
-            (SessionStatus::Idle, "idle"),
-            (SessionStatus::Exited, "exited"),
-            (SessionStatus::Failed, "failed"),
-            (SessionStatus::Unknown, "unknown"),
-        ];
-
-        for (status, wire_value) in cases {
-            let encoded = serde_json::to_string(&status).expect("status should serialize");
-            assert_eq!(encoded, format!("\"{wire_value}\""));
-        }
-    }
-
-    #[test]
-    fn agent_session_and_worktree_dtos_round_trip() {
-        let project_id = ProjectId::new();
-        let agent_id = AgentId::new();
-        let session_id = SessionId::new();
-        let worktree_id = WorktreeId::new();
-        let command = CommandSpec::try_from_parts(
-            "codex",
-            ["--interactive"],
-            "/tmp/project",
-            BTreeMap::new(),
-        )
-        .expect("command fixture should be valid");
-        let agent = AgentDefinition {
-            id: agent_id,
-            display_name: "Codex".to_owned(),
-            description: Some("Local coding agent".to_owned()),
-            source: AgentSource::BuiltIn,
-            command,
-        };
+    fn session_public_dto_omits_pty_and_pid() {
         let session = Session {
-            id: session_id,
-            project_id,
+            id: SessionId::new(),
+            project_id: ProjectId::new(),
             name: "Implement auth".to_owned(),
-            agent_id,
+            agent_id: AgentId::parse_str(AgentId::CODEX).expect("codex"),
             cwd: PathBuf::from("/tmp/worktrees/auth"),
-            pid: Some(1_234),
-            pty_id: Some("pty-1".to_owned()),
-            branch: Some("agent/auth".to_owned()),
-            worktree_id: Some(worktree_id),
-            worktree_path: Some(PathBuf::from("/tmp/worktrees/auth")),
+            worktree_id: Some(WorktreeId::new()),
             status: SessionStatus::Running,
             exit_code: None,
-            created_at_ms: 1,
-            updated_at_ms: 2,
+            error_code: None,
+            created_at: TIMESTAMP.to_owned(),
+            updated_at: TIMESTAMP.to_owned(),
+            last_activity_at: Some(TIMESTAMP.to_owned()),
         };
+        let value = serde_json::to_value(&session).expect("session should serialize");
+        assert!(value.get("pid").is_none());
+        assert!(value.get("ptyId").is_none());
+        assert!(value.get("branch").is_none());
+        assert_json_round_trip(&session);
+    }
+
+    #[test]
+    fn custom_agent_debug_redacts_env_and_args() {
+        let agent = CustomAgent {
+            id: AgentId::new_custom(),
+            display_name: "Company Agent".to_owned(),
+            executable: "company-agent".to_owned(),
+            args: vec!["--token=secret".to_owned()],
+            env: BTreeMap::from([("TOKEN".to_owned(), "secret".to_owned())]),
+            enabled: true,
+            created_at: TIMESTAMP.to_owned(),
+            updated_at: TIMESTAMP.to_owned(),
+        };
+        let debug = format!("{agent:?}");
+        assert!(debug.contains("TOKEN"));
+        assert!(!debug.contains("secret"));
+        assert_json_round_trip(&agent);
+    }
+
+    #[test]
+    fn git_status_and_worktree_round_trip() {
+        let project_id = ProjectId::new();
         let worktree = Worktree {
-            id: worktree_id,
+            id: WorktreeId::new(),
             project_id,
-            session_id: Some(session_id),
+            session_id: Some(SessionId::new()),
             path: PathBuf::from("/tmp/worktrees/auth"),
             branch: "agent/auth".to_owned(),
-            is_dirty: true,
-            created_at_ms: 1,
+            state: WorktreeState::Active,
+            created_at: TIMESTAMP.to_owned(),
+            updated_at: TIMESTAMP.to_owned(),
         };
-
-        assert_json_round_trip(&agent);
-        assert_json_round_trip(&session);
+        let status = GitStatus {
+            project_id,
+            worktree_id: Some(worktree.id),
+            branch: Some("agent/auth".to_owned()),
+            upstream: Some("origin/main".to_owned()),
+            ahead: 1,
+            behind: 0,
+            changed_files: 2,
+            staged_files: 1,
+            untracked_files: 1,
+            is_dirty: true,
+            observed_at: TIMESTAMP.to_owned(),
+        };
         assert_json_round_trip(&worktree);
+        assert_json_round_trip(&status);
     }
 }

@@ -25,7 +25,10 @@ CREATE TABLE sessions (
     name                TEXT NOT NULL CHECK (length(trim(name)) > 0),
     cwd                 TEXT NOT NULL,
     status              TEXT NOT NULL CHECK (
-                            status IN ('starting','running','idle','exited','failed','unknown')
+                            status IN (
+                                'created','starting','running','idle','stopping',
+                                'exited','failed','unknown'
+                            )
                         ),
     runtime_pid         INTEGER,
     daemon_instance_id  TEXT,
