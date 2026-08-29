@@ -373,7 +373,7 @@
   }
 }
 
-@media (max-width: 31.24rem) {
+@media (max-width: 32rem) {
   .app-header__edition,
   .app-header__requirement {
     display: none;
