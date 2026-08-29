@@ -324,14 +324,7 @@ pub fn validate_structured_invocation(
     executable: &str,
     args: &[String],
 ) -> Result<(), CommandSpecError> {
-    if executable_has_name(executable, "env")
-        && args.iter().any(|argument| {
-            argument == "-S"
-                || argument.starts_with("-S") && argument.len() > 2
-                || argument == "--split-string"
-                || argument.starts_with("--split-string=")
-        })
-    {
+    if executable_has_name(executable, "env") && parse_env_invocation(args).uses_split_string {
         return Err(CommandSpecError::ShellCommandString);
     }
     if let Some((nested, nested_args)) = wrapped_shell(executable, args) {
@@ -402,6 +395,154 @@ fn executable_has_name(executable: &str, expected: &str) -> bool {
         .is_some_and(|name| name.trim_end_matches(".exe").eq_ignore_ascii_case(expected))
 }
 
+#[derive(Clone, Copy, Default)]
+struct EnvInvocation {
+    uses_split_string: bool,
+    command_index: Option<usize>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum EnvOption {
+    Flag,
+    RequiredValue,
+    OptionalAttachedValue,
+    SplitString,
+    Invalid,
+}
+
+const ENV_LONG_OPTIONS: &[(&str, EnvOption)] = &[
+    ("ignore-environment", EnvOption::Flag),
+    ("null", EnvOption::Flag),
+    ("argv0", EnvOption::RequiredValue),
+    ("unset", EnvOption::RequiredValue),
+    ("chdir", EnvOption::RequiredValue),
+    ("split-string", EnvOption::SplitString),
+    ("block-signal", EnvOption::OptionalAttachedValue),
+    ("default-signal", EnvOption::OptionalAttachedValue),
+    ("ignore-signal", EnvOption::OptionalAttachedValue),
+    ("list-signal-handling", EnvOption::Flag),
+    ("debug", EnvOption::Flag),
+    ("help", EnvOption::Flag),
+    ("version", EnvOption::Flag),
+];
+
+fn parse_env_invocation(args: &[String]) -> EnvInvocation {
+    let mut index = 0;
+    while let Some(argument) = args.get(index) {
+        if argument == "--" {
+            index += 1;
+            break;
+        }
+        if argument == "-" {
+            index += 1;
+            continue;
+        }
+        if let Some(long) = argument.strip_prefix("--") {
+            let (option, has_attached_value) = parse_env_long_option(long);
+            match option {
+                EnvOption::SplitString => {
+                    return EnvInvocation {
+                        uses_split_string: true,
+                        command_index: None,
+                    };
+                }
+                EnvOption::RequiredValue if !has_attached_value => {
+                    if args.get(index + 1).is_none() {
+                        return EnvInvocation::default();
+                    }
+                    index += 2;
+                }
+                EnvOption::Flag if has_attached_value => {
+                    return EnvInvocation::default();
+                }
+                EnvOption::Invalid => {
+                    return EnvInvocation::default();
+                }
+                EnvOption::Flag | EnvOption::RequiredValue | EnvOption::OptionalAttachedValue => {
+                    index += 1;
+                }
+            }
+            continue;
+        }
+        let Some(cluster) = argument.strip_prefix('-') else {
+            break;
+        };
+        match parse_env_short_options(cluster) {
+            EnvOption::SplitString => {
+                return EnvInvocation {
+                    uses_split_string: true,
+                    command_index: None,
+                };
+            }
+            EnvOption::RequiredValue => {
+                if args.get(index + 1).is_none() {
+                    return EnvInvocation::default();
+                }
+                index += 2;
+            }
+            EnvOption::Flag | EnvOption::OptionalAttachedValue => index += 1,
+            EnvOption::Invalid => return EnvInvocation::default(),
+        }
+    }
+
+    while args.get(index).is_some_and(|argument| {
+        argument
+            .split_once('=')
+            .is_some_and(|(name, _)| !name.is_empty())
+    }) {
+        index += 1;
+    }
+    EnvInvocation {
+        uses_split_string: false,
+        command_index: (index < args.len()).then_some(index),
+    }
+}
+
+fn parse_env_short_options(cluster: &str) -> EnvOption {
+    let mut options = cluster.char_indices().peekable();
+    while let Some((_, option)) = options.next() {
+        match option {
+            '0' | 'i' | 'v' => {}
+            'S' => return EnvOption::SplitString,
+            'a' | 'u' | 'C' | 'P' => {
+                return if options.peek().is_some() {
+                    EnvOption::Flag
+                } else {
+                    EnvOption::RequiredValue
+                };
+            }
+            _ => return EnvOption::Invalid,
+        }
+    }
+    EnvOption::Flag
+}
+
+fn parse_env_long_option(option: &str) -> (EnvOption, bool) {
+    let (name, attached_value) = option
+        .split_once('=')
+        .map_or((option, false), |(name, _)| (name, true));
+    if name.is_empty() {
+        return (EnvOption::Invalid, attached_value);
+    }
+    let exact = ENV_LONG_OPTIONS
+        .iter()
+        .find(|(candidate, _)| *candidate == name)
+        .map(|(_, kind)| *kind);
+    let kind = exact.unwrap_or_else(|| {
+        let mut matches = ENV_LONG_OPTIONS
+            .iter()
+            .filter(|(candidate, _)| candidate.starts_with(name))
+            .map(|(_, kind)| *kind);
+        let first = matches.next().unwrap_or(EnvOption::Invalid);
+        if matches.next().is_some() {
+            EnvOption::Invalid
+        } else {
+            first
+        }
+    });
+    (kind, attached_value)
+}
+
 fn wrapped_shell<'a>(executable: &str, args: &'a [String]) -> Option<(&'a str, &'a [String])> {
     if executable_has_name(executable, "busybox") {
         let (nested, rest) = args.split_first()?;
@@ -410,12 +551,9 @@ fn wrapped_shell<'a>(executable: &str, args: &'a [String]) -> Option<(&'a str, &
     if !executable_has_name(executable, "env") {
         return None;
     }
-    for (index, argument) in args.iter().enumerate() {
-        if classify_shell_executable(argument).is_some() {
-            return Some((argument, &args[index + 1..]));
-        }
-    }
-    None
+    let index = parse_env_invocation(args).command_index?;
+    let nested = args.get(index)?;
+    classify_shell_executable(nested).map(|_| (nested.as_str(), &args[index + 1..]))
 }
 
 fn unique_preserving_order(keys: impl IntoIterator<Item = String>) -> Vec<String> {
@@ -545,13 +683,65 @@ mod tests {
             ("busybox", vec!["/bin/ash", "-c", "echo unsafe"]),
             ("env", vec!["-S", "bash -c 'echo unsafe'"]),
             ("env", vec!["-Sbash -c 'echo unsafe'"]),
+            ("/usr/bin/env", vec!["-iS", "sh -c 'echo unsafe'"]),
+            ("env", vec!["-viS", "sh -c 'echo unsafe'"]),
+            ("env", vec!["-0ivSsh -c 'echo unsafe'"]),
+            (
+                "env",
+                vec!["-a", "custom-argv0", "-S", "sh -c 'echo unsafe'"],
+            ),
+            ("env", vec!["-iacustom-argv0", "-Ssh -c 'echo unsafe'"]),
+            (
+                "env",
+                vec![
+                    "--argv0",
+                    "custom-argv0",
+                    "--split-string",
+                    "sh -c 'echo unsafe'",
+                ],
+            ),
+            ("env", vec!["--split-string", "bash -c 'echo unsafe'"]),
             ("env", vec!["--split-string=bash -c 'echo unsafe'"]),
+            ("env", vec!["--spl=bash -c 'echo unsafe'"]),
+            ("env", vec!["-uS", "/bin/sh", "-c", "echo unsafe"]),
+            ("env", vec!["-C/tmp", "/bin/sh", "-c", "echo unsafe"]),
+            (
+                "env",
+                vec!["--", "SAFE=value", "/bin/sh", "-c", "echo unsafe"],
+            ),
         ] {
             let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
             assert_eq!(
                 validate_structured_invocation(executable, &args),
                 Err(CommandSpecError::ShellCommandString),
                 "accepted {executable} {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn env_option_parser_keeps_values_and_post_terminator_args_structured() {
+        for args in [
+            vec!["-uS", "codex", "-c", "plain argument"],
+            vec!["-iuS", "codex", "-c", "plain argument"],
+            vec!["-u", "sh", "codex", "-c", "plain argument"],
+            vec!["-C/bin/sh", "codex", "-c", "plain argument"],
+            vec!["-C", "/bin/sh", "codex", "-c", "plain argument"],
+            vec!["-P/bin/sh", "codex", "-c", "plain argument"],
+            vec!["-aS", "codex", "-c", "plain argument"],
+            vec!["-iaS", "codex", "-c", "plain argument"],
+            vec!["--argv0=S", "codex", "-c", "plain argument"],
+            vec!["--unset=sh", "codex", "-c", "plain argument"],
+            vec!["--chdir", "/bin/sh", "codex", "-c", "plain argument"],
+            vec!["--", "-S", "sh -c 'not interpreted'"],
+            vec!["--", "--split-string=sh -c 'not interpreted'"],
+            vec!["-xS", "sh -c 'invalid env option, not interpreted'"],
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert_eq!(
+                validate_structured_invocation("/usr/bin/env", &args),
+                Ok(()),
+                "rejected structured env arguments: {args:?}"
             );
         }
     }
