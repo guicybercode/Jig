@@ -20,9 +20,7 @@ describe("AppShell", () => {
   it("explains why session and project actions are unavailable", () => {
     render(<AppShell />);
 
-    expect(
-      screen.getByRole("button", { name: "New Session" }),
-    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "New Session" })).toBeDisabled();
     expect(
       screen.getByRole("button", { name: "New Session" }),
     ).toHaveAccessibleDescription("Add a project first");
@@ -187,5 +185,48 @@ describe("AppShell", () => {
     await waitFor(() => {
       expect(dialog.querySelector("#new-session-dialog-form-name")).toHaveFocus();
     });
+  });
+
+  it("opens the agents catalog from the header", async () => {
+    const user = userEvent.setup();
+    render(<AppShell />);
+
+    await user.click(screen.getByRole("button", { name: "Agents" }));
+
+    expect(screen.getByRole("heading", { name: "Agents", level: 1 })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Codex" })).toBeVisible();
+    expect(screen.getByText("Claude Code")).toBeVisible();
+    expect(screen.getByText("Gemini CLI")).toBeVisible();
+    expect(screen.getByText("OpenCode")).toBeVisible();
+  });
+
+  it("routes the agents command to the catalog's custom-agent flow", async () => {
+    const user = userEvent.setup();
+    render(<AppShell />);
+
+    await user.click(screen.getByRole("button", { name: "Commands" }));
+    const palette = screen.getByRole("dialog", { name: "Command palette" });
+    await user.click(within(palette).getByRole("button", { name: "Open Agents" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Agents", level: 1 })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Codex" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Add custom agent" }));
+    const agentDialog = screen.getByRole("dialog", { name: "Add custom agent" });
+    expect(agentDialog).toBeVisible();
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+
+    const addArgument = within(agentDialog).getByRole("button", {
+      name: "Add argument",
+    });
+    addArgument.focus();
+    await user.keyboard("{Control>}k{/Control}");
+
+    expect(
+      screen.queryByRole("dialog", { name: "Command palette" }),
+    ).not.toBeInTheDocument();
+    expect(agentDialog).toBeVisible();
+    expect(addArgument).toHaveFocus();
   });
 });

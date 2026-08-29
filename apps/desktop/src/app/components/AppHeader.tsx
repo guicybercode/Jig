@@ -8,12 +8,16 @@ import {
 interface AppHeaderProps {
   readonly commandPaletteOpen: boolean;
   readonly onOpenCommandPalette: () => void;
+  readonly onOpenAgents: () => void;
+  readonly agentsActive: boolean;
 }
 
 /** Renders global product identity and session actions. */
 export function AppHeader({
   commandPaletteOpen,
   onOpenCommandPalette,
+  onOpenAgents,
+  agentsActive,
 }: AppHeaderProps) {
   const ready = useDaemonReady();
   const project = useSelectedProject();
@@ -33,6 +37,15 @@ export function AppHeader({
         <button
           className="button button--secondary"
           type="button"
+          onClick={onOpenAgents}
+          aria-current={agentsActive ? "page" : undefined}
+        >
+          <Icon name="settings" />
+          <span>Agents</span>
+        </button>
+        <button
+          className="button button--secondary"
+          type="button"
           aria-haspopup="dialog"
           aria-expanded={commandPaletteOpen}
           aria-keyshortcuts="Control+K Meta+K"
@@ -43,14 +56,16 @@ export function AppHeader({
             Ctrl/⌘ K
           </kbd>
         </button>
-        <span id="new-session-requirement" className="app-header__requirement">
-          Add a project first
-        </span>
+        {canCreate ? null : (
+          <span id="new-session-requirement" className="app-header__requirement">
+            Add a project first
+          </span>
+        )}
         <button
           className="button button--primary"
           type="button"
           disabled={!canCreate}
-          aria-describedby="new-session-requirement"
+          aria-describedby={canCreate ? undefined : "new-session-requirement"}
           onClick={() => actions.openDialog("newSession")}
         >
           <Icon name="plus" />

@@ -1,6 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
+import { AgentApiProvider } from "../ipc/AgentApiProvider";
+import { createMemoryAgentApi } from "../ipc/memoryAgentApi";
+import type { IpcClient } from "../ipc";
 import { AppHeader } from "./components/AppHeader";
+import { AgentsView } from "./features/agents/AgentsView";
 import {
   CommandPalette,
   type CommandPaletteCommand,
@@ -18,7 +22,6 @@ import {
   useSelectedProject,
   useWorkspaceActions,
 } from "./workspace";
-import type { IpcClient } from "../ipc";
 
 interface AppShellProps {
   readonly client?: IpcClient;
@@ -26,9 +29,12 @@ interface AppShellProps {
 
 /** Composes the persistent desktop application regions. */
 export function AppShell({ client }: AppShellProps) {
+  const agentApi = useMemo(() => createMemoryAgentApi(), []);
   return (
     <WorkspaceProvider client={client}>
-      <AppShellLayout />
+      <AgentApiProvider api={agentApi}>
+        <AppShellLayout />
+      </AgentApiProvider>
     </WorkspaceProvider>
   );
 }
@@ -38,6 +44,7 @@ function AppShellLayout() {
   const daemonReady = useDaemonReady();
   const notifications = useNotifications();
   const actions = useWorkspaceActions();
+  const [view, setView] = useState<"workspace" | "agents">("workspace");
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
   useEffect(() => {
@@ -62,11 +69,9 @@ function AppShellLayout() {
       onSelect: () => actions.openDialog("newSession"),
     },
     {
-      id: "agent.create",
-      label: "Add Custom Agent",
-      disabled: !daemonReady,
-      disabledReason: "Connect the local daemon first.",
-      onSelect: () => actions.openDialog("customAgent"),
+      id: "agents.open",
+      label: "Open Agents",
+      onSelect: () => setView("agents"),
     },
     {
       id: "workspace.refresh",
@@ -90,10 +95,20 @@ function AppShellLayout() {
       <AppHeader
         commandPaletteOpen={commandPaletteOpen}
         onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+        agentsActive={view === "agents"}
+        onOpenAgents={() =>
+          setView((current) => (current === "agents" ? "workspace" : "agents"))
+        }
       />
       <div className="app-shell__body">
         <ProjectSidebar />
-        {project ? <WorkspaceMain project={project} /> : <WorkspaceEmptyState />}
+        {view === "agents" ? (
+          <AgentsView hasProject={project !== null} />
+        ) : project ? (
+          <WorkspaceMain project={project} />
+        ) : (
+          <WorkspaceEmptyState />
+        )}
       </div>
       <LocalStatusBar />
       {notifications.length > 0 ? (
@@ -149,7 +164,7 @@ function isCommandPaletteShortcut(event: KeyboardEvent): boolean {
   }
   if (
     target.isContentEditable ||
-    target.closest("input, textarea, select, [contenteditable]")
+    target.closest("input, textarea, select, [contenteditable], [role='dialog']")
   ) {
     return false;
   }
