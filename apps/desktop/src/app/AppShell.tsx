@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppHeader } from "./components/AppHeader";
 import { Icon } from "./components/Icon";
 import { CommandPalette, type CommandPaletteCommand } from "./features/commands/CommandPalette";
+import { CanvasSidebar } from "./features/navigation/CanvasSidebar";
 import { ProjectSidebar } from "./features/navigation/ProjectSidebar";
 import { SessionSidebar } from "./features/navigation/SessionSidebar";
 import { LocalStatusBar } from "./features/status/LocalStatusBar";
@@ -59,6 +60,14 @@ export function AppShell() {
     (projectId: string) => {
       workspace.selectProject(projectId);
       workspace.setView("session");
+      setNavigationOpen(false);
+    },
+    [workspace],
+  );
+
+  const selectCanvasProject = useCallback(
+    (projectId: string) => {
+      workspace.selectProject(projectId);
       setNavigationOpen(false);
     },
     [workspace],
@@ -330,34 +339,55 @@ export function AppShell() {
               <Icon name="close" />
             </button>
           </div>
-          <ProjectSidebar
-            projects={workspace.projects}
-            selectedProjectId={workspace.selectedProjectId ?? undefined}
-            canManageProjects={workspace.isConnected}
-            onSelectProject={selectProject}
-            onAddProject={openAddProject}
-            onRenameProject={(projectId) => workspace.openOverlay({ kind: "rename-project", projectId })}
-            onRemoveProject={(projectId) => workspace.openOverlay({ kind: "remove-project", projectId })}
-            onOpenSettings={() => { workspace.setView("settings"); setNavigationOpen(false); }}
-            onOpenDiagnostics={() => { workspace.setView("diagnostics"); setNavigationOpen(false); }}
-          />
-          <SessionSidebar
-            sessions={workspace.projectSessions}
-            agents={workspace.agents}
-            canCreateSession={canCreateSession}
-            canManageWorktrees={workspace.isConnected}
-            worktrees={workspace.worktrees.filter(
-              (worktree) =>
-                worktree.projectId === workspace.selectedProject?.id,
-            )}
-            selectedSessionId={workspace.selectedSessionId ?? undefined}
-            projectSelected={workspace.selectedProject !== null}
-            onSelectSession={selectSession}
-            onNewSession={openNewSession}
-            onRemoveWorktree={(worktreeId) =>
-              workspace.openOverlay({ kind: "remove-worktree", worktreeId })
-            }
-          />
+          {workspace.view === "canvas" ? (
+            <CanvasSidebar
+              projects={workspace.projects}
+              sessions={workspace.sessions}
+              selectedProjectId={workspace.selectedProjectId ?? undefined}
+              canManageProjects={workspace.isConnected}
+              onSelectProject={selectCanvasProject}
+              onAddProject={openAddProject}
+              onOpenSettings={() => {
+                workspace.setView("settings");
+                setNavigationOpen(false);
+              }}
+              onOpenDiagnostics={() => {
+                workspace.setView("diagnostics");
+                setNavigationOpen(false);
+              }}
+            />
+          ) : (
+            <>
+              <ProjectSidebar
+                projects={workspace.projects}
+                selectedProjectId={workspace.selectedProjectId ?? undefined}
+                canManageProjects={workspace.isConnected}
+                onSelectProject={selectProject}
+                onAddProject={openAddProject}
+                onRenameProject={(projectId) => workspace.openOverlay({ kind: "rename-project", projectId })}
+                onRemoveProject={(projectId) => workspace.openOverlay({ kind: "remove-project", projectId })}
+                onOpenSettings={() => { workspace.setView("settings"); setNavigationOpen(false); }}
+                onOpenDiagnostics={() => { workspace.setView("diagnostics"); setNavigationOpen(false); }}
+              />
+              <SessionSidebar
+                sessions={workspace.projectSessions}
+                agents={workspace.agents}
+                canCreateSession={canCreateSession}
+                canManageWorktrees={workspace.isConnected}
+                worktrees={workspace.worktrees.filter(
+                  (worktree) =>
+                    worktree.projectId === workspace.selectedProject?.id,
+                )}
+                selectedSessionId={workspace.selectedSessionId ?? undefined}
+                projectSelected={workspace.selectedProject !== null}
+                onSelectSession={selectSession}
+                onNewSession={openNewSession}
+                onRemoveWorktree={(worktreeId) =>
+                  workspace.openOverlay({ kind: "remove-worktree", worktreeId })
+                }
+              />
+            </>
+          )}
         </div>
         {navigationOpen ? <button className="navigation-backdrop" type="button" aria-label="Dismiss navigation" onClick={() => setNavigationOpen(false)} /> : null}
         <Workspace

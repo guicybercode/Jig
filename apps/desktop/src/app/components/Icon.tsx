@@ -16,6 +16,7 @@ export type IconName =
   | "link"
   | "map"
   | "menu"
+  | "monitor"
   | "more"
   | "note"
   | "pencil"
@@ -146,6 +147,13 @@ function getIconPaths(name: IconName): ReactNode {
           <circle cx="5" cy="12" r="1" fill="currentColor" stroke="none" />
           <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />
           <circle cx="19" cy="12" r="1" fill="currentColor" stroke="none" />
+        </>
+      );
+    case "monitor":
+      return (
+        <>
+          <rect x="3" y="4" width="18" height="13" rx="2" />
+          <path d="M8 21h8M12 17v4" />
         </>
       );
     case "note":
