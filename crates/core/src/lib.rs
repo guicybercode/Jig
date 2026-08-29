@@ -11,7 +11,7 @@ mod ids;
 mod model;
 mod protocol;
 
-pub use command::{CommandSpec, CommandSpecError};
+pub use command::{CommandSpec, CommandSpecError, MAX_STARTUP_INPUT_BYTES};
 pub use error::ApiError;
 pub use ids::{AgentId, ProjectId, RequestId, SessionId, WorktreeId};
 pub use model::{AgentDefinition, AgentSource, Project, Session, SessionStatus, Worktree};

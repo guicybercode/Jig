@@ -466,6 +466,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cli-master-agents"
+version = "0.1.0"
+dependencies = [
+ "cli-master-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "cli-master-core"
 version = "0.1.0"
 dependencies = [

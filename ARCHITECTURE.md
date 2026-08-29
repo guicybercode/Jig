@@ -177,33 +177,50 @@ pub trait AgentAdapter: Send + Sync {
     fn definition(&self) -> AgentDefinition;
     fn detect(&self, environment: &LaunchEnvironment) -> DetectionResult;
     fn build_command(&self, context: &LaunchContext) -> Result<CommandSpec, AgentError>;
+    fn diagnostics(&self, environment: &LaunchEnvironment) -> AgentDiagnostics;
+    fn capabilities(&self) -> AgentCapabilities;
 }
 
 pub struct AgentDefinition {
-    pub id: AgentId,
+    pub id: String, // "codex" | "claude" | "gemini" | "opencode" | custom key
     pub display_name: String,
+    pub executable: String,
+    pub default_args: Vec<String>,
     pub source: AgentSource, // BuiltIn | Custom
+    pub installed: bool,
+    pub resolved_path: Option<PathBuf>,
+    pub version: Option<String>,
+    pub capabilities: AgentCapabilities,
+    pub warning: Option<String>,
 }
 
 pub struct CommandSpec {
-    pub executable: PathBuf,
-    pub args: Vec<OsString>,
+    pub executable: String,
+    pub args: Vec<String>,
     pub cwd: PathBuf,
-    pub env_overrides: BTreeMap<OsString, OsString>,
+    pub env_additions: BTreeMap<String, String>,
+    pub env_removals: Vec<String>,
+    pub terminal_title: Option<String>,
+    pub startup_input: Option<String>,
 }
 ```
 
 Built-in adapter IDs are stable: `codex`, `claude`, `gemini`, and `opencode`.
 Adapters do not guess optional vendor flags. In v0.1 they resolve the executable
 and launch the CLI in its normal interactive mode. Flags are added only after
-validation against the installed CLI version.
+validation against the installed CLI version. User-configured extra arguments
+remain a structured array on `LaunchContext`.
 
-Custom agents store a display name, executable, ordered argument array, and
-non-secret environment overrides. The daemon rejects NUL bytes, empty
-executables, and an invalid working directory. An executable may be absolute or
-resolved from the effective PATH. Arguments are never parsed as a shell string.
-Secret values and agent authentication tokens are not stored; agents inherit
-their already configured local authentication environment.
+Custom agents store a display name, executable, ordered argument array,
+non-secret environment additions, optional default directory, optional icon or
+color metadata, and whether a PTY is required. The daemon rejects NUL bytes,
+empty names or executables, `~user` paths, relative executables that are not a
+bare PATH name, and an invalid working directory. An executable may be absolute,
+`~/…`, a controlled placeholder, or resolved from the effective PATH. Arguments
+are never parsed as a shell string. Placeholders (`${PROJECT_PATH}`,
+`${WORKTREE_PATH}`, `${SESSION_ID}`, `${SESSION_NAME}`) expand in a single pass
+with no `eval`. Secret values and agent authentication tokens are not stored;
+agents inherit their already configured local authentication environment.
 
 GUI applications often receive an incomplete PATH. `LaunchEnvironment`
 combines the daemon's inherited PATH, standard Linux/macOS executable paths,

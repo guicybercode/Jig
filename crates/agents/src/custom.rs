@@ -1,12 +1,19 @@
-use std::{collections::BTreeMap, fmt, path::Path};
+use std::{
+    collections::BTreeMap,
+    fmt,
+    path::{Path, PathBuf},
+};
 
-use cli_master_core::{AgentSource, CommandSpec};
+use cli_master_core::AgentSource;
 use serde::{Deserialize, Deserializer, Serialize, de};
 
 use crate::{
-    AgentAdapter, AgentError, CustomDefinitionError, DetectionResult, LaunchContext,
-    LaunchEnvironment, adapter::resolved_executable,
+    AgentAdapter, AgentCapabilities, AgentError, CustomDefinitionError, PlaceholderContext,
+    placeholders,
 };
+
+const MAX_ICON_CHARS: usize = 64;
+const MAX_COLOR_CHARS: usize = 32;
 
 /// Validated, serializable definition for a user-provided CLI adapter.
 ///
@@ -19,6 +26,20 @@ pub struct CustomAgentDefinition {
     executable: String,
     args: Vec<String>,
     env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    env_removals: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    color: Option<String>,
+    #[serde(default = "default_requires_pty")]
+    requires_pty: bool,
+}
+
+const fn default_requires_pty() -> bool {
+    true
 }
 
 impl CustomAgentDefinition {
@@ -66,11 +87,16 @@ impl CustomAgentDefinition {
         S: Into<String>,
     {
         let definition = Self {
-            key: key.into(),
-            display_name: display_name.into(),
-            executable: executable.into(),
+            key: key.into().trim().to_owned(),
+            display_name: display_name.into().trim().to_owned(),
+            executable: executable.into().trim().to_owned(),
             args: args.into_iter().map(Into::into).collect(),
             env,
+            env_removals: Vec::new(),
+            default_cwd: None,
+            icon: None,
+            color: None,
+            requires_pty: true,
         };
         definition.validate()?;
         Ok(definition)
@@ -88,7 +114,7 @@ impl CustomAgentDefinition {
         &self.display_name
     }
 
-    /// Returns the absolute path or bare executable name.
+    /// Returns the absolute path, `~/` path, placeholder template, or bare name.
     #[must_use]
     pub fn executable(&self) -> &str {
         &self.executable
@@ -100,10 +126,153 @@ impl CustomAgentDefinition {
         &self.args
     }
 
-    /// Returns only the explicitly configured environment overrides.
+    /// Returns only the explicitly configured environment additions.
     #[must_use]
     pub const fn env(&self) -> &BTreeMap<String, String> {
         &self.env
+    }
+
+    /// Returns environment keys to remove from the child.
+    #[must_use]
+    pub fn env_removals(&self) -> &[String] {
+        &self.env_removals
+    }
+
+    /// Returns the optional default working directory template.
+    #[must_use]
+    pub fn default_cwd(&self) -> Option<&str> {
+        self.default_cwd.as_deref()
+    }
+
+    /// Returns optional icon metadata.
+    #[must_use]
+    pub fn icon(&self) -> Option<&str> {
+        self.icon.as_deref()
+    }
+
+    /// Returns optional color metadata.
+    #[must_use]
+    pub fn color(&self) -> Option<&str> {
+        self.color.as_deref()
+    }
+
+    /// Returns whether the session layer should allocate a PTY.
+    #[must_use]
+    pub const fn requires_pty(&self) -> bool {
+        self.requires_pty
+    }
+
+    /// Replaces default arguments.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an argument contains a NUL byte.
+    pub fn with_args<I, S>(mut self, args: I) -> Result<Self, CustomDefinitionError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.args = args.into_iter().map(Into::into).collect();
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Replaces environment additions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a key or value is invalid.
+    pub fn with_env(
+        mut self,
+        env: BTreeMap<String, String>,
+    ) -> Result<Self, CustomDefinitionError> {
+        self.env = env;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Replaces environment-removal keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a key is invalid.
+    pub fn with_env_removals<I, S>(mut self, keys: I) -> Result<Self, CustomDefinitionError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.env_removals = keys.into_iter().map(Into::into).collect();
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Sets the default working directory template.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory is a relative path without placeholders.
+    pub fn with_default_cwd(
+        mut self,
+        cwd: impl Into<String>,
+    ) -> Result<Self, CustomDefinitionError> {
+        let cwd = cwd.into();
+        self.default_cwd = if cwd.is_empty() { None } else { Some(cwd) };
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Sets optional icon metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the value is too long or contains a NUL byte.
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Result<Self, CustomDefinitionError> {
+        let icon = icon.into();
+        self.icon = if icon.is_empty() { None } else { Some(icon) };
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Sets optional color metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the value is not a short token or `#RGB`/`#RRGGBB`.
+    pub fn with_color(mut self, color: impl Into<String>) -> Result<Self, CustomDefinitionError> {
+        let color = color.into();
+        self.color = if color.is_empty() { None } else { Some(color) };
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Sets whether a PTY is required.
+    #[must_use]
+    pub const fn with_requires_pty(mut self, requires_pty: bool) -> Self {
+        self.requires_pty = requires_pty;
+        self
+    }
+
+    /// Resolves the working directory for a session.
+    ///
+    /// `session_cwd` wins when provided. Otherwise `default_cwd` is expanded.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if neither directory is usable or placeholders fail.
+    pub fn resolve_cwd(
+        &self,
+        session_cwd: Option<&Path>,
+        placeholders: &PlaceholderContext,
+    ) -> Result<PathBuf, AgentError> {
+        if let Some(path) = session_cwd {
+            return Ok(path.to_path_buf());
+        }
+        let Some(template) = &self.default_cwd else {
+            return Err(AgentError::InvalidWorkingDirectory(PathBuf::new()));
+        };
+        let expanded = placeholders::expand(template, placeholders)?;
+        let expanded = crate::expand_leading_tilde(&expanded)?;
+        Ok(PathBuf::from(expanded))
     }
 
     fn validate(&self) -> Result<(), CustomDefinitionError> {
@@ -120,27 +289,33 @@ impl CustomAgentDefinition {
         }
         validate_required("display_name", &self.display_name)?;
         validate_required("executable", &self.executable)?;
-
-        let executable_path = Path::new(&self.executable);
-        if !executable_path.is_absolute() && executable_path.components().count() != 1 {
-            return Err(CustomDefinitionError::new(
-                "executable",
-                "must be an absolute path or a bare executable name",
-            ));
-        }
+        validate_executable_shape("executable", &self.executable)?;
 
         for argument in &self.args {
             validate_no_nul("args", argument)?;
         }
         for (key, value) in &self.env {
-            if key.is_empty() || key.contains('=') {
+            validate_environment_key(key)?;
+            validate_no_nul("env", value)?;
+        }
+        for key in &self.env_removals {
+            validate_environment_key(key)?;
+        }
+        if let Some(cwd) = &self.default_cwd {
+            validate_required("default_cwd", cwd)?;
+            validate_directory_shape("default_cwd", cwd)?;
+        }
+        if let Some(icon) = &self.icon {
+            validate_no_nul("icon", icon)?;
+            if icon.chars().count() > MAX_ICON_CHARS {
                 return Err(CustomDefinitionError::new(
-                    "env",
-                    "variable names must be non-empty and must not contain '='",
+                    "icon",
+                    "must be at most 64 characters",
                 ));
             }
-            validate_no_nul("env", key)?;
-            validate_no_nul("env", value)?;
+        }
+        if let Some(color) = &self.color {
+            validate_color(color)?;
         }
         Ok(())
     }
@@ -155,6 +330,11 @@ impl fmt::Debug for CustomAgentDefinition {
             .field("executable", &self.executable)
             .field("args_count", &self.args.len())
             .field("env_keys", &self.env.keys().collect::<Vec<_>>())
+            .field("env_removals", &self.env_removals)
+            .field("default_cwd", &self.default_cwd)
+            .field("icon", &self.icon)
+            .field("color", &self.color)
+            .field("requires_pty", &self.requires_pty)
             .finish()
     }
 }
@@ -174,17 +354,42 @@ impl<'de> Deserialize<'de> for CustomAgentDefinition {
             args: Vec<String>,
             #[serde(default)]
             env: BTreeMap<String, String>,
+            #[serde(default)]
+            env_removals: Vec<String>,
+            #[serde(default)]
+            default_cwd: Option<String>,
+            #[serde(default)]
+            icon: Option<String>,
+            #[serde(default)]
+            color: Option<String>,
+            #[serde(default = "default_requires_pty")]
+            requires_pty: bool,
         }
 
         let wire = WireDefinition::deserialize(deserializer)?;
-        Self::try_from_parts(
+        let mut definition = Self::try_from_parts(
             wire.key,
             wire.display_name,
             wire.executable,
             wire.args,
             wire.env,
         )
-        .map_err(de::Error::custom)
+        .map_err(de::Error::custom)?;
+        definition = definition
+            .with_env_removals(wire.env_removals)
+            .map_err(de::Error::custom)?;
+        if let Some(cwd) = wire.default_cwd {
+            definition = definition
+                .with_default_cwd(cwd)
+                .map_err(de::Error::custom)?;
+        }
+        if let Some(icon) = wire.icon {
+            definition = definition.with_icon(icon).map_err(de::Error::custom)?;
+        }
+        if let Some(color) = wire.color {
+            definition = definition.with_color(color).map_err(de::Error::custom)?;
+        }
+        Ok(definition.with_requires_pty(wire.requires_pty))
     }
 }
 
@@ -230,24 +435,24 @@ impl AgentAdapter for CustomAgentAdapter {
         AgentSource::Custom
     }
 
-    fn detect(&self, environment: &LaunchEnvironment) -> DetectionResult {
-        environment.detect(self.definition.executable())
+    fn executable_name(&self) -> &str {
+        self.definition.executable()
     }
 
-    fn build_command(&self, context: &LaunchContext) -> Result<CommandSpec, AgentError> {
-        context.validate_cwd()?;
-        let executable = resolved_executable(self.detect(context.environment()))?;
-        let executable = executable
-            .to_str()
-            .ok_or(AgentError::NonUtf8ExecutablePath)?;
+    fn default_args(&self) -> &[String] {
+        self.definition.args()
+    }
 
-        CommandSpec::try_from_parts(
-            executable,
-            self.definition.args().iter().cloned(),
-            context.cwd(),
-            self.definition.env().clone(),
-        )
-        .map_err(AgentError::from)
+    fn environment_additions(&self) -> &BTreeMap<String, String> {
+        self.definition.env()
+    }
+
+    fn environment_removals(&self) -> &[String] {
+        self.definition.env_removals()
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities::custom(self.definition.requires_pty())
     }
 }
 
@@ -267,4 +472,93 @@ fn validate_no_nul(field: &'static str, value: &str) -> Result<(), CustomDefinit
     } else {
         Ok(())
     }
+}
+
+fn validate_environment_key(key: &str) -> Result<(), CustomDefinitionError> {
+    if key.is_empty() || key.contains('=') {
+        return Err(CustomDefinitionError::new(
+            "env",
+            "variable names must be non-empty and must not contain '='",
+        ));
+    }
+    validate_no_nul("env", key)
+}
+
+fn validate_executable_shape(
+    field: &'static str,
+    value: &str,
+) -> Result<(), CustomDefinitionError> {
+    if placeholders::contains_placeholder(value) {
+        return Ok(());
+    }
+    if value == "~" || value.starts_with("~/") {
+        return Ok(());
+    }
+    if value.starts_with('~') {
+        return Err(CustomDefinitionError::new(
+            field,
+            "must not use ~user forms; use ~/ or an absolute path",
+        ));
+    }
+    let path = Path::new(value);
+    if path.is_absolute() || path.components().count() == 1 {
+        Ok(())
+    } else {
+        Err(CustomDefinitionError::new(
+            field,
+            "must be an absolute path, a ~/ path, a placeholder, or a bare executable name",
+        ))
+    }
+}
+
+fn validate_directory_shape(field: &'static str, value: &str) -> Result<(), CustomDefinitionError> {
+    if placeholders::contains_placeholder(value) {
+        return Ok(());
+    }
+    if value == "~" || value.starts_with("~/") {
+        return Ok(());
+    }
+    if value.starts_with('~') {
+        return Err(CustomDefinitionError::new(
+            field,
+            "must not use ~user forms; use ~/ or an absolute path",
+        ));
+    }
+    if Path::new(value).is_absolute() {
+        Ok(())
+    } else {
+        Err(CustomDefinitionError::new(
+            field,
+            "must be an absolute path, a ~/ path, or a placeholder",
+        ))
+    }
+}
+
+fn validate_color(color: &str) -> Result<(), CustomDefinitionError> {
+    validate_no_nul("color", color)?;
+    if color.chars().count() > MAX_COLOR_CHARS {
+        return Err(CustomDefinitionError::new(
+            "color",
+            "must be at most 32 characters",
+        ));
+    }
+    if let Some(hex) = color.strip_prefix('#') {
+        let valid_len = hex.len() == 3 || hex.len() == 6;
+        let valid_hex = hex.bytes().all(|byte| byte.is_ascii_hexdigit());
+        if !(valid_len && valid_hex) {
+            return Err(CustomDefinitionError::new(
+                "color",
+                "must be #RGB, #RRGGBB, or a short token",
+            ));
+        }
+    } else if !color
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err(CustomDefinitionError::new(
+            "color",
+            "must be #RGB, #RRGGBB, or a short token",
+        ));
+    }
+    Ok(())
 }
