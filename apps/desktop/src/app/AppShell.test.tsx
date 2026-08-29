@@ -1179,6 +1179,19 @@ describe("AppShell project and session workflows", () => {
     ).not.toBeInTheDocument();
     expect(opener).toHaveFocus();
   });
+
+  it("opens the agents catalog from the header", async () => {
+    const user = userEvent.setup();
+    render(<AppShell />);
+
+    await user.click(screen.getByRole("button", { name: "Agents" }));
+
+    expect(screen.getByRole("heading", { name: "Agents", level: 1 })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Codex" })).toBeVisible();
+    expect(screen.getByText("Claude Code")).toBeVisible();
+    expect(screen.getByText("Gemini CLI")).toBeVisible();
+    expect(screen.getByText("OpenCode")).toBeVisible();
+  });
 });
 
 async function renderApp(client: MockIpcClient) {

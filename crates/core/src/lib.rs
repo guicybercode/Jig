@@ -5,6 +5,7 @@
 
 #![warn(missing_docs)]
 
+mod catalog;
 mod command;
 mod error;
 mod ids;
@@ -13,6 +14,12 @@ mod protocol;
 mod redact;
 pub mod wire;
 
+pub use catalog::{
+    AgentCustomCreateRequest, AgentCustomRemoveRequest, AgentCustomUpdateRequest,
+    AgentDetectRequest, AgentDetectResponse, AgentDiagnosticsReport, AgentListRequest,
+    AgentListResponse, AgentRecord, AgentSetEnabledRequest, LaunchTestStatusDto, agent_methods,
+    builtin_agent_ids,
+};
 pub use command::{CommandSpec, CommandSpecError, MAX_STARTUP_INPUT_BYTES};
 pub use error::ApiError;
 pub use ids::{AgentId, DaemonInstanceId, ProjectId, RequestId, SessionId, WorktreeId};
