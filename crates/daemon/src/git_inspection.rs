@@ -2,11 +2,11 @@
 
 use std::path::PathBuf;
 
-use cli_master_core::ApiError;
 use cli_master_core::wire::{
     GitChangeKind, GitChangedFile, GitDiffRequest, GitDiffResponse, GitStatusCounts,
     GitStatusRequest, GitStatusResponse, GitTarget,
 };
+use cli_master_core::{ApiError, ApplicationError};
 use cli_master_git::{
     ChangeKind, ChangedFile, Diff, Git, GitError, GitErrorKind, RepositoryStatus, display_path,
 };
@@ -56,15 +56,15 @@ fn resolve_target(storage: &Storage, target: GitTarget) -> Result<PathBuf, ApiEr
     let path = match target {
         GitTarget::Project { project_id } => storage
             .get_project(project_id)
-            .map_err(map_storage_error)?
+            .map_err(|error| map_storage_error(&error))?
             .map(|project| project.path),
         GitTarget::Session { session_id } => storage
             .get_session(session_id)
-            .map_err(map_storage_error)?
+            .map_err(|error| map_storage_error(&error))?
             .map(|session| session.cwd),
         GitTarget::Worktree { worktree_id } => storage
             .get_worktree(worktree_id)
-            .map_err(map_storage_error)?
+            .map_err(|error| map_storage_error(&error))?
             .map(|worktree| worktree.path),
     };
     path.ok_or_else(|| unregistered_target(&target))
@@ -98,34 +98,44 @@ where
 {
     tokio::task::spawn_blocking(work)
         .await
-        .map_err(|_| {
-            ApiError::new(
-                "internal_error",
-                "The daemon could not complete a Git inspection",
+        .map_err(|error| {
+            record_application_error(
+                ApplicationError::new(
+                    "internal_error",
+                    "Git inspection failed",
+                    "The daemon could not complete a Git inspection",
+                )
+                .with_technical("the blocking Git task did not complete")
+                .with_source(&error)
+                .not_recoverable(),
             )
         })?
         .map_err(|error| map_git_error(&error))
 }
 
 fn map_git_error(error: &GitError) -> ApiError {
-    match error.kind() {
-        GitErrorKind::NotFound => ApiError::new(
+    let application = match error.kind() {
+        GitErrorKind::NotFound => ApplicationError::new(
             "git_not_found",
+            "Git unavailable",
             "Git could not inspect the registered target",
         )
         .with_action("Confirm Git is installed and the registered directory still exists"),
-        GitErrorKind::InvalidInput | GitErrorKind::UnsafePath => ApiError::new(
+        GitErrorKind::InvalidInput | GitErrorKind::UnsafePath => ApplicationError::new(
             "invalid_git_path",
+            "Invalid Git path",
             "The requested Git path is not a safe repository-relative pathspec",
         )
         .with_action("Choose a file path reported by git.status"),
-        GitErrorKind::NotRepository => ApiError::new(
+        GitErrorKind::NotRepository => ApplicationError::new(
             "not_repository",
+            "Not a Git repository",
             "The registered target is not inside a Git repository",
         )
         .with_action("Register a Git repository or initialize one in the project directory"),
-        GitErrorKind::Timeout => ApiError::new(
+        GitErrorKind::Timeout => ApplicationError::new(
             "git_timeout",
+            "Git inspection timed out",
             "Git inspection exceeded the daemon time limit",
         )
         .with_action("Retry the inspection; if it keeps timing out, check repository locks"),
@@ -134,20 +144,39 @@ fn map_git_error(error: &GitError) -> ApiError {
         | GitErrorKind::Io
         | GitErrorKind::DirtyWorktree
         | GitErrorKind::WorktreeInUse
-        | GitErrorKind::PartialWorktree => ApiError::new(
+        | GitErrorKind::PartialWorktree => ApplicationError::new(
             "git_inspection_failed",
+            "Git inspection failed",
             "Git could not complete the requested inspection",
         )
         .with_action("Retry the inspection and verify the repository with the Git command line"),
     }
+    .with_technical(error.to_string())
+    .with_source(error);
+    record_application_error(application)
 }
 
-fn map_storage_error(_error: StorageError) -> ApiError {
-    ApiError::new(
-        "storage_unavailable",
-        "The daemon could not look up the registered Git target",
+fn map_storage_error(error: &StorageError) -> ApiError {
+    record_application_error(
+        ApplicationError::new(
+            "storage_unavailable",
+            "Storage unavailable",
+            "The daemon could not look up the registered Git target",
+        )
+        .with_action("Restart the daemon and try again")
+        .with_technical(error.to_string())
+        .with_source(&error),
     )
-    .with_action("Restart the daemon and try again")
+}
+
+fn record_application_error(error: ApplicationError) -> ApiError {
+    warn!(
+        error_code = error.code(),
+        technical = error.technical_message(),
+        source_chain = error.source_chain(),
+        "application error"
+    );
+    error.into()
 }
 
 fn wire_status(status: &RepositoryStatus) -> GitStatusResponse {

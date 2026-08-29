@@ -28,6 +28,7 @@ already complete and stable.
 ```bash
 pnpm install --frozen-lockfile
 pnpm check
+pnpm check:versions
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
@@ -99,3 +100,7 @@ recovery visible. Do not claim atomic behavior that the system cannot provide.
 Write in clear, direct language. Update README setup commands when tooling
 changes and update ARCHITECTURE.md only when an accepted boundary or tradeoff
 changes. Keep examples safe to paste into a shell.
+
+Packaging changes need a matching note in [docs/PACKAGING.md](docs/PACKAGING.md)
+and [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md). Do not add signing
+secrets, notarization credentials, or a CI job that publishes a GitHub Release.

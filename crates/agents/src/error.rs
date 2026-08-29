@@ -225,7 +225,7 @@ impl Error for RegistryError {}
 /// Failure while importing PATH from a login shell.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PathImportError {
-    /// The `SHELL` environment variable is unset and no POSIX fallback exists.
+    /// `SHELL` is missing or unsupported and no POSIX fallback exists.
     ShellNotFound,
     /// The configured shell executable could not be started.
     SpawnFailed,
@@ -244,7 +244,7 @@ impl fmt::Display for PathImportError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ShellNotFound => formatter.write_str(
-                "SHELL is unset and no POSIX login shell was found at /bin/bash or /bin/zsh",
+                "SHELL is missing or unsupported and no POSIX login shell was found",
             ),
             Self::SpawnFailed => {
                 formatter.write_str("the login shell could not be started to read PATH")

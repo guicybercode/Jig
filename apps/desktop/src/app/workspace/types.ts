@@ -3,6 +3,7 @@ import type {
   AgentId,
   AgentRecord,
   DaemonInstanceId,
+  DiagnosticsResponse,
   GitDiffResponse,
   GitStatusResponse,
   GitTarget,
@@ -112,6 +113,7 @@ export type WorkspaceActions = {
     rows: number,
   ): Promise<void>;
   subscribeSession(sessionId: SessionId, cursor?: number): Promise<void>;
+  getDiagnostics(): Promise<DiagnosticsResponse>;
   inspectGit(target: GitTarget): Promise<void>;
   prepareRemoveWorktree(
     worktreeId: WorktreeId,

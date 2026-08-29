@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use cli_master_core::AgentSource;
+use cli_master_core::{AgentSource, validate_structured_invocation};
 use serde::{Deserialize, Deserializer, Serialize, de};
 
 use crate::{
@@ -294,6 +294,12 @@ impl CustomAgentDefinition {
         for argument in &self.args {
             validate_no_nul("args", argument)?;
         }
+        validate_structured_invocation(&self.executable, &self.args).map_err(|_| {
+            CustomDefinitionError::new(
+                "args",
+                "shell command strings are refused; use a direct executable and argument array",
+            )
+        })?;
         for (key, value) in &self.env {
             validate_environment_key(key)?;
             validate_no_nul("env", value)?;

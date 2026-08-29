@@ -3,7 +3,11 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import { createMockIpcClient } from "../ipc";
-import { helloFixture, snapshotFixture } from "../test/ipc-fixtures";
+import {
+  INSTANCE_ID,
+  helloFixture,
+  snapshotFixture,
+} from "../test/ipc-fixtures";
 import { AppShell } from "./AppShell";
 
 function renderConnectedShell() {
@@ -11,6 +15,18 @@ function renderConnectedShell() {
     "system.hello": () => helloFixture(),
     "state.snapshot": () => snapshotFixture(),
     "agent.detect": () => ({ detections: [] }),
+    "diagnostics.get": () => ({
+      daemonVersion: "0.1.0",
+      protocolVersion: 1,
+      schemaVersion: 3,
+      daemonInstanceId: INSTANCE_ID,
+      dataPath: "~/.local/share/cli-master",
+      runtimePath: "/tmp/cli-master",
+      logPath: "~/.local/share/cli-master/logs",
+      effectivePath: [],
+      recentIssues: [],
+      exportText: '{"daemonVersion":"0.1.0"}',
+    }),
   });
   render(<AppShell client={client} />);
   return client;
@@ -89,6 +105,18 @@ describe("AppShell", () => {
       screen.queryByRole("dialog", { name: "New session" }),
     ).not.toBeInTheDocument();
     expect(opener).toHaveFocus();
+  });
+
+  it("loads diagnostics through the project-owned daemon client", async () => {
+    const user = userEvent.setup();
+    const client = renderConnectedShell();
+    await screen.findByRole("heading", { name: "Demo", level: 1 });
+
+    await user.click(screen.getByRole("button", { name: "Diagnostics" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Diagnostics" });
+    expect(dialog).toHaveTextContent("~/.local/share/cli-master");
+    expect(client.calls).toContainEqual({ method: "diagnostics.get", payload: {} });
   });
 
   it("opens commands from the header and restores focus on Escape", async () => {

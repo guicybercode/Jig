@@ -474,6 +474,9 @@ export function createWorkspaceController({
     async subscribeSession(sessionId, cursor) {
       await client.request("session.subscribe", { sessionId, cursor });
     },
+    getDiagnostics() {
+      return client.request("diagnostics.get", {});
+    },
     async inspectGit(target) {
       const generation = (gitGeneration += 1);
       store.update((state) => ({

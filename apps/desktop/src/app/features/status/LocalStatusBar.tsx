@@ -1,8 +1,12 @@
 import { Icon } from "../../components/Icon";
 import { useConnection, useConnectionLabel } from "../../workspace";
 
+interface LocalStatusBarProps {
+  readonly onOpenDiagnostics: () => void;
+}
+
 /** Reports the current local-only application and daemon state. */
-export function LocalStatusBar() {
+export function LocalStatusBar({ onOpenDiagnostics }: LocalStatusBarProps) {
   const connection = useConnection();
   const label = useConnectionLabel();
   const ready = connection.phase === "ready";
@@ -13,18 +17,27 @@ export function LocalStatusBar() {
         <Icon name="branch" />
         <span>Local-first</span>
       </div>
-      <div
-        className={
-          ready
-            ? "status-bar__item"
-            : "status-bar__item status-bar__item--unavailable"
-        }
-        role="status"
-        aria-live="polite"
-        aria-atomic="true"
-      >
-        <span className="status-bar__indicator" aria-hidden="true" />
-        <span>{label}</span>
+      <div className="status-bar__actions">
+        <button
+          className="button button--secondary status-bar__diagnostics"
+          type="button"
+          onClick={onOpenDiagnostics}
+        >
+          Diagnostics
+        </button>
+        <div
+          className={
+            ready
+              ? "status-bar__item"
+              : "status-bar__item status-bar__item--unavailable"
+          }
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <span className="status-bar__indicator" aria-hidden="true" />
+          <span>{label}</span>
+        </div>
       </div>
     </footer>
   );

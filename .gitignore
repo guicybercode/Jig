@@ -14,7 +14,9 @@ target/
 *.db
 *.db-shm
 *.db-wal
-diagnostics/
+# Exported support bundles at the repository root, not source folders.
+/diagnostics/
+apps/desktop/src-tauri/binaries/cli-masterd-*
 test-results/
 playwright-report/
 blob-report/

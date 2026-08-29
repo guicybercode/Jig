@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Deserializer, Serialize, de};
 
-use crate::{AgentId, ProjectId, SessionId, WorktreeId};
+use crate::{AgentId, ProjectId, SessionId, WorktreeId, validate_structured_invocation};
 
 use super::{
     ConfirmationToken, DisplayName, ExecutableName, GitRelativePath, OutputCursor, PtyInputBase64,
@@ -150,6 +150,12 @@ pub fn validate_agent_command(
     env: &BTreeMap<String, String>,
 ) -> Result<(), WireValidationError> {
     ExecutableName::try_new(executable.to_owned())?;
+    validate_structured_invocation(executable, args).map_err(|_| {
+        WireValidationError::new(
+            "command",
+            "must not invoke a shell with a command-string flag",
+        )
+    })?;
     if args.len() > MAX_AGENT_ARGUMENTS {
         return Err(WireValidationError::new(
             "args",
@@ -738,6 +744,17 @@ mod tests {
                 serde_json::from_value::<AgentCommand>(value).is_err(),
                 "accepted {key}"
             );
+        }
+    }
+
+    #[test]
+    fn custom_agent_commands_reject_shell_command_strings_at_the_wire() {
+        for value in [
+            json!({ "executable": "/bin/bash", "args": ["-lc", "echo unsafe"], "env": {} }),
+            json!({ "executable": "env", "args": ["sh", "-c", "echo unsafe"], "env": {} }),
+            json!({ "executable": "busybox", "args": ["sh", "-c", "echo unsafe"], "env": {} }),
+        ] {
+            assert!(serde_json::from_value::<AgentCommand>(value).is_err());
         }
     }
 

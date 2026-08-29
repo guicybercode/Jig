@@ -58,7 +58,7 @@ export function createTauriTransport(): IpcTransport {
   return {
     async send(method, payload) {
       const { invoke } = await core();
-      return invoke("daemon_request", { method, payload });
+      return invoke("daemon_invoke", { method, payload });
     },
     listen(listener) {
       listeners.add(listener);

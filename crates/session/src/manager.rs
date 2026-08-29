@@ -193,10 +193,11 @@ impl SessionManager {
             error_code: None,
         };
 
+        let executable = cli_master_core::redact_text(request.command.executable());
         tracing::info!(
             event = "session.created",
             session_id = %id,
-            executable = request.command.executable(),
+            executable,
             cols = size.cols,
             rows = size.rows,
             "created session"
@@ -494,10 +495,11 @@ impl SessionManager {
             )
         };
 
+        let executable = cli_master_core::redact_text(command.executable());
         tracing::info!(
             event = "session.spawn",
             session_id = %live.id,
-            executable = command.executable(),
+            executable,
             cols = size.cols,
             rows = size.rows,
             generation,

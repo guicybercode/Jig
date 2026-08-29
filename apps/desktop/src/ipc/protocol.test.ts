@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import catalog from "../../../../protocol/catalog.json";
+import desktopPackage from "../../package.json";
 import {
   IPC_EVENTS,
   IPC_METHODS,
@@ -20,6 +21,7 @@ describe("authoritative Beta IPC mirror", () => {
     expect([...IPC_METHODS]).toEqual(catalog.methods);
     expect([...IPC_EVENTS]).toEqual(catalog.events);
     expect(catalog.protocolVersion).toBe(1);
+    expect(catalog.applicationVersion).toBe(desktopPackage.version);
 
     for (const method of catalog.methods) {
       expect(isIpcMethod(method)).toBe(true);

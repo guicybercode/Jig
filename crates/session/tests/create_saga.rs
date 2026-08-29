@@ -414,13 +414,16 @@ async fn saga_rollback_kills_the_entire_process_group_before_removing_the_worktr
     let fixture = Fixture::new();
     let ready = fixture.temp.path().join("descendant-ready");
     let leaked = fixture.temp.path().join("descendant-survived");
+    let script = fixture.temp.path().join("process-group-fixture.sh");
+    fs::write(
+        &script,
+        "(trap '' HUP INT TERM; printf ready > \"$1\"; sleep 1; printf leaked > \"$2\") & wait\n",
+    )
+    .expect("process-group fixture should be written");
     fixture.replace_agent_command(
         "/bin/sh",
         vec![
-            "-c".to_owned(),
-            "(trap '' HUP INT TERM; printf ready > \"$1\"; sleep 1; printf leaked > \"$2\") & wait"
-                .to_owned(),
-            "rollback-process-group".to_owned(),
+            script.to_string_lossy().into_owned(),
             ready.to_string_lossy().into_owned(),
             leaked.to_string_lossy().into_owned(),
         ],

@@ -29,6 +29,8 @@ export type ApiError = {
   message: string;
   action?: string;
   details?: Record<string, unknown>;
+  title?: string;
+  recoverable?: boolean;
 };
 
 export type CommandSpec = {
@@ -309,6 +311,7 @@ export type DiagnosticsResponse = {
   logPath: string;
   effectivePath: string[];
   recentIssues: DiagnosticIssue[];
+  exportText: string;
 };
 
 export type ProjectChangedEvent = { project: Project };
