@@ -176,10 +176,15 @@ impl SessionManager {
             .spawn(move || read_loop(&manager, session_id, reader))
             .map_err(|error| SessionError::Spawn(error.to_string()))?;
 
+        let manager = Arc::clone(self);
         thread::Builder::new()
             .name(format!("pty-wait-{session_id}"))
             .spawn(move || {
-                let _ = child.wait();
+                let exit_code = child
+                    .wait()
+                    .ok()
+                    .and_then(|status| i32::try_from(status.exit_code()).ok());
+                manager.finish(session_id, exit_code);
             })
             .map_err(|error| SessionError::Spawn(error.to_string()))?;
 
@@ -238,17 +243,11 @@ impl SessionManager {
     /// Returns an error when the session is not live.
     pub fn stop(&self, session_id: SessionId) -> Result<(), SessionError> {
         self.signal(session_id, Signal::SIGTERM)?;
-        let manager_pid = {
-            let live = self.sessions();
-            live.get(&session_id).map(|session| session.pid)
-        };
-        thread::sleep(STOP_GRACE);
-        if let Some(pid) = manager_pid {
-            if self.sessions().get(&session_id).is_some_and(|s| s.running) {
-                let _ = kill(Pid::from_raw(-pid), Signal::SIGKILL);
-                let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
-            }
+        if wait_until_stopped(self, session_id, STOP_GRACE) {
+            return Ok(());
         }
+        let _ = self.kill(session_id);
+        let _ = wait_until_stopped(self, session_id, STOP_GRACE);
         Ok(())
     }
 
@@ -354,11 +353,42 @@ impl SessionManager {
         let Some(session) = live.get_mut(&session_id) else {
             return;
         };
+        if !session.running {
+            return;
+        }
         session.running = false;
         session
             .subscribers
             .retain(|subscriber| subscriber.send(PtyEvent::Exited { exit_code }).is_ok());
     }
+}
+
+impl Drop for SessionManager {
+    fn drop(&mut self) {
+        let pids: Vec<i32> = self
+            .sessions()
+            .values()
+            .filter(|session| session.running)
+            .map(|session| session.pid)
+            .collect();
+        for pid in pids {
+            if pid > 0 {
+                let _ = kill(Pid::from_raw(-pid), Signal::SIGKILL);
+                let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
+            }
+        }
+    }
+}
+
+fn wait_until_stopped(manager: &SessionManager, session_id: SessionId, budget: Duration) -> bool {
+    let deadline = Instant::now() + budget;
+    while Instant::now() < deadline {
+        if !manager.is_live(session_id) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    !manager.is_live(session_id)
 }
 
 fn read_loop(manager: &SessionManager, session_id: SessionId, mut reader: Box<dyn Read + Send>) {
