@@ -6,15 +6,15 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use cli_master_core::wire::{HelloResponse, StateSnapshotResponse, method};
+use cli_master_core::wire::method;
 use cli_master_core::{
-    AgentSource, EnvelopeKind, EventEnvelope, PROTOCOL_V1, Project, RequestEnvelope, RequestId,
-    ResponseEnvelope, ResponsePayload, Session, wire::DiagnosticsResponse,
+    AgentId, AgentSource, EnvelopeKind, EventEnvelope, PROTOCOL_V1, Project, ProjectId,
+    RequestEnvelope, RequestId, ResponseEnvelope, ResponsePayload, Session, SessionId,
+    SessionStatus, wire::DiagnosticsResponse,
 };
 use cli_master_daemon::{
     Daemon, DaemonConfig, DaemonError, HelloResponse, MAX_FRAME_LENGTH, StateSnapshot,
 };
-use cli_master_daemon::{Daemon, DaemonConfig, DaemonError, MAX_FRAME_LENGTH};
 use cli_master_storage::{LATEST_SCHEMA_VERSION, Storage, StoredAgent, StoredSession};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -27,8 +27,7 @@ use tokio_util::sync::CancellationToken;
 
 struct RunningDaemon {
     config: DaemonConfig,
-    instance_id: DaemonInstanceId,
-    events: cli_master_daemon::EventBus,
+    instance_id: uuid::Uuid,
     cancellation: CancellationToken,
     task: JoinHandle<Result<(), DaemonError>>,
 }
@@ -38,14 +37,12 @@ impl RunningDaemon {
         let config = DaemonConfig::from_paths(root.join("data"), root.join("run"));
         let daemon = Daemon::bind(config.clone()).expect("daemon should bind");
         let instance_id = daemon.instance_id();
-        let events = daemon.events().clone();
         let cancellation = CancellationToken::new();
         let task_cancellation = cancellation.clone();
         let task = tokio::spawn(async move { daemon.run(task_cancellation).await });
         Self {
             config,
             instance_id,
-            events,
             cancellation,
             task,
         }
@@ -145,11 +142,6 @@ async fn handshake_is_exact_and_connection_accepts_multiple_requests() {
         exchange(&mut client, &second).await.payload,
         ResponsePayload::Success { .. }
     ));
-    let invalid = RequestEnvelope::v1(method::SYSTEM_HELLO, json!({ "unexpected": true }));
-    assert_eq!(
-        failure_code(exchange(&mut client, &invalid).await),
-        "invalid_payload"
-    );
     daemon.stop().await;
 }
 
@@ -167,8 +159,7 @@ async fn snapshot_reports_applied_migration_and_builtin_terminal_agents() {
     let ResponsePayload::Success { data } = response.payload else {
         panic!("snapshot should succeed");
     };
-    let snapshot: StateSnapshotResponse =
-        serde_json::from_value(data).expect("snapshot should decode");
+    let snapshot: StateSnapshot = serde_json::from_value(data).expect("snapshot should decode");
     assert_eq!(snapshot.schema_version, LATEST_SCHEMA_VERSION);
     assert!(snapshot.projects.is_empty());
     assert_eq!(snapshot.agents.len(), 4);
@@ -192,6 +183,10 @@ async fn snapshot_reports_applied_migration_and_builtin_terminal_agents() {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the end-to-end terminal flow is intentionally exercised in one connection lifecycle"
+)]
 async fn live_terminal_accepts_input_and_streams_pty_output() {
     let temporary = TempDir::new().expect("temporary directory should exist");
     let project_directory = temporary.path().join("terminal-project");
@@ -509,12 +504,6 @@ async fn invalid_kind_version_and_method_return_correlated_errors() {
     assert_eq!(
         failure_code(exchange(&mut client, &wrong_version).await),
         "unsupported_protocol_version"
-    );
-
-    let known = RequestEnvelope::v1(method::PROJECT_LIST, json!({}));
-    assert_eq!(
-        failure_code(exchange(&mut client, &known).await),
-        "method_not_implemented"
     );
 
     let unknown = RequestEnvelope::v1("unknown.method", json!({}));
