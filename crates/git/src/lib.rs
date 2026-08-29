@@ -491,9 +491,8 @@ fn porcelain_path(record: &str) -> Option<String> {
 }
 
 fn is_executable(path: &Path) -> bool {
-    fs::metadata(path).is_ok_and(|metadata| {
-        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
-    })
+    fs::metadata(path)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
 fn wait_for_output(
@@ -516,7 +515,13 @@ fn wait_for_output(
         }
         if Instant::now() >= deadline {
             let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
-            let _ = handle.join();
+            let join_deadline = Instant::now() + Duration::from_secs(2);
+            while !handle.is_finished() && Instant::now() < join_deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            if handle.is_finished() {
+                let _ = handle.join();
+            }
             return Err(GitError::CommandFailed {
                 message: "git command exceeded the time limit".to_owned(),
                 stderr: None,
