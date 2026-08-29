@@ -275,7 +275,7 @@ atomic.
 
 - `session.write` accepts bytes, not a command string, and writes them to the
   PTY master. Ctrl+C is ordinary terminal input (`0x03`).
-- Reader tasks batch output for up to 8 ms or 32 KiB, whichever happens first.
+- Reader tasks batch output for up to 8 ms or 8 KiB, whichever happens first.
   Each chunk has a monotonically increasing per-session sequence number.
 - A live session retains a configurable bounded replay buffer (default 8 MiB).
   On subscription the daemon sends a snapshot followed by chunks after the
