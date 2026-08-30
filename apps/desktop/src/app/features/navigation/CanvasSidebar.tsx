@@ -74,6 +74,11 @@ export function CanvasSidebar({
         <button
           type="button"
           aria-label="Add workspace project"
+          title={
+            canManageProjects
+              ? "Add project"
+              : "Reconnect the daemon to add a project."
+          }
           disabled={!canManageProjects}
           onClick={onAddProject}
         >
