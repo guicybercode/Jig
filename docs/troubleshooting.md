@@ -2,7 +2,7 @@
 
 ## `cli-masterd --preflight` says Git is missing
 
-Install Git and launch CLI Master from a context that inherits the same
+Install Git and launch Jig from a context that inherits the same
 `PATH`. macOS `.app` bundles do not automatically load your zshrc.
 
 `--preflight` prints the resolved Git path when detection succeeds. If you
@@ -51,12 +51,12 @@ macOS: `~/Library/Logs/CLI Master/cli-masterd.json.log`
 Logs are JSON. They rotate after 10 MiB. They must not contain tokens,
 full environments, or terminal contents. If you see those, that is a bug.
 
-## Desktop reports a protocol catalog but sessions do nothing
+## Desktop cannot connect to the daemon
 
-`protocol_info` is a Tauri command that mirrors the frozen method list. It
-is not `system.hello`. Live sessions belong to `cli-masterd` over the Unix
-socket. If that handshake is not connected in your build, the sidecar is
-still the binary to run and inspect.
+Open Diagnostics and confirm the `system.hello` handshake. `protocol_info`
+only mirrors the frozen method list; it is not proof of a live connection.
+Run `cli-masterd --preflight`, inspect the JSON log, and use the reconnect
+action after correcting any path or permission error.
 
 ## Checksums fail
 

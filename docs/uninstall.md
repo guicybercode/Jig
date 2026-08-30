@@ -1,6 +1,6 @@
 # Uninstall
 
-Uninstalling CLI Master removes the application. It does not remove your
+Uninstalling Jig removes the application. It does not remove your
 Git repositories.
 
 ## Linux AppImage
@@ -21,7 +21,7 @@ If you overrode XDG variables, delete those directories instead.
 
 ## macOS
 
-Drag `CLI Master.app` to the Trash, or delete it from Applications.
+Drag `Jig.app` to the Trash, or delete it from Applications.
 
 Optional: remove application state.
 
