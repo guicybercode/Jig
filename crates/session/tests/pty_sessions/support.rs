@@ -1,6 +1,8 @@
 use std::{
     collections::BTreeMap,
-    fs, thread,
+    fs,
+    sync::atomic::{AtomicU64, Ordering},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -15,6 +17,7 @@ use tempfile::TempDir;
 use tokio::sync::broadcast::error::TryRecvError;
 
 pub(crate) const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+static NEXT_SCRIPT_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) struct TestRuntime {
     pub manager: SessionManager,
@@ -34,18 +37,29 @@ impl TestRuntime {
     }
 
     pub fn spawn_shell(&self, script: &str) -> SessionId {
-        let command = CommandSpec::try_from_parts(
-            "/bin/sh",
-            ["-c", script],
-            self.working_directory.path(),
-            BTreeMap::new(),
-        )
-        .expect("shell command should be valid");
+        let command = shell_script_command(self.working_directory.path(), BTreeMap::new(), script);
         self.manager
             .spawn(&command, TerminalSize::new(24, 80).unwrap())
             .expect("shell should start")
             .id
     }
+}
+
+pub(crate) fn shell_script_command(
+    working_directory: &std::path::Path,
+    environment: BTreeMap<String, String>,
+    script: &str,
+) -> CommandSpec {
+    let script_id = NEXT_SCRIPT_ID.fetch_add(1, Ordering::Relaxed);
+    let script_path = working_directory.join(format!("pty-test-{script_id}.sh"));
+    fs::write(&script_path, script).expect("test script should be written");
+    CommandSpec::try_from_parts(
+        "/bin/sh",
+        [script_path.to_string_lossy().into_owned()],
+        working_directory,
+        environment,
+    )
+    .expect("script file command should be valid")
 }
 
 impl Drop for TestRuntime {

@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use cli_master_core::{CommandSpec, SessionStatus};
+use cli_master_core::SessionStatus;
 use cli_master_session::{SessionManager, SessionManagerConfig, TerminalSize};
 use nix::{
     errno::Errno,
@@ -96,15 +96,7 @@ fn reaped_leader_does_not_leave_descendants_in_its_process_group() {
     let runtime = TestRuntime::new();
     let descendant_file = runtime.working_directory.path().join("descendant.pid");
     let ready_file = runtime.working_directory.path().join("descendant.ready");
-    let command = CommandSpec::try_from_parts(
-        "/bin/sh",
-        [
-            "-c",
-            "(trap '' HUP INT TERM; printf ready > \"$DESCENDANT_READY\"; while :; do sleep 1; done) & \
-             descendant=$!; while [ ! -s \"$DESCENDANT_READY\" ]; do sleep 0.01; done; \
-             printf '%s' \"$descendant\" > \"$DESCENDANT_PID\"; \
-             printf 'leader-ready\\n'; IFS= read -r ignored; exit 0",
-        ],
+    let command = shell_script_command(
         runtime.working_directory.path(),
         BTreeMap::from([
             (
@@ -116,8 +108,11 @@ fn reaped_leader_does_not_leave_descendants_in_its_process_group() {
                 ready_file.to_string_lossy().into_owned(),
             ),
         ]),
-    )
-    .unwrap();
+        "(trap '' HUP INT TERM; printf ready > \"$DESCENDANT_READY\"; while :; do sleep 1; done) & \
+         descendant=$!; while [ ! -s \"$DESCENDANT_READY\" ]; do sleep 0.01; done; \
+         printf '%s' \"$descendant\" > \"$DESCENDANT_PID\"; \
+         printf 'leader-ready\\n'; IFS= read -r ignored; exit 0",
+    );
     let handle = runtime
         .manager
         .spawn(&command, TerminalSize::default())
@@ -219,16 +214,11 @@ fn dropping_the_manager_cleans_a_live_process_group() {
     };
     let manager = SessionManager::new(config).unwrap();
     let working_directory = tempfile::tempdir().unwrap();
-    let command = CommandSpec::try_from_parts(
-        "/bin/sh",
-        [
-            "-c",
-            "trap '' INT HUP; printf 'drop-ready\\n'; while :; do sleep 1; done",
-        ],
+    let command = shell_script_command(
         working_directory.path(),
         BTreeMap::new(),
-    )
-    .unwrap();
+        "trap '' INT HUP; printf 'drop-ready\\n'; while :; do sleep 1; done",
+    );
     let handle = manager.spawn(&command, TerminalSize::default()).unwrap();
     wait_for_output(&manager, handle.id, b"drop-ready", TEST_TIMEOUT);
     let process_group_id = Pid::from_raw(i32::try_from(handle.pid.unwrap()).unwrap());

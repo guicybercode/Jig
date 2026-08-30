@@ -36,13 +36,11 @@ fn shutdown_closes_the_spawn_gate_before_cleanup() {
 fn concurrent_spawn_is_either_rejected_or_included_in_shutdown() {
     let manager = SessionManager::new(test_config()).unwrap();
     let working_directory = tempfile::tempdir().unwrap();
-    let command = CommandSpec::try_from_parts(
-        "/bin/sh",
-        ["-c", "trap '' HUP INT; sleep 30"],
+    let command = shell_script_command(
         working_directory.path(),
         BTreeMap::new(),
-    )
-    .unwrap();
+        "trap '' HUP INT; sleep 30",
+    );
     let barrier = Arc::new(Barrier::new(3));
 
     let spawn_manager = manager.clone();
@@ -78,13 +76,11 @@ fn concurrent_spawn_is_either_rejected_or_included_in_shutdown() {
 fn caller_allocated_session_ids_are_unique_and_checked_before_spawn() {
     let runtime = TestRuntime::new();
     let session_id = SessionId::new();
-    let first_command = CommandSpec::try_from_parts(
-        "/bin/sh",
-        ["-c", "printf 'first-ready\\n'; sleep 30"],
+    let first_command = shell_script_command(
         runtime.working_directory.path(),
         BTreeMap::new(),
-    )
-    .unwrap();
+        "printf 'first-ready\\n'; sleep 30",
+    );
     let marker = runtime.working_directory.path().join("duplicate-ran");
     let second_command = CommandSpec::try_from_parts(
         "/usr/bin/touch",

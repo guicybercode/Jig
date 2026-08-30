@@ -109,16 +109,11 @@ fn captures_output_from_many_short_lived_processes() {
 #[test]
 fn inherits_the_login_environment_and_applies_structured_overrides() {
     let runtime = TestRuntime::new();
-    let command = CommandSpec::try_from_parts(
-        "/bin/sh",
-        [
-            "-c",
-            "test -n \"$PATH\" && printf 'env:%s\\n' \"$SESSION_TEST_VALUE\"",
-        ],
+    let command = shell_script_command(
         runtime.working_directory.path(),
         BTreeMap::from([("SESSION_TEST_VALUE".to_owned(), "override".to_owned())]),
-    )
-    .unwrap();
+        "test -n \"$PATH\" && printf 'env:%s\\n' \"$SESSION_TEST_VALUE\"",
+    );
 
     let session_id = runtime
         .manager
@@ -151,13 +146,11 @@ fn terminal_capability_defaults_respect_structured_overrides() {
             "terminal-env:explicit-term:explicit-color",
         ),
     ] {
-        let command = CommandSpec::try_from_parts(
-            "/bin/sh",
-            ["-c", "printf 'terminal-env:%s:%s' \"$TERM\" \"$COLORTERM\""],
+        let command = shell_script_command(
             runtime.working_directory.path(),
             env,
-        )
-        .unwrap();
+            "printf 'terminal-env:%s:%s' \"$TERM\" \"$COLORTERM\"",
+        );
         let session_id = runtime
             .manager
             .spawn(&command, TerminalSize::default())
