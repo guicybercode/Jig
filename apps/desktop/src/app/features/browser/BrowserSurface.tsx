@@ -119,6 +119,20 @@ export function BrowserSurface({
     setLoading(false);
   }, []);
 
+  const hideNativeSurface = useCallback((): void => {
+    const bounds = latestBoundsRef.current;
+    const surfaceMayExist = openedRef.current || openingRef.current !== null;
+    if (!bounds || !surfaceMayExist) return;
+
+    void runtime
+      .update({ nodeId, bounds, visible: false })
+      .catch(() => undefined);
+  }, [nodeId, runtime]);
+
+  useLayoutEffect(() => {
+    if (active && !visible) hideNativeSurface();
+  }, [active, hideNativeSurface, visible]);
+
   const ensureNativeOpen = useCallback(
     async (nextUrl: string): Promise<void> => {
       if (!activeRef.current || !runtime.isAvailable()) return;
@@ -352,7 +366,7 @@ export function BrowserSurface({
     if (element.ownerDocument.body) {
       mutationObserver?.observe(element.ownerDocument.body, {
         attributes: true,
-        attributeFilter: ["aria-hidden", "class", "open"],
+        attributeFilter: ["aria-hidden", "class", "open", "style"],
         childList: true,
         subtree: true,
       });
@@ -362,6 +376,7 @@ export function BrowserSurface({
     schedule();
 
     return () => {
+      hideNativeSurface();
       disposed = true;
       scheduleGeometryRef.current = () => undefined;
       resizeObserver?.disconnect();
@@ -370,7 +385,7 @@ export function BrowserSurface({
       view?.removeEventListener("resize", schedule);
       if (frameId !== null) cancelFrame(view, frameId);
     };
-  }, [active, nodeId, reportRuntimeFailure, runtime]);
+  }, [active, hideNativeSurface, nodeId, reportRuntimeFailure, runtime]);
 
   useLayoutEffect(() => {
     scheduleGeometryRef.current();
@@ -650,6 +665,7 @@ function readBrowserGeometry(
   const view = element.ownerDocument.defaultView;
   const viewport = element.closest<HTMLElement>("[data-browser-viewport]");
   const viewportRect = viewport?.getBoundingClientRect();
+  const owningCanvasNode = element.closest<HTMLElement>(".canvas-node");
   const withinWindow =
     rect.left >= 0 &&
     rect.top >= 0 &&
@@ -665,10 +681,11 @@ function readBrowserGeometry(
       rect.bottom <= viewportRect.bottom);
   const obstructed = [
     ...element.ownerDocument.querySelectorAll<HTMLElement>(
-      "[data-browser-obstruction]",
+      "[data-browser-obstruction], .canvas-node",
     ),
   ].some(
     (obstruction) =>
+      obstruction !== owningCanvasNode &&
       !element.contains(obstruction) &&
       rectanglesOverlap(rect, obstruction.getBoundingClientRect()),
   );

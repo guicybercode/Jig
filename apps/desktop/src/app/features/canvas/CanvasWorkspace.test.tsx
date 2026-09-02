@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -89,6 +90,7 @@ describe("CanvasWorkspace", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -477,6 +479,117 @@ describe("CanvasWorkspace", () => {
     await waitFor(() =>
       expect(webPage).toHaveAttribute("data-native-browser-visible", "true"),
     );
+
+    browser.focus();
+    fireEvent.keyDown(browser, { key: "ArrowRight" });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "false"),
+    );
+    fireEvent.keyUp(browser, { key: "ArrowRight" });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "true"),
+    );
+
+    resizeHandle.focus();
+    fireEvent.keyDown(resizeHandle, { key: "ArrowDown" });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "false"),
+    );
+    fireEvent.keyUp(resizeHandle, { key: "ArrowDown" });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "true"),
+    );
+  });
+
+  it("hides the active browser until keyboard, wheel, and scroll movement settles", async () => {
+    const user = userEvent.setup();
+    const runtime = createAvailableBrowserRuntime();
+    stubVisibleBrowserGeometry();
+    seedCanvasDocument([BROWSER_NODE]);
+    const { container } = renderCanvas({ browserRuntime: runtime });
+
+    const browser = screen.getByRole("article", {
+      name: "Browser, browser canvas item",
+    });
+    await user.click(browser);
+    const webPage = within(browser).getByRole("region", { name: "Web page" });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "true"),
+    );
+    await waitFor(() =>
+      expect(runtime.update).toHaveBeenCalledWith(
+        expect.objectContaining({ visible: true }),
+      ),
+    );
+    const viewport = container.querySelector<HTMLElement>(".canvas-viewport");
+    expect(viewport).not.toBeNull();
+
+    vi.useFakeTimers();
+    vi.mocked(runtime.update).mockClear();
+    viewport!.focus();
+    fireEvent.keyDown(viewport!, { key: "ArrowRight" });
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "false");
+    expect(runtime.update).toHaveBeenCalledWith(
+      expect.objectContaining({ visible: false }),
+    );
+
+    act(() => vi.advanceTimersByTime(100));
+    fireEvent.wheel(viewport!, { deltaY: 40 });
+    act(() => vi.advanceTimersByTime(100));
+    fireEvent.scroll(viewport!);
+    act(() => vi.advanceTimersByTime(159));
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "false");
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "true");
+    act(() => vi.advanceTimersByTime(20));
+    expect(runtime.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({ visible: true }),
+    );
+  });
+
+  it("hides the active browser while smooth focus and fit scrolling settles", async () => {
+    const user = userEvent.setup();
+    const runtime = createAvailableBrowserRuntime();
+    stubVisibleBrowserGeometry();
+    seedCanvasDocument([BROWSER_NODE]);
+    const { container } = renderCanvas({ browserRuntime: runtime });
+
+    const browser = screen.getByRole("article", {
+      name: "Browser, browser canvas item",
+    });
+    await user.click(browser);
+    const webPage = within(browser).getByRole("region", { name: "Web page" });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "true"),
+    );
+    const viewport = container.querySelector<HTMLElement>(".canvas-viewport");
+    expect(viewport).not.toBeNull();
+    const scrollTo = vi.fn();
+    Object.defineProperties(viewport!, {
+      clientWidth: { configurable: true, value: 1_000 },
+      clientHeight: { configurable: true, value: 700 },
+      scrollTo: { configurable: true, value: scrollTo },
+    });
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole("button", { name: "Show canvas items" }));
+    const panel = screen.getByRole("region", { name: "Canvas items" });
+    fireEvent.click(within(panel).getByRole("button", { name: /Browser/ }));
+    expect(scrollTo).toHaveBeenLastCalledWith(
+      expect.objectContaining({ behavior: "smooth" }),
+    );
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "false");
+    act(() => vi.advanceTimersByTime(160));
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Fit canvas to items" }));
+    expect(scrollTo).toHaveBeenLastCalledWith(
+      expect.objectContaining({ behavior: "smooth" }),
+    );
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "false");
+    act(() => vi.advanceTimersByTime(160));
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "true");
   });
 
   it("moves a selected node with keyboard and pointer alternatives", async () => {

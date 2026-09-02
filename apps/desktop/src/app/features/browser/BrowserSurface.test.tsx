@@ -32,6 +32,7 @@ let nextAnimationFrameId = 1;
 let browserRect = new DOMRect(40, 72, 640, 360);
 let browserViewportRect = new DOMRect(0, 0, 1_024, 768);
 let obstructionRect = new DOMRect();
+let siblingCanvasRect = new DOMRect();
 
 describe("BrowserSurface", () => {
   beforeEach(() => {
@@ -41,6 +42,7 @@ describe("BrowserSurface", () => {
     browserRect = new DOMRect(40, 72, 640, 360);
     browserViewportRect = new DOMRect(0, 0, 1_024, 768);
     obstructionRect = new DOMRect();
+    siblingCanvasRect = new DOMRect();
     vi.stubGlobal("ResizeObserver", TestResizeObserver);
     vi.stubGlobal(
       "requestAnimationFrame",
@@ -67,6 +69,12 @@ describe("BrowserSurface", () => {
         }
         if (this.hasAttribute("data-browser-obstruction")) {
           return obstructionRect;
+        }
+        if (this.hasAttribute("data-test-sibling-canvas-node")) {
+          return siblingCanvasRect;
+        }
+        if (this.hasAttribute("data-test-own-canvas-node")) {
+          return new DOMRect(24, 48, 680, 440);
         }
         return new DOMRect();
       },
@@ -172,7 +180,17 @@ describe("BrowserSurface", () => {
     );
     expect(onNavigate).not.toHaveBeenCalled();
 
+    harness.update.mockClear();
+    harness.close.mockClear();
     unmount();
+    expect(harness.update).toHaveBeenCalledWith({
+      nodeId: "browser-docs",
+      bounds: { x: 40, y: 72, width: 640, height: 360 },
+      visible: false,
+    });
+    expect(harness.update.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.close.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
     await waitFor(() => {
       expect(harness.unsubscribe).toHaveBeenCalledOnce();
       expect(harness.close).toHaveBeenCalledWith({ nodeId: "browser-docs" });
@@ -329,14 +347,12 @@ describe("BrowserSurface", () => {
         unavailableReason="Use 100% zoom to interact with this page."
       />,
     );
+    expect(harness.update).toHaveBeenCalledWith({
+      nodeId: "browser-layout",
+      bounds: { x: 84, y: 96, width: 720, height: 440 },
+      visible: false,
+    });
     flushAnimationFrames();
-    await waitFor(() =>
-      expect(harness.update).toHaveBeenCalledWith({
-        nodeId: "browser-layout",
-        bounds: { x: 84, y: 96, width: 720, height: 440 },
-        visible: false,
-      }),
-    );
     expect(
       screen.getByText("Use 100% zoom to interact with this page."),
     ).toBeVisible();
@@ -383,6 +399,49 @@ describe("BrowserSurface", () => {
     browserRect = new DOMRect(-20, 72, 640, 360);
     window.dispatchEvent(new Event("scroll"));
     flushAnimationFrames();
+    await waitFor(() =>
+      expect(harness.update).toHaveBeenCalledWith(
+        expect.objectContaining({ visible: false }),
+      ),
+    );
+  });
+
+  it("treats sibling canvas cards, but not its own card, as obstructions", async () => {
+    const harness = createRuntimeHarness();
+    const props = {
+      nodeId: "browser-overlap",
+      url: "https://example.com/",
+      active: true,
+      runtime: harness.runtime,
+      onActivate: vi.fn(),
+      onNavigate: vi.fn(),
+      onOpenExternal: vi.fn(),
+    } as const;
+    const layout = (withSibling: boolean) => (
+      <div data-browser-viewport="true">
+        <article className="canvas-node" data-test-own-canvas-node="true">
+          <BrowserSurface {...props} />
+        </article>
+        {withSibling ? (
+          <article
+            className="canvas-node"
+            data-test-sibling-canvas-node="true"
+          />
+        ) : null}
+      </div>
+    );
+    const { rerender } = render(layout(false));
+
+    await waitFor(() => expect(harness.open).toHaveBeenCalledOnce());
+    expect(harness.open).toHaveBeenCalledWith(
+      expect.objectContaining({ visible: true }),
+    );
+
+    harness.update.mockClear();
+    siblingCanvasRect = new DOMRect(100, 100, 320, 240);
+    rerender(layout(true));
+    flushAnimationFrames();
+
     await waitFor(() =>
       expect(harness.update).toHaveBeenCalledWith(
         expect.objectContaining({ visible: false }),

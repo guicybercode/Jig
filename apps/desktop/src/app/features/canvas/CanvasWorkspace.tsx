@@ -62,6 +62,7 @@ interface CanvasWorkspaceProps extends LiveTerminalTransport {
 }
 
 const ZOOM_STEP = 0.1;
+const SCROLL_SETTLE_DELAY_MS = 160;
 
 /** Spatial terminal and notes workspace inspired by the supplied references. */
 export function CanvasWorkspace({
@@ -91,6 +92,9 @@ export function CanvasWorkspace({
     readonly scrollLeft: number;
     readonly scrollTop: number;
   } | null>(null);
+  const scrollSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const [layersOpen, setLayersOpen] = useState(false);
   const [terminalDialogOpen, setTerminalDialogOpen] = useState(false);
   const [pendingTerminals, setPendingTerminals] = useState<ReadonlySet<string>>(
@@ -100,6 +104,7 @@ export function CanvasWorkspace({
     Readonly<Record<string, string>>
   >({});
   const [canvasInteracting, setCanvasInteracting] = useState(false);
+  const [canvasScrolling, setCanvasScrolling] = useState(false);
   const [browserHandoffStatus, setBrowserHandoffStatus] = useState<
     string | null
   >(null);
@@ -122,6 +127,16 @@ export function CanvasWorkspace({
         return otherNode ? [{ connection, otherNode }] : [];
       })
     : [];
+
+  useLayoutEffect(
+    () => () => {
+      if (scrollSettleTimerRef.current !== null) {
+        globalThis.clearTimeout(scrollSettleTimerRef.current);
+        scrollSettleTimerRef.current = null;
+      }
+    },
+    [],
+  );
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -277,6 +292,17 @@ export function CanvasWorkspace({
     dispatch({ type: "zoom/set", zoom: Number(zoom.toFixed(2)) });
   }
 
+  function markCanvasScrolling() {
+    setCanvasScrolling(true);
+    if (scrollSettleTimerRef.current !== null) {
+      globalThis.clearTimeout(scrollSettleTimerRef.current);
+    }
+    scrollSettleTimerRef.current = globalThis.setTimeout(() => {
+      scrollSettleTimerRef.current = null;
+      setCanvasScrolling(false);
+    }, SCROLL_SETTLE_DELAY_MS);
+  }
+
   function focusNode(node: CanvasNode) {
     const viewport = viewportRef.current;
     dispatch({ type: "node/select", nodeId: node.id });
@@ -286,6 +312,7 @@ export function CanvasWorkspace({
     }
 
     const size = getCanvasNodeSize(node);
+    markCanvasScrolling();
     viewport.scrollTo({
       left: Math.max(
         0,
@@ -330,6 +357,7 @@ export function CanvasWorkspace({
       ),
     );
 
+    markCanvasScrolling();
     setZoom(nextZoom);
     viewport.scrollTo({
       left: Math.max(
@@ -522,6 +550,7 @@ export function CanvasWorkspace({
           const movement = keyboardMovement(event.key, step);
           if (movement) {
             event.preventDefault();
+            markCanvasScrolling();
             event.currentTarget.scrollLeft += movement.x;
             event.currentTarget.scrollTop += movement.y;
           }
@@ -543,6 +572,7 @@ export function CanvasWorkspace({
             scrollTop: event.currentTarget.scrollTop,
           };
           setCanvasInteracting(true);
+          markCanvasScrolling();
           event.currentTarget.setPointerCapture?.(event.pointerId);
         }}
         onPointerMove={(event) => {
@@ -550,6 +580,7 @@ export function CanvasWorkspace({
           if (!pan || pan.pointerId !== event.pointerId) {
             return;
           }
+          markCanvasScrolling();
           event.currentTarget.scrollLeft =
             pan.scrollLeft - (event.clientX - pan.clientX);
           event.currentTarget.scrollTop =
@@ -567,11 +598,15 @@ export function CanvasWorkspace({
           setCanvasInteracting(false);
         }}
         onWheel={(event) => {
+          if (event.deltaX !== 0 || event.deltaY !== 0) {
+            markCanvasScrolling();
+          }
           if (event.shiftKey && event.deltaX === 0) {
             event.preventDefault();
             event.currentTarget.scrollLeft += event.deltaY;
           }
         }}
+        onScroll={markCanvasScrolling}
       >
         <div
           className="canvas-stage"
@@ -650,11 +685,14 @@ export function CanvasWorkspace({
                 browserVisible={
                   state.zoom === 1 &&
                   !terminalDialogOpen &&
-                  !canvasInteracting
+                  !canvasInteracting &&
+                  !canvasScrolling
                 }
                 browserUnavailableReason={
                   canvasInteracting
                     ? "The browser is hidden while the canvas item moves."
+                    : canvasScrolling
+                      ? "The browser is hidden while the canvas view moves."
                     : terminalDialogOpen
                     ? "The browser is hidden while a dialog covers the canvas."
                     : state.zoom !== 1
@@ -940,10 +978,24 @@ function CanvasNodeCard({
         const movement = keyboardMovement(event.key, step);
         if (movement) {
           event.preventDefault();
+          onManipulationChange(true);
           onMove({ x: node.x + movement.x, y: node.y + movement.y });
         } else if (event.key === "Escape" && connectionSource) {
           event.preventDefault();
           onCancelConnection();
+        }
+      }}
+      onKeyUp={(event) => {
+        if (
+          event.currentTarget === event.target &&
+          keyboardMovement(event.key, 1)
+        ) {
+          onManipulationChange(false);
+        }
+      }}
+      onBlur={(event) => {
+        if (event.currentTarget === event.target) {
+          onManipulationChange(false);
         }
       }}
       onPointerDown={(event) => {
@@ -1083,9 +1135,16 @@ function CanvasNodeCard({
             const size = keyboardResize(event.key, node, step);
             if (size) {
               event.preventDefault();
+              onManipulationChange(true);
               onResize(size);
             }
           }}
+          onKeyUp={(event) => {
+            if (keyboardResize(event.key, node, 1)) {
+              onManipulationChange(false);
+            }
+          }}
+          onBlur={() => onManipulationChange(false)}
           onPointerDown={(event) => {
             event.preventDefault();
             event.stopPropagation();
