@@ -246,6 +246,9 @@ describe("BrowserSurface", () => {
         url: "https://openai.com/research",
       }),
     );
+    await waitFor(() =>
+      expect(harness.focus).toHaveBeenCalledWith({ nodeId: "browser-search" }),
+    );
   });
 
   it("navigates with a transient signed URL but exposes only its redacted form", async () => {
@@ -505,6 +508,7 @@ interface RuntimeHarness {
   readonly open: ReturnType<typeof vi.fn<BrowserRuntime["open"]>>;
   readonly navigate: ReturnType<typeof vi.fn<BrowserRuntime["navigate"]>>;
   readonly update: ReturnType<typeof vi.fn<BrowserRuntime["update"]>>;
+  readonly focus: ReturnType<typeof vi.fn<BrowserRuntime["focus"]>>;
   readonly close: ReturnType<typeof vi.fn<BrowserRuntime["close"]>>;
   readonly subscribe: ReturnType<
     typeof vi.fn<NonNullable<BrowserRuntime["subscribe"]>>
@@ -518,6 +522,7 @@ function createRuntimeHarness(available = true): RuntimeHarness {
   const open = vi.fn<BrowserRuntime["open"]>(async () => undefined);
   const navigate = vi.fn<BrowserRuntime["navigate"]>(async () => undefined);
   const update = vi.fn<BrowserRuntime["update"]>(async () => undefined);
+  const focus = vi.fn<BrowserRuntime["focus"]>(async () => undefined);
   const close = vi.fn<BrowserRuntime["close"]>(async () => undefined);
   const unsubscribe = vi.fn(() => {
     listener = null;
@@ -537,6 +542,7 @@ function createRuntimeHarness(available = true): RuntimeHarness {
       reload: vi.fn(async () => undefined),
       goBack: vi.fn(async () => undefined),
       goForward: vi.fn(async () => undefined),
+      focus,
       close,
       openExternal: vi.fn(async () => undefined),
       subscribe,
@@ -544,6 +550,7 @@ function createRuntimeHarness(available = true): RuntimeHarness {
     open,
     navigate,
     update,
+    focus,
     close,
     subscribe,
     unsubscribe,

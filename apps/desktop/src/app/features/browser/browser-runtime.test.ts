@@ -32,6 +32,7 @@ describe("browser runtime", () => {
     await runtime.reload({ nodeId: "browser-one" });
     await runtime.goBack({ nodeId: "browser-one" });
     await runtime.goForward({ nodeId: "browser-one" });
+    await runtime.focus({ nodeId: "browser-one" });
     await runtime.open({
       nodeId: "browser-two",
       url: "https://openai.com/",
@@ -48,6 +49,7 @@ describe("browser runtime", () => {
       "browser_surface_reload",
       "browser_surface_go_back",
       "browser_surface_go_forward",
+      "browser_surface_focus",
       "browser_surface_close",
       "browser_surface_open",
       "browser_surface_close",
@@ -67,7 +69,7 @@ describe("browser runtime", () => {
         visible: false,
       },
     });
-    expect(harness.invoke).toHaveBeenNthCalledWith(7, "browser_surface_close", {
+    expect(harness.invoke).toHaveBeenNthCalledWith(8, "browser_surface_close", {
       request: { nodeId: "browser-one" },
     });
   });

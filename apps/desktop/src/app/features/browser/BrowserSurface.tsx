@@ -395,7 +395,10 @@ export function BrowserSurface({
       reportRuntimeFailure,
     );
     if (active && runtimeAvailable) {
-      void ensureNativeOpen(navigationUrl);
+      void ensureNativeOpen(navigationUrl).then(() => {
+        if (!activeRef.current || !openedRef.current) return;
+        return runtime.focus({ nodeId }).catch(reportRuntimeFailure);
+      });
     }
   }
 
@@ -516,11 +519,21 @@ export function BrowserSurface({
         <button
           className="browser-surface__activate"
           type="button"
+          aria-label={
+            active
+              ? "Focus web page; press Escape to return to browser controls"
+              : "Activate browser"
+          }
           aria-pressed={active}
-          disabled={active}
-          onClick={onActivate}
+          title={active ? "Focus page · Escape returns to controls" : undefined}
+          disabled={active && !canControlNative}
+          onClick={
+            active
+              ? () => runNativeAction(runtime.focus)
+              : onActivate
+          }
         >
-          {active ? "Browser active" : "Activate browser"}
+          {active ? "Focus page" : "Activate browser"}
         </button>
       </nav>
 

@@ -65,6 +65,8 @@ export interface BrowserRuntime {
   reload(request: BrowserNodeRequest): Promise<void>;
   goBack(request: BrowserNodeRequest): Promise<void>;
   goForward(request: BrowserNodeRequest): Promise<void>;
+  /** Transfers keyboard focus from the trusted chrome to the remote page. */
+  focus(request: BrowserNodeRequest): Promise<void>;
   close(request: BrowserNodeRequest): Promise<void>;
   /** Opens a validated URL through the operating system's default browser. */
   openExternal(url: string): Promise<void>;
@@ -110,6 +112,7 @@ const COMMAND = {
   reload: "browser_surface_reload",
   goBack: "browser_surface_go_back",
   goForward: "browser_surface_go_forward",
+  focus: "browser_surface_focus",
   close: "browser_surface_close",
 } as const;
 
@@ -243,6 +246,15 @@ export function createBrowserRuntime(
         requireAvailable();
         if (activeNodeId !== nodeId) return;
         await invokeRequest(COMMAND.goForward, { nodeId });
+      });
+    },
+
+    async focus(request) {
+      const nodeId = validateNodeId(request.nodeId);
+      return enqueue(async () => {
+        requireAvailable();
+        if (activeNodeId !== nodeId) return;
+        await invokeRequest(COMMAND.focus, { nodeId });
       });
     },
 
