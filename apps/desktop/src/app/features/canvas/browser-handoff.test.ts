@@ -9,7 +9,7 @@ describe("browser handoff", () => {
   it("creates terminal input without an Enter keystroke", () => {
     const payload = browserUrlForTerminal("example.com/review");
 
-    expect(payload).toBe("https://example.com/review");
+    expect(payload).toBe("'https://example.com/review'");
     expect(payload).not.toMatch(/[\r\n]/);
   });
 
@@ -32,6 +32,17 @@ describe("browser handoff", () => {
       browserUrlForTerminal(
         "https://example.com/callback?tab=build&code=secret#token",
       ),
-    ).toBe("https://example.com/callback?tab=build");
+    ).toBe("'https://example.com/callback?tab=build'");
+  });
+
+  it("quotes shell metacharacters instead of creating executable input", () => {
+    const payload = browserUrlForTerminal(
+      "https://evil.example/$(id);whoami?q=`uname`&next=one|two'",
+    );
+
+    expect(payload).toBe(
+      "'https://evil.example/$(id);whoami?q=`uname`&next=one|two%27'",
+    );
+    expect(payload).not.toMatch(/[\r\n]/);
   });
 });

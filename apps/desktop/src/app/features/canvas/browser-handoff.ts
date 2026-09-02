@@ -1,9 +1,9 @@
 import { normalizeBrowserUrl } from "./canvas-state";
 
-/** Produces reviewable terminal input and deliberately never submits it. */
+/** Produces a quoted POSIX literal and deliberately never submits it. */
 export function browserUrlForTerminal(value: string): string | null {
   const url = normalizeBrowserUrl(value);
-  return url || null;
+  return url ? `'${url.replace(/'/g, "'\\''")}'` : null;
 }
 
 /** Appends an explicit browser reference without treating remote text as markup. */
