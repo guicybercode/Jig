@@ -148,7 +148,7 @@ describe("canvas state", () => {
   it("removes fragments and secret-bearing query parameters before persistence", () => {
     const browser = createBrowserCanvasNode(
       { x: 0, y: 0 },
-      "https://example.com/search?q=tauri&access_token=secret&X-Amz-Signature=signed#callback",
+      "https://example.com/search?q=tauri&access_token=secret&oauth_token=oauth&client_secret=client&credentials=credential&pwd=password&X-Amz-Signature=signed#callback",
       "browser-redacted",
     );
 
