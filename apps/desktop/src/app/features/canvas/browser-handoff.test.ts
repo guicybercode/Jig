@@ -26,4 +26,12 @@ describe("browser handoff", () => {
       appendBrowserUrlToNote("Keep this", "file:///etc/passwd"),
     ).toBe("Keep this");
   });
+
+  it("removes callback secrets before handing an address to another node", () => {
+    expect(
+      browserUrlForTerminal(
+        "https://example.com/callback?tab=build&code=secret#token",
+      ),
+    ).toBe("https://example.com/callback?tab=build");
+  });
 });

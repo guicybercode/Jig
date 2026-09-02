@@ -132,6 +132,28 @@ const MAX_BROWSER_HEIGHT = 900;
 const MAX_EXECUTABLE_LENGTH = 256;
 const MAX_WORKING_DIRECTORY_LENGTH = 1_024;
 const MAX_BROWSER_URL_LENGTH = 2_048;
+const SENSITIVE_BROWSER_QUERY_KEYS = new Set([
+  "accesstoken",
+  "apikey",
+  "authorization",
+  "auth",
+  "code",
+  "credential",
+  "idtoken",
+  "key",
+  "password",
+  "passwd",
+  "policy",
+  "refreshtoken",
+  "samlresponse",
+  "secret",
+  "session",
+  "sessionid",
+  "sig",
+  "signature",
+  "state",
+  "token",
+]);
 
 /** Creates the first-launch composition shown before project sessions exist. */
 export function createInitialCanvasDocument(): CanvasDocument {
@@ -404,10 +426,25 @@ export function normalizeBrowserUrl(value: unknown): string {
     ) {
       return "";
     }
+    url.hash = "";
+    for (const key of [...url.searchParams.keys()]) {
+      if (isSensitiveBrowserQueryKey(key)) {
+        url.searchParams.delete(key);
+      }
+    }
     return url.toString();
   } catch {
     return "";
   }
+}
+
+function isSensitiveBrowserQueryKey(value: string): boolean {
+  const key = value.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return (
+    key.startsWith("xamz") ||
+    key.endsWith("token") ||
+    SENSITIVE_BROWSER_QUERY_KEYS.has(key)
+  );
 }
 
 function navigateBrowserNode(

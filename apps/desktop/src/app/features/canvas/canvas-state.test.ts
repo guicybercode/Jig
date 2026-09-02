@@ -143,6 +143,16 @@ describe("canvas state", () => {
     expect(parsed.nodes[0]).toMatchObject({ url: "" });
   });
 
+  it("removes fragments and secret-bearing query parameters before persistence", () => {
+    const browser = createBrowserCanvasNode(
+      { x: 0, y: 0 },
+      "https://example.com/search?q=tauri&access_token=secret&X-Amz-Signature=signed#callback",
+      "browser-redacted",
+    );
+
+    expect(browser.url).toBe("https://example.com/search?q=tauri");
+  });
+
   it("migrates version 1 canvas documents without resetting the layout", () => {
     const parsed = parseCanvasDocument(
       JSON.stringify({
