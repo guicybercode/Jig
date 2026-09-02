@@ -655,9 +655,11 @@ export function CanvasWorkspace({
                 browserUnavailableReason={
                   canvasInteracting
                     ? "The browser is hidden while the canvas item moves."
-                    : state.zoom === 1
+                    : terminalDialogOpen
                     ? "The browser is hidden while a dialog covers the canvas."
-                    : "Use 100% zoom to interact with this page."
+                    : state.zoom !== 1
+                      ? "Use 100% zoom to interact with this page."
+                      : undefined
                 }
                 onBrowserNavigate={(url) => {
                   setBrowserHandoffStatus(null);
@@ -861,7 +863,7 @@ interface CanvasNodeCardProps {
   readonly terminalTransport: LiveTerminalTransport;
   readonly browserRuntime: BrowserRuntime;
   readonly browserVisible: boolean;
-  readonly browserUnavailableReason: string;
+  readonly browserUnavailableReason?: string;
   readonly onBrowserNavigate: (url: string) => void;
 }
 

@@ -8,7 +8,11 @@ import {
 } from "react";
 import type { FormEvent } from "react";
 
-import { normalizeBrowserUrl } from "../canvas/canvas-state";
+import { Icon } from "../../components/Icon";
+import {
+  normalizeBrowserNavigationUrl,
+  normalizeBrowserUrl,
+} from "../canvas/canvas-state";
 import {
   BrowserRuntimeError,
   defaultBrowserRuntime,
@@ -40,7 +44,7 @@ export interface BrowserSurfaceProps {
   readonly runtime?: BrowserRuntime;
   /** Requests selection of this card; the canvas controls `active`. */
   readonly onActivate: () => void;
-  /** Receives only normalized, valid navigation addresses. */
+  /** Receives only a redacted, persistable address explicitly submitted by the user. */
   readonly onNavigate: (url: string) => void | Promise<void>;
   /** Delegates opening a valid address outside the application. */
   readonly onOpenExternal: (url: string) => void | Promise<void>;
@@ -80,18 +84,25 @@ export function BrowserSurface({
   const currentUrlRef = useRef(normalizeBrowserUrl(url));
   const requestedUrlRef = useRef<string | null>(null);
   const openedUrlRef = useRef<string | null>(null);
+  const pendingPersistedUrlRef = useRef<string | null>(null);
   const lastPropUrlRef = useRef(currentUrlRef.current);
   const lifecycleGenerationRef = useRef(0);
   const scheduleGeometryRef = useRef<() => void>(() => undefined);
   const callbacksRef = useRef({ onNavigate, onOpenExternal });
   const [address, setAddress] = useState(url);
   const [currentUrl, setCurrentUrl] = useState(currentUrlRef.current);
+  const [geometryAllowsVisibility, setGeometryAllowsVisibility] =
+    useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const runtimeAvailable = runtime.isAvailable();
   const canControlNative =
-    active && runtimeAvailable && currentUrl.length > 0;
+    active &&
+    visible &&
+    geometryAllowsVisibility &&
+    runtimeAvailable &&
+    currentUrl.length > 0;
 
   useLayoutEffect(() => {
     activeRef.current = active;
@@ -132,11 +143,9 @@ export function BrowserSurface({
         } catch {
           return;
         }
-        if (
-          activeRef.current &&
-          openedRef.current &&
-          openedUrlRef.current !== nextUrl
-        ) {
+        if (!activeRef.current) return;
+        if (openingRef.current === pendingOpen) openingRef.current = null;
+        if (!openedRef.current || openedUrlRef.current !== nextUrl) {
           await ensureNativeOpen(nextUrl);
         }
         return;
@@ -148,6 +157,7 @@ export function BrowserSurface({
       latestBoundsRef.current = bounds;
       if (geometry) {
         geometryAllowsVisibilityRef.current = geometry.allowsVisibility;
+        setGeometryAllowsVisibility(geometry.allowsVisibility);
       }
       requestedUrlRef.current = nextUrl;
       const generation = lifecycleGenerationRef.current;
@@ -188,11 +198,15 @@ export function BrowserSurface({
       if (event.nodeId !== nodeId) return;
       if (event.type === "load-state") {
         setLoading(event.status === "started");
-        if (event.status === "started") setError(null);
+        if (event.status === "started") {
+          setError((current) =>
+            current === INVALID_ADDRESS_MESSAGE ? current : null,
+          );
+        }
         return;
       }
 
-      const normalizedUrl = normalizeBrowserUrl(event.url);
+      const normalizedUrl = normalizeBrowserNavigationUrl(event.url);
       if (!normalizedUrl) {
         setError(RUNTIME_ACTION_ERROR);
         return;
@@ -264,6 +278,11 @@ export function BrowserSurface({
 
     const propUrlChanged = lastPropUrlRef.current !== normalizedUrl;
     lastPropUrlRef.current = normalizedUrl;
+    if (pendingPersistedUrlRef.current === normalizedUrl) {
+      pendingPersistedUrlRef.current = null;
+      return;
+    }
+    pendingPersistedUrlRef.current = null;
     currentUrlRef.current = normalizedUrl;
     setCurrentUrl(normalizedUrl);
     if (inputRef.current !== inputRef.current?.ownerDocument.activeElement) {
@@ -281,7 +300,11 @@ export function BrowserSurface({
 
   useLayoutEffect(() => {
     const element = surfaceRef.current;
-    if (!element) return undefined;
+    if (!element || !active) {
+      geometryAllowsVisibilityRef.current = false;
+      setGeometryAllowsVisibility(false);
+      return undefined;
+    }
     const view = element.ownerDocument.defaultView;
     let disposed = false;
     let frameId: number | null = null;
@@ -293,6 +316,7 @@ export function BrowserSurface({
         const geometry = readBrowserGeometry(element);
         if (!geometry) {
           geometryAllowsVisibilityRef.current = false;
+          setGeometryAllowsVisibility(false);
           const lastBounds = latestBoundsRef.current;
           if (!activeRef.current || !openedRef.current || !lastBounds) return;
           void runtime
@@ -302,6 +326,7 @@ export function BrowserSurface({
         }
         latestBoundsRef.current = geometry.bounds;
         geometryAllowsVisibilityRef.current = geometry.allowsVisibility;
+        setGeometryAllowsVisibility(geometry.allowsVisibility);
         if (!activeRef.current || !openedRef.current) return;
         void runtime
           .update({
@@ -345,7 +370,7 @@ export function BrowserSurface({
       view?.removeEventListener("resize", schedule);
       if (frameId !== null) cancelFrame(view, frameId);
     };
-  }, [nodeId, reportRuntimeFailure, runtime]);
+  }, [active, nodeId, reportRuntimeFailure, runtime]);
 
   useLayoutEffect(() => {
     scheduleGeometryRef.current();
@@ -353,22 +378,24 @@ export function BrowserSurface({
 
   function submitAddress(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
-    const normalizedUrl = normalizeBrowserUrl(address);
-    if (!normalizedUrl) {
+    const navigationUrl = normalizeBrowserNavigationUrl(address);
+    if (!navigationUrl) {
       setError(INVALID_ADDRESS_MESSAGE);
       return;
     }
+    const persistableUrl = normalizeBrowserUrl(navigationUrl);
 
     setError(null);
-    setAddress(normalizedUrl);
-    setCurrentUrl(normalizedUrl);
-    currentUrlRef.current = normalizedUrl;
+    setAddress(navigationUrl);
+    setCurrentUrl(navigationUrl);
+    currentUrlRef.current = navigationUrl;
+    pendingPersistedUrlRef.current = persistableUrl;
     void callIntegrationCallback(
-      () => callbacksRef.current.onNavigate(normalizedUrl),
+      () => callbacksRef.current.onNavigate(persistableUrl),
       reportRuntimeFailure,
     );
     if (active && runtimeAvailable) {
-      void ensureNativeOpen(normalizedUrl);
+      void ensureNativeOpen(navigationUrl);
     }
   }
 
@@ -393,7 +420,7 @@ export function BrowserSurface({
     : "browser-surface";
   const placeholder = getPlaceholder({
     active,
-    visible,
+    visible: visible && geometryAllowsVisibility,
     runtimeAvailable,
     currentUrl,
     loading,
@@ -410,33 +437,41 @@ export function BrowserSurface({
       <nav className="browser-surface__chrome" aria-label="Browser controls">
         <div className="browser-surface__history-controls">
           <button
+            className="browser-surface__icon-button"
             type="button"
             aria-label="Go back"
+            title="Go back"
             disabled={!canControlNative}
             onClick={() => runNativeAction(runtime.goBack)}
           >
-            <span aria-hidden="true">←</span>
+            <Icon name="arrow-left" />
           </button>
           <button
+            className="browser-surface__icon-button"
             type="button"
             aria-label="Go forward"
+            title="Go forward"
             disabled={!canControlNative}
             onClick={() => runNativeAction(runtime.goForward)}
           >
-            <span aria-hidden="true">→</span>
+            <Icon name="arrow-right" />
           </button>
           <button
+            className="browser-surface__icon-button"
             type="button"
             aria-label="Reload page"
+            title="Reload page"
             disabled={!canControlNative}
             onClick={() => runNativeAction(runtime.reload)}
           >
-            <span aria-hidden="true">↻</span>
+            <Icon name="refresh" />
           </button>
         </div>
 
         <form className="browser-surface__address-form" onSubmit={submitAddress}>
-          <label htmlFor={inputId}>Address</label>
+          <label className="visually-hidden" htmlFor={inputId}>
+            Address
+          </label>
           <input
             ref={inputRef}
             id={inputId}
@@ -452,19 +487,34 @@ export function BrowserSurface({
             aria-describedby={surfaceDescriptionId}
             placeholder="https://example.com"
             onChange={(event) => setAddress(event.currentTarget.value)}
+            onBlur={(event) => {
+              const nextTarget = event.relatedTarget;
+              if (
+                nextTarget instanceof Node &&
+                event.currentTarget.form?.contains(nextTarget)
+              ) {
+                return;
+              }
+              setAddress(currentUrlRef.current);
+            }}
           />
-          <button type="submit">Go</button>
+          <button className="browser-surface__go" type="submit">
+            Go
+          </button>
         </form>
 
         <button
+          className="browser-surface__icon-button"
           type="button"
           aria-label="Open in default browser"
-          disabled={!currentUrl}
+          title="Open in default browser"
+          disabled={!currentUrl || !runtimeAvailable}
           onClick={openExternal}
         >
-          <span aria-hidden="true">↗</span>
+          <Icon name="external-link" />
         </button>
         <button
+          className="browser-surface__activate"
           type="button"
           aria-pressed={active}
           disabled={active}
@@ -486,7 +536,13 @@ export function BrowserSurface({
         className="browser-surface__viewport"
         data-browser-surface-node-id={nodeId}
         data-native-browser-visible={
-          active && visible && runtimeAvailable && currentUrl ? "true" : "false"
+          active &&
+          visible &&
+          geometryAllowsVisibility &&
+          runtimeAvailable &&
+          currentUrl
+            ? "true"
+            : "false"
         }
         role="region"
         aria-label="Web page"
@@ -526,13 +582,15 @@ function getPlaceholder({
   if (!runtimeAvailable) {
     return {
       message:
-        "The integrated preview is available only in the desktop app. You can still open the address externally.",
+        "The integrated preview is available only in the desktop app.",
       visuallyHidden: false,
     };
   }
   if (!visible) {
     return {
-      message: unavailableReason ?? "The integrated preview is temporarily hidden.",
+      message:
+        unavailableReason ??
+        "Move the browser fully into view and close overlapping controls to show the page.",
       visuallyHidden: false,
     };
   }

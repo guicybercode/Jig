@@ -248,6 +248,42 @@ describe("BrowserSurface", () => {
     );
   });
 
+  it("navigates with a transient signed URL but exposes only its redacted form", async () => {
+    const user = userEvent.setup();
+    const harness = createRuntimeHarness();
+    const onNavigate = vi.fn();
+    render(
+      <BrowserSurface
+        nodeId="browser-signed"
+        url="https://example.com/"
+        active
+        runtime={harness.runtime}
+        onActivate={vi.fn()}
+        onNavigate={onNavigate}
+        onOpenExternal={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(harness.open).toHaveBeenCalledOnce());
+
+    const address = screen.getByRole("textbox", { name: "Address" });
+    await user.clear(address);
+    await user.type(
+      address,
+      "https://example.com/download?file=report&X-Amz-Signature=secret#preview",
+    );
+    await user.click(screen.getByRole("button", { name: "Go" }));
+
+    expect(onNavigate).toHaveBeenCalledWith(
+      "https://example.com/download?file=report",
+    );
+    await waitFor(() =>
+      expect(harness.navigate).toHaveBeenCalledWith({
+        nodeId: "browser-signed",
+        url: "https://example.com/download?file=report&X-Amz-Signature=secret#preview",
+      }),
+    );
+  });
+
   it("coalesces bounds work and forwards visibility changes", async () => {
     const harness = createRuntimeHarness();
     const props = {
@@ -433,6 +469,34 @@ describe("BrowserSurface", () => {
     unmount();
     await waitFor(() => expect(harness.close).toHaveBeenCalled());
     expect(animationFrames.size).toBe(0);
+  });
+
+  it("reopens after deactivation races with a pending native open", async () => {
+    let resolveFirstOpen: (() => void) | undefined;
+    const harness = createRuntimeHarness();
+    harness.open.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveFirstOpen = resolve;
+        }),
+    );
+    const props = {
+      nodeId: "browser-activation-race",
+      url: "https://example.com/",
+      runtime: harness.runtime,
+      onActivate: vi.fn(),
+      onNavigate: vi.fn(),
+      onOpenExternal: vi.fn(),
+    } as const;
+    const { rerender } = render(<BrowserSurface {...props} active />);
+    await waitFor(() => expect(harness.open).toHaveBeenCalledOnce());
+
+    rerender(<BrowserSurface {...props} active={false} />);
+    rerender(<BrowserSurface {...props} active />);
+    resolveFirstOpen?.();
+
+    await waitFor(() => expect(harness.close).toHaveBeenCalled());
+    await waitFor(() => expect(harness.open).toHaveBeenCalledTimes(2));
   });
 });
 
