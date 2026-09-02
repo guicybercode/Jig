@@ -7,6 +7,8 @@ import {
   createInitialCanvasDocument,
   createInitialCanvasState,
   createTerminalCanvasNode,
+  normalizeBrowserNavigationUrl,
+  normalizeBrowserUrl,
   parseCanvasDocument,
   serializeCanvasDocument,
 } from "./canvas-state";
@@ -151,6 +153,16 @@ describe("canvas state", () => {
     );
 
     expect(browser.url).toBe("https://example.com/search?q=tauri");
+  });
+
+  it("keeps secret-bearing parameters only for transient browser navigation", () => {
+    const address =
+      "https://example.com/callback?tab=activity&access_token=secret#complete";
+
+    expect(normalizeBrowserNavigationUrl(address)).toBe(address);
+    expect(normalizeBrowserUrl(address)).toBe(
+      "https://example.com/callback?tab=activity",
+    );
   });
 
   it("migrates version 1 canvas documents without resetting the layout", () => {

@@ -400,8 +400,8 @@ export function getCanvasNodeSize(
     : { width: node.width, height: node.height };
 }
 
-/** Resolves a user-entered browser address to a persistable HTTP(S) URL. */
-export function normalizeBrowserUrl(value: unknown): string {
+/** Resolves a user-entered address for transient HTTP(S) navigation. */
+export function normalizeBrowserNavigationUrl(value: unknown): string {
   if (typeof value !== "string") {
     return "";
   }
@@ -426,16 +426,26 @@ export function normalizeBrowserUrl(value: unknown): string {
     ) {
       return "";
     }
-    url.hash = "";
-    for (const key of [...url.searchParams.keys()]) {
-      if (isSensitiveBrowserQueryKey(key)) {
-        url.searchParams.delete(key);
-      }
-    }
     return url.toString();
   } catch {
     return "";
   }
+}
+
+/** Redacts a valid browser address before canvas persistence or handoff. */
+export function normalizeBrowserUrl(value: unknown): string {
+  const navigationUrl = normalizeBrowserNavigationUrl(value);
+  if (!navigationUrl) {
+    return "";
+  }
+  const url = new URL(navigationUrl);
+  url.hash = "";
+  for (const key of [...url.searchParams.keys()]) {
+    if (isSensitiveBrowserQueryKey(key)) {
+      url.searchParams.delete(key);
+    }
+  }
+  return url.toString();
 }
 
 function isSensitiveBrowserQueryKey(value: string): boolean {
