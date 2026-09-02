@@ -307,6 +307,23 @@ describe("CanvasWorkspace", () => {
     });
   });
 
+  it("keeps address-field arrow keys out of canvas panning", () => {
+    seedCanvasDocument([BROWSER_NODE]);
+    const { container } = renderCanvas();
+    const viewport = container.querySelector<HTMLElement>(".canvas-viewport");
+    expect(viewport).not.toBeNull();
+    viewport!.scrollLeft = 2_000;
+    viewport!.scrollTop = 1_500;
+
+    const address = screen.getByRole("textbox", { name: "Address" });
+    address.focus();
+    fireEvent.keyDown(address, { key: "ArrowRight" });
+    fireEvent.keyDown(address, { key: "ArrowDown" });
+
+    expect(viewport!.scrollLeft).toBe(2_000);
+    expect(viewport!.scrollTop).toBe(1_500);
+  });
+
   it("connects a browser to a note and appends its URL as plain text", async () => {
     const user = userEvent.setup();
     seedCanvasDocument([BROWSER_NODE, NOTE_NODE]);

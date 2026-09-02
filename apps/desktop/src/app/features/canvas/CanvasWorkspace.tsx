@@ -515,7 +515,7 @@ export function CanvasWorkspace({
         aria-label="Pannable canvas"
         aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
         onKeyDown={(event) => {
-          if (event.defaultPrevented) {
+          if (event.defaultPrevented || event.currentTarget !== event.target) {
             return;
           }
           const step = event.altKey ? 16 : 80;
