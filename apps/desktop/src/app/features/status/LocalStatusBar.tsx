@@ -60,8 +60,8 @@ export function LocalStatusBar({
           <button
             className="status-bar__diagnostics"
             type="button"
-            aria-label="Open Diagnostics"
-            title="Open Diagnostics"
+            aria-label="Inspect daemon diagnostics"
+            title="Inspect daemon diagnostics"
             onClick={onOpenDiagnostics}
           >
             <Icon name="diagnostics" />

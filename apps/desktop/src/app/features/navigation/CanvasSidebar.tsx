@@ -19,6 +19,8 @@ interface CanvasSidebarProps {
   readonly onOpenCanvas: () => void;
   readonly onHide: () => void;
   readonly onAddProject: () => void;
+  readonly onRenameProject: (projectId: string) => void;
+  readonly onRemoveProject: (projectId: string) => void;
   readonly onOpenSettings: () => void;
   readonly onOpenDiagnostics: () => void;
 }
@@ -34,6 +36,8 @@ export function CanvasSidebar({
   onOpenCanvas,
   onHide,
   onAddProject,
+  onRenameProject,
+  onRemoveProject,
   onOpenSettings,
   onOpenDiagnostics,
 }: CanvasSidebarProps) {
@@ -54,7 +58,10 @@ export function CanvasSidebar({
 
   useEffect(() => {
     function handleCanvasDocument(event: Event) {
-      const document = (event as CustomEvent<CanvasDocument>).detail;
+      if (!(event instanceof CustomEvent)) {
+        return;
+      }
+      const document: CanvasDocument = event.detail;
       setCanvasTerminalCount(
         document.nodes.filter((node) => node.kind === "terminal").length,
       );
@@ -123,14 +130,13 @@ export function CanvasSidebar({
         ) : visibleProjects.length > 0 ? (
           <ul>
             {visibleProjects.map((project) => {
-              const sessionCount =
-                project.id === selectedProjectId
-                  ? canvasTerminalCount
-                  : sessions.filter((session) => session.projectId === project.id)
-                      .length;
+              const sessionCount = sessions.filter(
+                (session) => session.projectId === project.id,
+              ).length;
               return (
-                <li key={project.id}>
+                <li className="canvas-sidebar__project-row" key={project.id}>
                   <button
+                    className="canvas-sidebar__project-select"
                     type="button"
                     aria-current={
                       activeView === "canvas" && project.id === selectedProjectId
@@ -145,6 +151,32 @@ export function CanvasSidebar({
                       <Icon name="terminal" /> {sessionCount}
                     </small>
                   </button>
+                  <div
+                    className="canvas-sidebar__project-actions"
+                    role="group"
+                    aria-label={`Actions for ${project.name}`}
+                  >
+                    <button
+                      className="canvas-sidebar__project-action"
+                      type="button"
+                      aria-label={`Rename ${project.name}`}
+                      title="Rename project"
+                      disabled={!canManageProjects}
+                      onClick={() => onRenameProject(project.id)}
+                    >
+                      <Icon name="pencil" />
+                    </button>
+                    <button
+                      className="canvas-sidebar__project-action canvas-sidebar__project-action--remove"
+                      type="button"
+                      aria-label={`Remove ${project.name} from workspaces`}
+                      title="Remove project metadata"
+                      disabled={!canManageProjects}
+                      onClick={() => onRemoveProject(project.id)}
+                    >
+                      <Icon name="close" />
+                    </button>
+                  </div>
                 </li>
               );
             })}
