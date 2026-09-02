@@ -23,9 +23,14 @@ small `BrowserSurfaceManager`. Activating another browser card replaces the
 current surface. The daemon, core wire protocol, and SQLite schema do not gain
 browser operations.
 
-React owns browser-card metadata: node ID, requested HTTP(S) URL, title,
+React owns browser-card metadata: node ID, redacted requested HTTP(S) URL, title,
 position, size, and connections. Native handles, cookies, page content, and
 history never enter React state or canvas persistence.
+
+The exact operational URL may contain a fragment or short-lived signature and
+is passed only to the native surface. Redirect locations update browser chrome
+ephemerally; they do not update the canvas document. Persistence and handoff
+strip fragments and sensitive query parameters.
 
 The main application webview sends validated lifecycle and geometry commands
 to Tauri. Remote browser webviews receive no Tauri capability. Tauri validates
@@ -35,8 +40,12 @@ its visible DOM slot cannot be represented safely, including obscured and
 non-100% zoom states.
 
 Connections do not create autonomous browser control. A user gesture may copy
-the sanitized current URL into a connected note or terminal. Terminal handoff
+the sanitized requested URL into a connected note or terminal. Terminal handoff
 does not include Enter, so the user can review the text before submitting it.
+
+Keyboard focus enters the remote page through an explicit main-webview command.
+Escape navigation to a private, non-loadable focus URL returns focus to the
+main webview without granting remote content an IPC capability.
 
 ## Alternatives considered
 

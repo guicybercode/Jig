@@ -50,6 +50,7 @@ GUI acceptance below.
       recorded in the notes.
 - [ ] `signingIdentity` is still `null` unless a human signed locally.
 - [ ] Gatekeeper unsigned-app behavior is mentioned in the notes.
+- [ ] Hardened Runtime is enabled in bundle configuration.
 
 ## Artifacts
 
@@ -76,6 +77,18 @@ real packaged GUI and bundled daemon.
       confirm that both sessions remain listed and retained output is replayed.
 - [ ] Make a worktree dirty, attempt to remove it, and confirm removal is
       blocked without deleting or modifying the user's file.
+- [ ] Open a hostile HTTP(S) fixture in a browser card on macOS and Linux;
+      confirm application/daemon IPC, internal origins, popups, and downloads
+      remain blocked.
+- [ ] Confirm camera, microphone, display capture, geolocation, and
+      notifications fail without a prompt or capture in both packaged apps.
+- [ ] Confirm drag, resize, pan, zoom, sidebar, dialogs, and route changes hide
+      the native page before it can cover trusted controls.
+- [ ] Close and reopen the browser card and confirm cookies, cache, local
+      storage, and service-worker state do not survive.
+- [ ] Enter the page from the browser chrome with the keyboard and press
+      Escape; confirm focus returns to the trusted controls with VoiceOver on
+      macOS and Orca on Linux.
 - [ ] Record all failures and unresolved platform limitations in the release
       notes before attaching or publishing the package.
 
