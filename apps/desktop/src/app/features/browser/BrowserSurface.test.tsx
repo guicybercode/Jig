@@ -170,9 +170,7 @@ describe("BrowserSurface", () => {
     expect(screen.getByRole("textbox", { name: "Address" })).toHaveValue(
       "https://example.com/redirected",
     );
-    expect(onNavigate).toHaveBeenCalledWith(
-      "https://example.com/redirected",
-    );
+    expect(onNavigate).not.toHaveBeenCalled();
 
     unmount();
     await waitFor(() => {
@@ -350,6 +348,37 @@ describe("BrowserSurface", () => {
       expect(harness.update).toHaveBeenCalledWith(
         expect.objectContaining({ visible: false }),
       ),
+    );
+  });
+
+  it("hides an open native surface when its DOM geometry becomes invalid", async () => {
+    const harness = createRuntimeHarness();
+    render(
+      <BrowserSurface
+        nodeId="browser-invalid-geometry"
+        url="https://example.com/"
+        active
+        runtime={harness.runtime}
+        onActivate={vi.fn()}
+        onNavigate={vi.fn()}
+        onOpenExternal={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(harness.open).toHaveBeenCalledOnce());
+    flushAnimationFrames();
+    harness.update.mockClear();
+
+    browserRect = new DOMRect(0, 0, 0, 0);
+    window.dispatchEvent(new Event("resize"));
+    flushAnimationFrames();
+
+    await waitFor(() =>
+      expect(harness.update).toHaveBeenCalledWith({
+        nodeId: "browser-invalid-geometry",
+        bounds: { x: 40, y: 72, width: 640, height: 360 },
+        visible: false,
+      }),
     );
   });
 

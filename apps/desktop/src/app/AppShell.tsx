@@ -375,6 +375,7 @@ export function AppShell() {
           ref={navigationRef}
           className="navigation-pane"
           data-open={navigationOpen ? "true" : "false"}
+          data-browser-obstruction="true"
           aria-hidden={
             usesCanvasShell && canvasSidebarCollapsed
               ? true
@@ -451,6 +452,7 @@ export function AppShell() {
         {usesCanvasShell && canvasSidebarCollapsed ? (
           <button
             className="canvas-sidebar-reveal"
+            data-browser-obstruction="true"
             type="button"
             aria-label="Show workspace sidebar"
             title="Show sidebar"
@@ -459,7 +461,7 @@ export function AppShell() {
             <Icon name="sidebar" />
           </button>
         ) : null}
-        {navigationOpen ? <button className="navigation-backdrop" type="button" aria-label="Dismiss navigation" onClick={() => setNavigationOpen(false)} /> : null}
+        {navigationOpen ? <button className="navigation-backdrop" data-browser-obstruction="true" type="button" aria-label="Dismiss navigation" onClick={() => setNavigationOpen(false)} /> : null}
         <Workspace
           connectionStatus={workspace.connection.status}
           connectionError={workspace.connection.status === "disconnected" || workspace.connection.status === "fatal" ? workspace.connection.error : undefined}

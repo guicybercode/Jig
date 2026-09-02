@@ -80,7 +80,6 @@ export function BrowserSurface({
   const currentUrlRef = useRef(normalizeBrowserUrl(url));
   const requestedUrlRef = useRef<string | null>(null);
   const openedUrlRef = useRef<string | null>(null);
-  const lastReportedUrlRef = useRef(currentUrlRef.current);
   const lastPropUrlRef = useRef(currentUrlRef.current);
   const lifecycleGenerationRef = useRef(0);
   const scheduleGeometryRef = useRef<() => void>(() => undefined);
@@ -205,15 +204,8 @@ export function BrowserSurface({
       if (inputRef.current !== inputRef.current?.ownerDocument.activeElement) {
         setAddress(normalizedUrl);
       }
-      if (lastReportedUrlRef.current !== normalizedUrl) {
-        lastReportedUrlRef.current = normalizedUrl;
-        void callIntegrationCallback(
-          () => callbacksRef.current.onNavigate(normalizedUrl),
-          reportRuntimeFailure,
-        );
-      }
     },
-    [nodeId, reportRuntimeFailure],
+    [nodeId],
   );
 
   useEffect(() => {
@@ -274,7 +266,6 @@ export function BrowserSurface({
     lastPropUrlRef.current = normalizedUrl;
     currentUrlRef.current = normalizedUrl;
     setCurrentUrl(normalizedUrl);
-    lastReportedUrlRef.current = normalizedUrl;
     if (inputRef.current !== inputRef.current?.ownerDocument.activeElement) {
       setAddress(normalizedUrl);
     }
@@ -300,7 +291,15 @@ export function BrowserSurface({
       frameId = requestFrame(view, () => {
         frameId = null;
         const geometry = readBrowserGeometry(element);
-        if (!geometry) return;
+        if (!geometry) {
+          geometryAllowsVisibilityRef.current = false;
+          const lastBounds = latestBoundsRef.current;
+          if (!activeRef.current || !openedRef.current || !lastBounds) return;
+          void runtime
+            .update({ nodeId, bounds: lastBounds, visible: false })
+            .catch(reportRuntimeFailure);
+          return;
+        }
         latestBoundsRef.current = geometry.bounds;
         geometryAllowsVisibilityRef.current = geometry.allowsVisibility;
         if (!activeRef.current || !openedRef.current) return;
@@ -321,6 +320,18 @@ export function BrowserSurface({
       ? new ResizeObserverConstructor(schedule)
       : null;
     resizeObserver?.observe(element);
+    const MutationObserverConstructor = view?.MutationObserver;
+    const mutationObserver = MutationObserverConstructor
+      ? new MutationObserverConstructor(schedule)
+      : null;
+    if (element.ownerDocument.body) {
+      mutationObserver?.observe(element.ownerDocument.body, {
+        attributes: true,
+        attributeFilter: ["aria-hidden", "class", "open"],
+        childList: true,
+        subtree: true,
+      });
+    }
     view?.addEventListener("scroll", schedule, true);
     view?.addEventListener("resize", schedule);
     schedule();
@@ -329,15 +340,16 @@ export function BrowserSurface({
       disposed = true;
       scheduleGeometryRef.current = () => undefined;
       resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
       view?.removeEventListener("scroll", schedule, true);
       view?.removeEventListener("resize", schedule);
       if (frameId !== null) cancelFrame(view, frameId);
     };
   }, [nodeId, reportRuntimeFailure, runtime]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     scheduleGeometryRef.current();
-  }, [visible]);
+  });
 
   function submitAddress(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
@@ -351,7 +363,6 @@ export function BrowserSurface({
     setAddress(normalizedUrl);
     setCurrentUrl(normalizedUrl);
     currentUrlRef.current = normalizedUrl;
-    lastReportedUrlRef.current = normalizedUrl;
     void callIntegrationCallback(
       () => callbacksRef.current.onNavigate(normalizedUrl),
       reportRuntimeFailure,
@@ -581,15 +592,24 @@ function readBrowserGeometry(
       rect.top >= viewportRect.top &&
       rect.right <= viewportRect.right &&
       rect.bottom <= viewportRect.bottom);
-  const workspace = element.closest<HTMLElement>(".canvas-workspace");
-  const obstructed = [...(workspace?.querySelectorAll<HTMLElement>(
-    "[data-browser-obstruction]",
-  ) ?? [])].some((obstruction) =>
-    rectanglesOverlap(rect, obstruction.getBoundingClientRect()),
+  const obstructed = [
+    ...element.ownerDocument.querySelectorAll<HTMLElement>(
+      "[data-browser-obstruction]",
+    ),
+  ].some(
+    (obstruction) =>
+      !element.contains(obstruction) &&
+      rectanglesOverlap(rect, obstruction.getBoundingClientRect()),
+  );
+  const blockingDialog = Boolean(
+    element.ownerDocument.querySelector(
+      "dialog[open], [role='dialog'][aria-modal='true']",
+    ),
   );
   return {
     bounds,
-    allowsVisibility: withinWindow && withinViewport && !obstructed,
+    allowsVisibility:
+      withinWindow && withinViewport && !obstructed && !blockingDialog,
   };
 }
 
