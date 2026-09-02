@@ -20,7 +20,7 @@ export interface GlobalShortcutOptions {
   readonly onFocusSession?: (sessionNumber: SessionShortcutNumber) => void;
 }
 
-const TERMINAL_SELECTOR = "[data-terminal-root]";
+const SHORTCUT_SCOPE_SELECTOR = "[data-terminal-root], [data-shortcut-scope]";
 
 /** Registers keyboard-first application shortcuts without capturing terminal input. */
 export function useGlobalShortcuts({
@@ -43,7 +43,7 @@ export function useGlobalShortcuts({
         event.defaultPrevented ||
         event.isComposing ||
         event.repeat ||
-        isInsideTerminal(event) ||
+        isInsideShortcutScope(event) ||
         !hasPrimaryModifier(event, shortcutPlatform)
       ) {
         return;
@@ -123,13 +123,13 @@ function hasPrimaryModifier(
   return event.metaKey !== event.ctrlKey;
 }
 
-/** Detects terminal ownership even when the event crossed a shadow boundary. */
-function isInsideTerminal(event: KeyboardEvent): boolean {
+/** Detects embedded keyboard ownership even across a shadow boundary. */
+function isInsideShortcutScope(event: KeyboardEvent): boolean {
   return event.composedPath().some(
     (eventTarget) =>
       eventTarget instanceof Element &&
-      (eventTarget.matches(TERMINAL_SELECTOR) ||
-        Boolean(eventTarget.closest(TERMINAL_SELECTOR))),
+      (eventTarget.matches(SHORTCUT_SCOPE_SELECTOR) ||
+        Boolean(eventTarget.closest(SHORTCUT_SCOPE_SELECTOR))),
   );
 }
 
