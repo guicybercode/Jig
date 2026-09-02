@@ -580,18 +580,21 @@ fn apply_bounds_and_visibility(
     bounds: BrowserBounds,
     visible: bool,
 ) -> Result<(), BrowserSurfaceError> {
+    // A child webview does not follow DOM clipping or stacking. Hide it before
+    // moving it so a failed bounds update cannot leave remote content visible
+    // over trusted application controls at its previous position.
+    webview
+        .hide()
+        .map_err(|_| BrowserSurfaceError::unavailable())?;
+    webview
+        .set_bounds(bounds.into_rect())
+        .map_err(|_| BrowserSurfaceError::unavailable())?;
     if visible {
         webview
-            .set_bounds(bounds.into_rect())
+            .show()
             .map_err(|_| BrowserSurfaceError::unavailable())?;
-        webview.show()
-    } else {
-        webview
-            .hide()
-            .map_err(|_| BrowserSurfaceError::unavailable())?;
-        webview.set_bounds(bounds.into_rect())
     }
-    .map_err(|_| BrowserSurfaceError::unavailable())
+    Ok(())
 }
 
 fn close_surface(webview: &Webview, host: &BrowserSurfaceHost) -> Result<(), BrowserSurfaceError> {
@@ -813,6 +816,7 @@ fn is_sensitive_query_parameter(name: &str) -> bool {
         .flat_map(char::to_lowercase)
         .collect::<String>();
     normalized.starts_with("xamz")
+        || normalized.ends_with("token")
         || matches!(
             normalized.as_str(),
             "token"
@@ -971,7 +975,7 @@ mod tests {
     #[test]
     fn redacts_secrets_and_fragments_from_location_events() {
         let url = Url::parse(
-            "https://example.com/callback?tab=activity&access_token=secret&refresh_token=refresh&state=csrf&SAMLResponse=assertion&Policy=cloudfront&X-Amz-Signature=signed&code=oauth#private",
+            "https://example.com/callback?tab=activity&access_token=secret&refresh_token=refresh&oauth_token=legacy&state=csrf&SAMLResponse=assertion&Policy=cloudfront&X-Amz-Signature=signed&code=oauth#private",
         )
         .expect("valid test URL");
 
