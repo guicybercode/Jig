@@ -384,7 +384,11 @@ export function normalizeBrowserUrl(value: unknown): string {
     return "";
   }
   const trimmed = value.trim();
-  if (!trimmed || trimmed.length > MAX_BROWSER_URL_LENGTH) {
+  if (
+    !trimmed ||
+    trimmed.length > MAX_BROWSER_URL_LENGTH ||
+    /[\u0000-\u001f\u007f]/.test(trimmed)
+  ) {
     return "";
   }
   const candidate = /^[a-z][a-z\d+.-]*:/i.test(trimmed)
