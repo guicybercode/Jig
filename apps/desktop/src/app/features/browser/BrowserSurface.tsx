@@ -76,6 +76,7 @@ export function BrowserSurface({
   const openedRef = useRef(false);
   const openingRef = useRef<Promise<void> | null>(null);
   const latestBoundsRef = useRef<BrowserBounds | null>(null);
+  const geometryAllowsVisibilityRef = useRef(false);
   const currentUrlRef = useRef(normalizeBrowserUrl(url));
   const requestedUrlRef = useRef<string | null>(null);
   const openedUrlRef = useRef<string | null>(null);
@@ -142,10 +143,13 @@ export function BrowserSurface({
         return;
       }
 
-      const bounds =
-        latestBoundsRef.current ?? readBrowserBounds(surfaceRef.current);
+      const geometry = readBrowserGeometry(surfaceRef.current);
+      const bounds = latestBoundsRef.current ?? geometry?.bounds;
       if (!bounds) return;
       latestBoundsRef.current = bounds;
+      if (geometry) {
+        geometryAllowsVisibilityRef.current = geometry.allowsVisibility;
+      }
       requestedUrlRef.current = nextUrl;
       const generation = lifecycleGenerationRef.current;
       setLoading(true);
@@ -154,7 +158,8 @@ export function BrowserSurface({
         nodeId,
         url: nextUrl,
         bounds,
-        visible: visibleRef.current,
+        visible:
+          visibleRef.current && geometryAllowsVisibilityRef.current,
       });
       openingRef.current = opening;
       try {
@@ -294,15 +299,17 @@ export function BrowserSurface({
       if (disposed || frameId !== null) return;
       frameId = requestFrame(view, () => {
         frameId = null;
-        const bounds = readBrowserBounds(element);
-        if (!bounds) return;
-        latestBoundsRef.current = bounds;
+        const geometry = readBrowserGeometry(element);
+        if (!geometry) return;
+        latestBoundsRef.current = geometry.bounds;
+        geometryAllowsVisibilityRef.current = geometry.allowsVisibility;
         if (!activeRef.current || !openedRef.current) return;
         void runtime
           .update({
             nodeId,
-            bounds,
-            visible: visibleRef.current,
+            bounds: geometry.bounds,
+            visible:
+              visibleRef.current && geometry.allowsVisibility,
           })
           .catch(reportRuntimeFailure);
       });
@@ -532,7 +539,14 @@ function getPlaceholder({
   };
 }
 
-function readBrowserBounds(element: HTMLElement | null): BrowserBounds | null {
+interface BrowserGeometry {
+  readonly bounds: BrowserBounds;
+  readonly allowsVisibility: boolean;
+}
+
+function readBrowserGeometry(
+  element: HTMLElement | null,
+): BrowserGeometry | null {
   if (!element) return null;
   const rect = element.getBoundingClientRect();
   if (
@@ -545,12 +559,51 @@ function readBrowserBounds(element: HTMLElement | null): BrowserBounds | null {
   ) {
     return null;
   }
-  return {
-    x: rect.x,
-    y: rect.y,
+  const bounds = {
+    x: rect.left,
+    y: rect.top,
     width: rect.width,
     height: rect.height,
   };
+  const view = element.ownerDocument.defaultView;
+  const viewport = element.closest<HTMLElement>("[data-browser-viewport]");
+  const viewportRect = viewport?.getBoundingClientRect();
+  const withinWindow =
+    rect.left >= 0 &&
+    rect.top >= 0 &&
+    (!view ||
+      (rect.right <= view.innerWidth && rect.bottom <= view.innerHeight));
+  const withinViewport =
+    !viewportRect ||
+    (viewportRect.width > 0 &&
+      viewportRect.height > 0 &&
+      rect.left >= viewportRect.left &&
+      rect.top >= viewportRect.top &&
+      rect.right <= viewportRect.right &&
+      rect.bottom <= viewportRect.bottom);
+  const workspace = element.closest<HTMLElement>(".canvas-workspace");
+  const obstructed = [...(workspace?.querySelectorAll<HTMLElement>(
+    "[data-browser-obstruction]",
+  ) ?? [])].some((obstruction) =>
+    rectanglesOverlap(rect, obstruction.getBoundingClientRect()),
+  );
+  return {
+    bounds,
+    allowsVisibility: withinWindow && withinViewport && !obstructed,
+  };
+}
+
+function rectanglesOverlap(first: DOMRect, second: DOMRect): boolean {
+  return (
+    first.width > 0 &&
+    first.height > 0 &&
+    second.width > 0 &&
+    second.height > 0 &&
+    first.left < second.right &&
+    first.right > second.left &&
+    first.top < second.bottom &&
+    first.bottom > second.top
+  );
 }
 
 function requestFrame(

@@ -30,6 +30,8 @@ const resizeObservers: TestResizeObserver[] = [];
 const animationFrames = new Map<number, FrameRequestCallback>();
 let nextAnimationFrameId = 1;
 let browserRect = new DOMRect(40, 72, 640, 360);
+let browserViewportRect = new DOMRect(0, 0, 1_024, 768);
+let obstructionRect = new DOMRect();
 
 describe("BrowserSurface", () => {
   beforeEach(() => {
@@ -37,6 +39,8 @@ describe("BrowserSurface", () => {
     animationFrames.clear();
     nextAnimationFrameId = 1;
     browserRect = new DOMRect(40, 72, 640, 360);
+    browserViewportRect = new DOMRect(0, 0, 1_024, 768);
+    obstructionRect = new DOMRect();
     vi.stubGlobal("ResizeObserver", TestResizeObserver);
     vi.stubGlobal(
       "requestAnimationFrame",
@@ -55,9 +59,16 @@ describe("BrowserSurface", () => {
     );
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
       function getBoundingClientRect(this: HTMLElement) {
-        return this.hasAttribute("data-browser-surface-node-id")
-          ? browserRect
-          : new DOMRect();
+        if (this.hasAttribute("data-browser-surface-node-id")) {
+          return browserRect;
+        }
+        if (this.hasAttribute("data-browser-viewport")) {
+          return browserViewportRect;
+        }
+        if (this.hasAttribute("data-browser-obstruction")) {
+          return obstructionRect;
+        }
+        return new DOMRect();
       },
     );
   });
@@ -292,6 +303,54 @@ describe("BrowserSurface", () => {
     expect(
       screen.getByText("Use 100% zoom to interact with this page."),
     ).toBeVisible();
+  });
+
+  it("fails closed when the native slot is clipped or covered by chrome", async () => {
+    const harness = createRuntimeHarness();
+    obstructionRect = new DOMRect(20, 20, 800, 100);
+    const { container } = render(
+      <div className="canvas-workspace">
+        <div data-browser-viewport="true">
+          <div data-browser-obstruction="true" />
+          <BrowserSurface
+            nodeId="browser-contained"
+            url="https://example.com/"
+            active
+            runtime={harness.runtime}
+            onActivate={vi.fn()}
+            onNavigate={vi.fn()}
+            onOpenExternal={vi.fn()}
+          />
+        </div>
+      </div>,
+    );
+
+    await waitFor(() => expect(harness.open).toHaveBeenCalledOnce());
+    expect(harness.open).toHaveBeenCalledWith(
+      expect.objectContaining({ visible: false }),
+    );
+
+    harness.update.mockClear();
+    obstructionRect = new DOMRect(0, 0, 0, 0);
+    container
+      .querySelector("[data-browser-viewport]")
+      ?.dispatchEvent(new Event("scroll", { bubbles: false }));
+    flushAnimationFrames();
+    await waitFor(() =>
+      expect(harness.update).toHaveBeenCalledWith(
+        expect.objectContaining({ visible: true }),
+      ),
+    );
+
+    harness.update.mockClear();
+    browserRect = new DOMRect(-20, 72, 640, 360);
+    window.dispatchEvent(new Event("scroll"));
+    flushAnimationFrames();
+    await waitFor(() =>
+      expect(harness.update).toHaveBeenCalledWith(
+        expect.objectContaining({ visible: false }),
+      ),
+    );
   });
 
   it("never loads remote content in a non-Tauri environment", async () => {
