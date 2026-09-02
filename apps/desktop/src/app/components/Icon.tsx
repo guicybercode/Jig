@@ -1,7 +1,10 @@
 import type { ReactNode } from "react";
 
 export type IconName =
+  | "arrow-left"
+  | "arrow-right"
   | "branch"
+  | "browser"
   | "check"
   | "chevron-down"
   | "chevron-right"
@@ -10,6 +13,7 @@ export type IconName =
   | "close"
   | "copy"
   | "diagnostics"
+  | "external-link"
   | "folder"
   | "grid"
   | "layers"
@@ -72,6 +76,10 @@ export function Icon({ name, className, title }: IconProps) {
 /** Selects the vector paths for a semantic icon name. */
 function getIconPaths(name: IconName): ReactNode {
   switch (name) {
+    case "arrow-left":
+      return <path d="m15 18-6-6 6-6M9 12h10" />;
+    case "arrow-right":
+      return <path d="m9 6 6 6-6 6M5 12h10" />;
     case "branch":
       return (
         <>
@@ -79,6 +87,13 @@ function getIconPaths(name: IconName): ReactNode {
           <circle cx="18" cy="6" r="2" />
           <circle cx="6" cy="19" r="2" />
           <path d="M6 7v10M8 8c2 0 3.5 0 5-1l3-1" />
+        </>
+      );
+    case "browser":
+      return (
+        <>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M3 12h18M12 3c2.4 2.5 3.5 5.5 3.5 9S14.4 18.5 12 21c-2.4-2.5-3.5-5.5-3.5-9S9.6 5.5 12 3Z" />
         </>
       );
     case "check":
@@ -103,6 +118,13 @@ function getIconPaths(name: IconName): ReactNode {
         <>
           <rect x="3" y="4" width="18" height="16" rx="2" />
           <path d="M6 12h3l2-4 3 8 2-4h2" />
+        </>
+      );
+    case "external-link":
+      return (
+        <>
+          <path d="M14 4h6v6M20 4l-9 9" />
+          <path d="M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5" />
         </>
       );
     case "folder":

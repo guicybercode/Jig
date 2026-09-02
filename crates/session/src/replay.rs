@@ -115,7 +115,7 @@ mod tests {
     fn replay_evicts_by_chunk_count() {
         let session_id = SessionId::new();
         let mut replay = ReplayBuffer::new(32, 2);
-        for value in [b'a', b'b', b'c'] {
+        for value in *b"abc" {
             replay.append(session_id, vec![value], 1).unwrap();
         }
 

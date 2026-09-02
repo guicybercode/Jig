@@ -33,6 +33,17 @@ does not contain a signing identity, certificate, or macOS notarization
 credentials. Treat generated macOS bundles as unsigned until a separate
 human-controlled signing process is established.
 
+## Native browser permission defense requires packaged testing
+
+The canvas browser uses the operating system WebKit engine and gives remote
+pages no Tauri capability. Camera, microphone, screen capture, geolocation,
+and notifications are denied by an all-frame document-start guard because the
+current Tauri/Wry version does not expose a portable native permission-deny
+handler. Release candidates must exercise a hostile page in the packaged app
+on macOS and Linux. Agent-driven browsing is not part of this increment;
+connections only support explicit, reviewable URL handoff to notes and live
+terminals.
+
 ## Package support is limited to Beta platforms
 
 AppImage is the supported Linux package format for Beta v0.1. Windows is

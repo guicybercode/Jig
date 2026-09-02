@@ -1,5 +1,11 @@
+mod browser;
 mod daemon_bridge;
 
+use browser::{
+    BrowserSurfaceHost, browser_surface_close, browser_surface_focus, browser_surface_go_back,
+    browser_surface_go_forward, browser_surface_navigate, browser_surface_open,
+    browser_surface_reload, browser_surface_update,
+};
 use daemon_bridge::{
     DaemonBridge, daemon_request, daemon_terminal_subscribe, daemon_terminal_unsubscribe,
 };
@@ -24,11 +30,20 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .manage(BrowserSurfaceHost::default())
         .manage(DaemonBridge::default())
         .invoke_handler(tauri::generate_handler![
             daemon_request,
             daemon_terminal_subscribe,
-            daemon_terminal_unsubscribe
+            daemon_terminal_unsubscribe,
+            browser_surface_open,
+            browser_surface_navigate,
+            browser_surface_update,
+            browser_surface_reload,
+            browser_surface_go_back,
+            browser_surface_go_forward,
+            browser_surface_focus,
+            browser_surface_close
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -75,6 +90,55 @@ mod tests {
         assert_eq!(
             tauri_config["bundle"]["macOS"]["signingIdentity"],
             json!(null)
+        );
+        assert_eq!(
+            tauri_config["bundle"]["macOS"]["hardenedRuntime"],
+            json!(true)
+        );
+
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json"))
+                .expect("desktop capability should parse");
+        assert_eq!(capability["webviews"], json!(["main"]));
+        assert!(capability.get("windows").is_none());
+        assert!(capability.get("remote").is_none());
+
+        let permissions = capability["permissions"]
+            .as_array()
+            .expect("desktop permissions should be an array");
+        for permission in [
+            "allow-daemon-request",
+            "allow-daemon-terminal-subscribe",
+            "allow-daemon-terminal-unsubscribe",
+            "allow-browser-surface-open",
+            "allow-browser-surface-navigate",
+            "allow-browser-surface-update",
+            "allow-browser-surface-reload",
+            "allow-browser-surface-go-back",
+            "allow-browser-surface-go-forward",
+            "allow-browser-surface-focus",
+            "allow-browser-surface-close",
+        ] {
+            assert!(permissions.contains(&json!(permission)));
+        }
+
+        let csp = tauri_config["app"]["security"]["csp"]
+            .as_str()
+            .expect("desktop CSP should be configured");
+        assert!(csp.contains("object-src 'none'"));
+        assert!(csp.contains("frame-src 'none'"));
+        assert!(csp.contains("frame-ancestors 'none'"));
+        assert!(!csp.contains("ws://"));
+        assert!(
+            tauri_config["app"]["security"]["devCsp"]
+                .as_str()
+                .expect("desktop development CSP should be configured")
+                .contains("ws://localhost:1420")
+        );
+
+        let cargo_manifest = include_str!("../Cargo.toml");
+        assert!(
+            cargo_manifest.contains("tauri = { version = \"=2.11.5\", features = [\"unstable\"] }")
         );
     }
 }
