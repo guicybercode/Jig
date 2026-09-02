@@ -2,10 +2,21 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main"],
+  "webviews": ["main"],
   "permissions": [
     "core:default",
     "dialog:default",
-    "opener:default"
+    "opener:default",
+    "allow-daemon-request",
+    "allow-daemon-terminal-subscribe",
+    "allow-daemon-terminal-unsubscribe",
+    "allow-browser-surface-open",
+    "allow-browser-surface-navigate",
+    "allow-browser-surface-update",
+    "allow-browser-surface-reload",
+    "allow-browser-surface-go-back",
+    "allow-browser-surface-go-forward",
+    "allow-browser-surface-focus",
+    "allow-browser-surface-close"
   ]
 }

@@ -2,9 +2,25 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const APP_COMMANDS: &[&str] = &[
+    "daemon_request",
+    "daemon_terminal_subscribe",
+    "daemon_terminal_unsubscribe",
+    "browser_surface_open",
+    "browser_surface_navigate",
+    "browser_surface_update",
+    "browser_surface_reload",
+    "browser_surface_go_back",
+    "browser_surface_go_forward",
+    "browser_surface_focus",
+    "browser_surface_close",
+];
+
 fn main() {
     ensure_sidecar();
-    tauri_build::build();
+    let attributes = tauri_build::Attributes::new()
+        .app_manifest(tauri_build::AppManifest::new().commands(APP_COMMANDS));
+    tauri_build::try_build(attributes).expect("failed to build Tauri application metadata");
 }
 
 /// Tauri refuses to compile when `bundle.externalBin` is missing. Debug
