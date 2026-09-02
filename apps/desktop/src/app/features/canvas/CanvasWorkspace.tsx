@@ -9,16 +9,26 @@ import type {
 } from "../../../ipc/types";
 import { Icon } from "../../components/Icon";
 import { StatusBadge } from "../../components/StatusBadge";
+import { BrowserSurface } from "../browser/BrowserSurface";
+import {
+  defaultBrowserRuntime,
+  type BrowserRuntime,
+} from "../browser/browser-runtime";
 import {
   createCanvasNode,
   createInitialCanvasDocument,
   createTerminalCanvasNode,
   getCanvasNodeSize,
+  type BrowserCanvasNode,
   type CanvasTerminalConfiguration,
   type CanvasNode,
   type NoteCanvasNode,
   type TerminalCanvasNode,
 } from "./canvas-state";
+import {
+  appendBrowserUrlToNote,
+  browserUrlForTerminal,
+} from "./browser-handoff";
 import { CanvasConnections } from "./CanvasConnections";
 import {
   CANVAS_ORIGIN_X,
@@ -48,6 +58,7 @@ interface CanvasWorkspaceProps extends LiveTerminalTransport {
   ) => Promise<AgentRecord>;
   readonly onCreateSession: (input: CreateSessionInput) => Promise<Session>;
   readonly onStartSession: (sessionId: string) => Promise<Session>;
+  readonly browserRuntime?: BrowserRuntime;
 }
 
 const ZOOM_STEP = 0.1;
@@ -65,6 +76,7 @@ export function CanvasWorkspace({
   onCreateCustomAgent,
   onCreateSession,
   onStartSession,
+  browserRuntime = defaultBrowserRuntime,
   subscribeTerminal,
   writeTerminal,
   resizeTerminal,
@@ -87,6 +99,10 @@ export function CanvasWorkspace({
   const [terminalErrors, setTerminalErrors] = useState<
     Readonly<Record<string, string>>
   >({});
+  const [canvasInteracting, setCanvasInteracting] = useState(false);
+  const [browserHandoffStatus, setBrowserHandoffStatus] = useState<
+    string | null
+  >(null);
   const terminalSessions = useMemo(
     () => new Map(sessions.map((session) => [session.id, session])),
     [sessions],
@@ -147,6 +163,14 @@ export function CanvasWorkspace({
     });
   }
 
+  function addBrowser() {
+    setBrowserHandoffStatus(null);
+    dispatch({
+      type: "node/add",
+      node: createCanvasNode("browser", nextNodePosition()),
+    });
+  }
+
   function addTerminal(configuration: CanvasTerminalConfiguration) {
     const node = createTerminalCanvasNode(nextNodePosition(), configuration);
     dispatch({
@@ -156,6 +180,45 @@ export function CanvasWorkspace({
     setTerminalDialogOpen(false);
     if (project && isConnected) {
       void launchTerminal(node);
+    }
+  }
+
+  async function handoffBrowserUrl(
+    browser: BrowserCanvasNode,
+    target: NoteCanvasNode | TerminalCanvasNode,
+  ) {
+    if (target.kind === "note") {
+      const text = appendBrowserUrlToNote(target.text, browser.url);
+      if (text === target.text) {
+        setBrowserHandoffStatus("Enter a valid browser address first.");
+        return;
+      }
+      dispatch({ type: "note/update", nodeId: target.id, text });
+      setBrowserHandoffStatus(`Added the browser URL to ${target.title}.`);
+      return;
+    }
+
+    const session = terminalSessions.get(target.sessionId ?? "");
+    const payload = browserUrlForTerminal(browser.url);
+    if (!session || !isLiveStatus(session.status)) {
+      setBrowserHandoffStatus(
+        `Start ${target.title} before inserting the browser URL.`,
+      );
+      return;
+    }
+    if (!payload) {
+      setBrowserHandoffStatus("Enter a valid browser address first.");
+      return;
+    }
+    try {
+      await writeTerminal(session.id, new TextEncoder().encode(payload));
+      setBrowserHandoffStatus(
+        `Inserted a shell-safe URL into ${target.title}. Review it before pressing Enter.`,
+      );
+    } catch {
+      setBrowserHandoffStatus(
+        `The browser URL could not be inserted into ${target.title}.`,
+      );
     }
   }
 
@@ -290,7 +353,11 @@ export function CanvasWorkspace({
       tabIndex={-1}
       aria-labelledby="canvas-workspace-title"
     >
-      <div className="canvas-context" aria-live="polite">
+      <div
+        className="canvas-context"
+        aria-live="polite"
+        data-browser-obstruction="true"
+      >
         <span className="canvas-context__eyebrow">Workspace</span>
         <h1 id="canvas-workspace-title">
           {project?.name ?? "My Workspace"}
@@ -300,10 +367,18 @@ export function CanvasWorkspace({
           <span aria-hidden="true"> · </span>
           {state.nodes.filter((node) => node.kind === "terminal").length}{" "}
           terminals
+          <span aria-hidden="true"> · </span>
+          {state.nodes.filter((node) => node.kind === "browser").length}{" "}
+          browsers
         </span>
       </div>
 
-      <div className="canvas-toolbar" role="toolbar" aria-label="Canvas tools">
+      <div
+        className="canvas-toolbar"
+        role="toolbar"
+        aria-label="Canvas tools"
+        data-browser-obstruction="true"
+      >
         <button
           className="canvas-tool canvas-tool--active"
           type="button"
@@ -328,6 +403,14 @@ export function CanvasWorkspace({
           onClick={addNote}
         >
           <Icon name="note" />
+        </button>
+        <button
+          className="canvas-tool"
+          type="button"
+          aria-label="Add browser"
+          onClick={addBrowser}
+        >
+          <Icon name="browser" />
         </button>
         <button
           className={
@@ -382,7 +465,10 @@ export function CanvasWorkspace({
         </button>
       </div>
 
-      <div className="canvas-session-actions">
+      <div
+        className="canvas-session-actions"
+        data-browser-obstruction="true"
+      >
         {project ? (
           <button
             className="canvas-pill-button"
@@ -405,9 +491,13 @@ export function CanvasWorkspace({
       </div>
 
       {state.connectionSourceId ? (
-        <div className="canvas-connect-notice" role="status">
+        <div
+          className="canvas-connect-notice"
+          role="status"
+          data-browser-obstruction="true"
+        >
           <Icon name="link" />
-          Choose another terminal or note to finish the connection.
+          Choose another canvas item to finish the connection.
           <button
             type="button"
             onClick={() => dispatch({ type: "connection/cancel" })}
@@ -420,6 +510,7 @@ export function CanvasWorkspace({
       <div
         ref={viewportRef}
         className="canvas-viewport"
+        data-browser-viewport="true"
         tabIndex={0}
         aria-label="Pannable canvas"
         aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
@@ -451,6 +542,7 @@ export function CanvasWorkspace({
             scrollLeft: event.currentTarget.scrollLeft,
             scrollTop: event.currentTarget.scrollTop,
           };
+          setCanvasInteracting(true);
           event.currentTarget.setPointerCapture?.(event.pointerId);
         }}
         onPointerMove={(event) => {
@@ -466,11 +558,13 @@ export function CanvasWorkspace({
         onPointerUp={(event) => {
           if (panRef.current?.pointerId === event.pointerId) {
             panRef.current = null;
+            setCanvasInteracting(false);
             event.currentTarget.releasePointerCapture?.(event.pointerId);
           }
         }}
         onPointerCancel={() => {
           panRef.current = null;
+          setCanvasInteracting(false);
         }}
         onWheel={(event) => {
           if (event.shiftKey && event.deltaX === 0) {
@@ -537,6 +631,7 @@ export function CanvasWorkspace({
                 onResize={(size) =>
                   dispatch({ type: "node/resize", nodeId: node.id, size })
                 }
+                onManipulationChange={setCanvasInteracting}
                 onNoteChange={(text) =>
                   dispatch({ type: "note/update", nodeId: node.id, text })
                 }
@@ -551,6 +646,23 @@ export function CanvasWorkspace({
                   writeTerminal,
                   resizeTerminal,
                 }}
+                browserRuntime={browserRuntime}
+                browserVisible={
+                  state.zoom === 1 &&
+                  !terminalDialogOpen &&
+                  !canvasInteracting
+                }
+                browserUnavailableReason={
+                  canvasInteracting
+                    ? "The browser is hidden while the canvas item moves."
+                    : state.zoom === 1
+                    ? "The browser is hidden while a dialog covers the canvas."
+                    : "Use 100% zoom to interact with this page."
+                }
+                onBrowserNavigate={(url) => {
+                  setBrowserHandoffStatus(null);
+                  dispatch({ type: "browser/navigate", nodeId: node.id, url });
+                }}
               />
             );
           })}
@@ -562,6 +674,7 @@ export function CanvasWorkspace({
           id="canvas-layers-panel"
           className="canvas-layers-panel"
           aria-labelledby="canvas-layers-title"
+          data-browser-obstruction="true"
         >
           <header>
             <div>
@@ -574,7 +687,15 @@ export function CanvasWorkspace({
             {state.nodes.map((node) => (
               <li key={node.id}>
                 <button type="button" onClick={() => focusNode(node)}>
-                  <Icon name={node.kind === "terminal" ? "terminal" : "note"} />
+                  <Icon
+                    name={
+                      node.kind === "terminal"
+                        ? "terminal"
+                        : node.kind === "browser"
+                          ? "browser"
+                          : "note"
+                    }
+                  />
                   <span>{node.title}</span>
                   <small>
                     {state.connections.filter(
@@ -594,6 +715,7 @@ export function CanvasWorkspace({
         <section
           className="canvas-connections-panel"
           aria-label={`Connections for ${selectedNode.title}`}
+          data-browser-obstruction="true"
         >
           <header>
             <div>
@@ -603,29 +725,54 @@ export function CanvasWorkspace({
             <span>{selectedConnections.length}</span>
           </header>
           <ul>
-            {selectedConnections.map(({ connection, otherNode }) => (
-              <li key={connection.id}>
-                <Icon name="link" />
-                <span>{otherNode.title}</span>
-                <button
-                  type="button"
-                  aria-label={`Remove connection to ${otherNode.title}`}
-                  onClick={() =>
-                    dispatch({
-                      type: "connection/delete",
-                      connectionId: connection.id,
-                    })
-                  }
-                >
-                  <Icon name="close" />
-                </button>
-              </li>
-            ))}
+            {selectedConnections.map(({ connection, otherNode }) => {
+              const handoff = getBrowserHandoff(selectedNode, otherNode);
+              return (
+                <li key={connection.id}>
+                  <Icon name="link" />
+                  <span>{otherNode.title}</span>
+                  {handoff ? (
+                    <button
+                      className="canvas-connections-panel__handoff"
+                      type="button"
+                      aria-label={browserHandoffLabel(handoff.target)}
+                      title={browserHandoffLabel(handoff.target)}
+                      onClick={() =>
+                        void handoffBrowserUrl(handoff.browser, handoff.target)
+                      }
+                    >
+                      <Icon name="copy" />
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    aria-label={`Remove connection to ${otherNode.title}`}
+                    onClick={() =>
+                      dispatch({
+                        type: "connection/delete",
+                        connectionId: connection.id,
+                      })
+                    }
+                  >
+                    <Icon name="close" />
+                  </button>
+                </li>
+              );
+            })}
           </ul>
+          {browserHandoffStatus ? (
+            <p className="canvas-connections-panel__status" role="status">
+              {browserHandoffStatus}
+            </p>
+          ) : null}
         </section>
       ) : null}
 
-      <div className="canvas-view-controls" aria-label="Canvas view controls">
+      <div
+        className="canvas-view-controls"
+        aria-label="Canvas view controls"
+        data-browser-obstruction="true"
+      >
         <button
           type="button"
           aria-label="Show canvas items"
@@ -644,7 +791,11 @@ export function CanvasWorkspace({
         </button>
       </div>
 
-      <div className="canvas-zoom" aria-label="Canvas zoom controls">
+      <div
+        className="canvas-zoom"
+        aria-label="Canvas zoom controls"
+        data-browser-obstruction="true"
+      >
         <button
           type="button"
           aria-label="Zoom out"
@@ -664,7 +815,11 @@ export function CanvasWorkspace({
         </button>
       </div>
 
-      <p className="canvas-save-status" role="status">
+      <p
+        className="canvas-save-status"
+        role="status"
+        data-browser-obstruction="true"
+      >
         {persistenceAvailable
           ? "Canvas saved locally"
           : "Canvas persistence unavailable"}
@@ -697,12 +852,17 @@ interface CanvasNodeCardProps {
     readonly width: number;
     readonly height: number;
   }) => void;
+  readonly onManipulationChange: (interacting: boolean) => void;
   readonly onNoteChange: (text: string) => void;
   readonly onOpenSession: () => void;
   readonly onStartTerminal: () => void;
   readonly terminalPending: boolean;
   readonly terminalError?: string;
   readonly terminalTransport: LiveTerminalTransport;
+  readonly browserRuntime: BrowserRuntime;
+  readonly browserVisible: boolean;
+  readonly browserUnavailableReason: string;
+  readonly onBrowserNavigate: (url: string) => void;
 }
 
 function CanvasNodeCard({
@@ -718,12 +878,17 @@ function CanvasNodeCard({
   onDelete,
   onMove,
   onResize,
+  onManipulationChange,
   onNoteChange,
   onOpenSession,
   onStartTerminal,
   terminalPending,
   terminalError,
   terminalTransport,
+  browserRuntime,
+  browserVisible,
+  browserUnavailableReason,
+  onBrowserNavigate,
 }: CanvasNodeCardProps) {
   const dragRef = useRef<{
     readonly pointerId: number;
@@ -755,7 +920,7 @@ function CanvasNodeCard({
       className={classes}
       style={{
         transform: `translate(${toStagePoint(node).x}px, ${toStagePoint(node).y}px)`,
-        ...(node.kind === "terminal"
+        ...(node.kind !== "note"
           ? { width: `${node.width}px`, height: `${node.height}px` }
           : {}),
       }}
@@ -801,6 +966,7 @@ function CanvasNodeCard({
             nodeX: node.x,
             nodeY: node.y,
           };
+          onManipulationChange(true);
           event.currentTarget.setPointerCapture?.(event.pointerId);
         }}
         onPointerMove={(event) => {
@@ -816,11 +982,13 @@ function CanvasNodeCard({
         onPointerUp={(event) => {
           if (dragRef.current?.pointerId === event.pointerId) {
             dragRef.current = null;
+            onManipulationChange(false);
             event.currentTarget.releasePointerCapture?.(event.pointerId);
           }
         }}
         onPointerCancel={() => {
           dragRef.current = null;
+          onManipulationChange(false);
         }}
       >
         <div className="canvas-node__identity">
@@ -832,7 +1000,7 @@ function CanvasNodeCard({
             </span>
           ) : (
             <span className="canvas-node__kind-icon" aria-hidden="true">
-              <Icon name="note" />
+              <Icon name={node.kind === "browser" ? "browser" : "note"} />
             </span>
           )}
           <strong>{node.title}</strong>
@@ -876,71 +1044,83 @@ function CanvasNodeCard({
         </div>
       </header>
       {node.kind === "terminal" ? (
-        <>
-          <TerminalNodeBody
-            node={node}
-            session={session}
-            onOpenSession={onOpenSession}
-            onStart={onStartTerminal}
-            pending={terminalPending}
-            error={terminalError}
-            transport={terminalTransport}
-          />
-          {selected ? (
-            <button
-              className="canvas-node__resize-handle"
-              type="button"
-              aria-label={`Resize ${node.title}`}
-              aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
-              title="Drag to resize. Arrow keys resize; hold Alt for 1 px."
-              onKeyDown={(event) => {
-                const step = event.altKey ? 1 : 16;
-                const size = keyboardResize(event.key, node, step);
-                if (size) {
-                  event.preventDefault();
-                  onResize(size);
-                }
-              }}
-              onPointerDown={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                resizeRef.current = {
-                  pointerId: event.pointerId,
-                  clientX: event.clientX,
-                  clientY: event.clientY,
-                  width: node.width,
-                  height: node.height,
-                };
-                event.currentTarget.setPointerCapture?.(event.pointerId);
-              }}
-              onPointerMove={(event) => {
-                const resize = resizeRef.current;
-                if (!resize || resize.pointerId !== event.pointerId) {
-                  return;
-                }
-                onResize({
-                  width:
-                    resize.width + (event.clientX - resize.clientX) / zoom,
-                  height:
-                    resize.height + (event.clientY - resize.clientY) / zoom,
-                });
-              }}
-              onPointerUp={(event) => {
-                if (resizeRef.current?.pointerId === event.pointerId) {
-                  resizeRef.current = null;
-                  event.currentTarget.releasePointerCapture?.(event.pointerId);
-                }
-              }}
-              onPointerCancel={() => {
-                resizeRef.current = null;
-              }}
-            >
-              <span aria-hidden="true" />
-            </button>
-          ) : null}
-        </>
+        <TerminalNodeBody
+          node={node}
+          session={session}
+          onOpenSession={onOpenSession}
+          onStart={onStartTerminal}
+          pending={terminalPending}
+          error={terminalError}
+          transport={terminalTransport}
+        />
       ) : node.kind === "note" ? (
         <NoteNodeBody node={node} onChange={onNoteChange} />
+      ) : (
+        <BrowserSurface
+          nodeId={node.id}
+          url={node.url}
+          accessibleLabel={`Browser surface for ${node.title}`}
+          active={selected}
+          visible={browserVisible}
+          unavailableReason={browserUnavailableReason}
+          runtime={browserRuntime}
+          onActivate={onSelect}
+          onNavigate={onBrowserNavigate}
+          onOpenExternal={(url) => browserRuntime.openExternal(url)}
+        />
+      )}
+      {node.kind !== "note" && selected ? (
+        <button
+          className="canvas-node__resize-handle"
+          type="button"
+          aria-label={`Resize ${node.title}`}
+          aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
+          title="Drag to resize. Arrow keys resize; hold Alt for 1 px."
+          onKeyDown={(event) => {
+            const step = event.altKey ? 1 : 16;
+            const size = keyboardResize(event.key, node, step);
+            if (size) {
+              event.preventDefault();
+              onResize(size);
+            }
+          }}
+          onPointerDown={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            resizeRef.current = {
+              pointerId: event.pointerId,
+              clientX: event.clientX,
+              clientY: event.clientY,
+              width: node.width,
+              height: node.height,
+            };
+            onManipulationChange(true);
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+          }}
+          onPointerMove={(event) => {
+            const resize = resizeRef.current;
+            if (!resize || resize.pointerId !== event.pointerId) {
+              return;
+            }
+            onResize({
+              width: resize.width + (event.clientX - resize.clientX) / zoom,
+              height: resize.height + (event.clientY - resize.clientY) / zoom,
+            });
+          }}
+          onPointerUp={(event) => {
+            if (resizeRef.current?.pointerId === event.pointerId) {
+              resizeRef.current = null;
+              onManipulationChange(false);
+              event.currentTarget.releasePointerCapture?.(event.pointerId);
+            }
+          }}
+          onPointerCancel={() => {
+            resizeRef.current = null;
+            onManipulationChange(false);
+          }}
+        >
+          <span aria-hidden="true" />
+        </button>
       ) : null}
     </article>
   );
@@ -964,9 +1144,35 @@ function keyboardMovement(
   }
 }
 
+interface BrowserHandoff {
+  readonly browser: BrowserCanvasNode;
+  readonly target: NoteCanvasNode | TerminalCanvasNode;
+}
+
+function getBrowserHandoff(
+  selectedNode: CanvasNode,
+  otherNode: CanvasNode,
+): BrowserHandoff | null {
+  if (selectedNode.kind === "browser" && otherNode.kind !== "browser") {
+    return { browser: selectedNode, target: otherNode };
+  }
+  if (otherNode.kind === "browser" && selectedNode.kind !== "browser") {
+    return { browser: otherNode, target: selectedNode };
+  }
+  return null;
+}
+
+function browserHandoffLabel(
+  target: NoteCanvasNode | TerminalCanvasNode,
+): string {
+  return target.kind === "note"
+    ? `Add browser URL to ${target.title}`
+    : `Insert browser URL into ${target.title}`;
+}
+
 function keyboardResize(
   key: string,
-  node: TerminalCanvasNode,
+  node: TerminalCanvasNode | BrowserCanvasNode,
   step: number,
 ): { readonly width: number; readonly height: number } | null {
   switch (key) {
