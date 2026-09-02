@@ -1,6 +1,6 @@
-# Packaging for Beta v0.1
+# Packaging for Beta v0.2
 
-CLI Master ships two Rust executables: the Tauri desktop process and
+Jig ships two Rust executables: the Tauri desktop process and
 `cli-masterd`. The daemon is a Tauri `externalBin` sidecar named
 `cli-masterd-<target-triple>` under `apps/desktop/src-tauri/binaries/`.
 Those staged files are gitignored.
@@ -33,7 +33,7 @@ Configured in `apps/desktop/src-tauri/tauri.conf.json`:
 | macOS | `.app` and `.dmg` |
 | Windows | Not built |
 
-Identifier: `com.guicybercode.climaster`. Category: DeveloperTool.
+Identifier: `com.guicybercode.jig`. Category: DeveloperTool.
 
 `cli-masterd` is copied next to the desktop binary inside the AppImage and
 inside `Contents/MacOS` on macOS. `scripts/smoke-bundle.sh` fails if that
@@ -57,7 +57,7 @@ file is missing, then runs `cli-masterd --version` and `--preflight`.
 
 `.github/workflows/packaging.yml` runs on pull requests, `main`, and
 `workflow_dispatch`. Each OS job uploads
-`cli-master-v0.1.0-<platform>` with the installable files and checksums.
+`jig-v0.2.0-<platform>` with the installable files and checksums.
 Retention is 14 days.
 
 The workflow has `contents: read` only. It cannot publish a Release and it
@@ -86,4 +86,4 @@ AppImages are valid for this Beta as long as checksums are published.
 - `apps/desktop/src-tauri/tauri.conf.json`
 - `protocol/catalog.json` `applicationVersion`
 
-to equal `0.1.0`, with `protocolVersion` equal to `1`.
+to equal `0.2.0`, with `protocolVersion` equal to `1`.

@@ -1,4 +1,4 @@
-# Release checklist for Beta v0.1
+# Release checklist for Beta v0.2
 
 Do this before anyone treats a build as the Beta drop. Do not skip a step by
 marking CI `continue-on-error`. Do not publish a GitHub Release from automation
@@ -19,9 +19,9 @@ GUI acceptance below.
 - [ ] `scripts/check-versions.sh` passes.
 - [ ] `package.json`, `apps/desktop/package.json`, `tauri.conf.json`,
       `Cargo.toml`, and `protocol/catalog.json` `applicationVersion` are
-      `0.1.0`.
+      `0.2.0`.
 - [ ] `protocol/catalog.json` `protocolVersion` is `1`.
-- [ ] `cli-masterd --version` prints `cli-masterd 0.1.0 (protocol 1)`.
+- [ ] `cli-masterd --version` prints `cli-masterd 0.2.0 (protocol 1)`.
 - [ ] `Cargo.lock` and `pnpm-lock.yaml` are committed.
 
 ## Quality gate
@@ -64,7 +64,7 @@ Every item below starts unchecked. A Vite/Playwright smoke run or a Rust
 acceptance test is useful evidence, but neither substitutes for exercising the
 real packaged GUI and bundled daemon.
 
-- [ ] Install or mount the actual release-candidate package, launch CLI Master,
+- [ ] Install or mount the actual release-candidate package, launch Jig,
       and confirm the packaged desktop connects to its bundled daemon.
 - [ ] Add an existing Git repository through **Repository path** and confirm
       that its path and current branch are displayed correctly.

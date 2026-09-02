@@ -7,8 +7,10 @@ overrides belong in `pages/<page-name>.md` and must document why they differ.
 
 CLI Master is a dense, keyboard-first developer control center. It should feel
 closer to a terminal multiplexer or code editor than a consumer chat product.
-The interface is dark-first, restrained, fast, and readable during long work
-sessions.
+The application shell is light-first, restrained, fast, and readable during
+long work sessions. The xterm viewport is the only dark surface; dialogs,
+navigation, status, settings, diagnostics, and connection states all use the
+light shell palette.
 
 Design dials:
 
@@ -23,28 +25,30 @@ values outside the token layer.
 
 | Role | Token | Value |
 |---|---|---|
-| App background | `--color-background` | `#0b0f14` |
-| Sidebar | `--color-sidebar` | `#0f141b` |
-| Raised surface | `--color-surface` | `#151b23` |
-| Elevated surface | `--color-surface-raised` | `#1b2430` |
-| Input/terminal surface | `--color-inset` | `#080b10` |
-| Primary text | `--color-text` | `#f1f5f9` |
-| Secondary text | `--color-text-muted` | `#a8b3c2` |
-| Disabled text | `--color-text-disabled` | `#687386` |
-| Border | `--color-border` | `#2b3543` |
-| Strong border | `--color-border-strong` | `#465368` |
-| Action/focus | `--color-accent` | `#38bdf8` |
-| Action hover | `--color-accent-strong` | `#7dd3fc` |
-| Text on action | `--color-on-accent` | `#07131a` |
-| Running/success | `--color-success` | `#4ade80` |
-| Idle/warning | `--color-warning` | `#fbbf24` |
-| Failed/destructive | `--color-danger` | `#fb7185` |
-| Unknown | `--color-unknown` | `#c4b5fd` |
-| Focus halo | `--color-focus-ring` | `#bae6fd` |
+| App background | `--color-background` | `#fbfbfa` |
+| Sidebar | `--color-sidebar` | `#f4f4f2` |
+| Raised surface | `--color-surface` | `#ffffff` |
+| Elevated surface | `--color-surface-raised` | `#fafaf9` |
+| Input surface | `--color-inset` | `#f4f4f2` |
+| Primary text | `--color-text` | `#26282b` |
+| Secondary text | `--color-text-muted` | `#6d7075` |
+| Disabled text | `--color-text-disabled` | `#85878b` |
+| Border | `--color-border` | `#d9dadc` |
+| Strong control border | `--color-border-strong` | `#85878b` |
+| Action fill | `--color-accent` | `#c8323c` |
+| Action hover/text | `--color-accent-strong` | `#9d242d` |
+| Text on action | `--color-on-accent` | `#ffffff` |
+| Running/success | `--color-success` | `#287a45` |
+| Idle/warning | `--color-warning` | `#7b5b00` |
+| Failed/destructive | `--color-danger` | `#b42335` |
+| Unknown | `--color-unknown` | `#6550a7` |
+| Focus halo | `--color-focus-ring` | `#1b63d9` |
 
-Status always includes a visible label or icon in addition to color. Blue/cyan
-belongs to actions and keyboard focus; green remains reserved for running or a
-successful operation.
+Status always includes a visible label or icon in addition to color. Coral is
+the selection and action family, but `#ef4b55` is not used for small text or as
+a fill behind white text; use the darker semantic action tokens for those
+pairs. Blue belongs to keyboard focus, and green remains reserved for running
+or a successful operation.
 
 ## Typography
 
@@ -82,24 +86,26 @@ Use the four-pixel rhythm.
 
 ## Layout
 
-The persistent hierarchy is:
+The application has one persistent hierarchy:
 
 ```text
-application header
-├── project/session sidebar
-└── workspace main
-    ├── session toolbar
-    ├── single terminal or terminal grid
-    └── optional Git panel
-status bar
+canvas-only application shell
+├── canvas sidebar (modal drawer below 48rem)
+├── primary workspace
+│   ├── persistent workspace action chrome
+│   └── canvas, settings, diagnostics, or connection state
+│       └── terminal and note nodes (canvas only)
+└── local status bar
 ```
 
-- The sidebar is navigation and metadata, not the home for primary actions.
-- The workspace gives terminals the largest share of available area.
-- One terminal fills the workspace; two use two columns when width permits;
-  three emphasize the active terminal; four use a 2×2 grid.
-- At narrow widths, collapse secondary metadata before reducing terminal
-  usability. Never hide the active session or primary create action.
+- There is no separate application header, session sidebar, single-session
+  view, or fixed terminal grid.
+- The sidebar owns workspace navigation and project metadata actions. Global
+  navigation, palette, and create actions remain in workspace chrome.
+- The spatial canvas gives terminal and note nodes the largest share of the
+  available area.
+- At narrow widths, the sidebar becomes an explicit modal drawer. Never hide
+  the navigation trigger, command palette, or primary create action.
 - Keep project, session, and terminal selection when changing views.
 
 ## Components and states
@@ -111,11 +117,16 @@ status bar
   border; destructive buttons use danger only in a confirmed destructive flow.
 - Hover and pressed feedback may change color, opacity, or border. It must not
   move surrounding layout.
-- Disabled buttons use the native `disabled` attribute and remain legible.
+- Disabled buttons normally use the native `disabled` attribute and remain
+  legible. Use guarded `aria-disabled` only when the control must stay
+  focusable so its unavailable reason can be announced.
 
 ### Navigation rows
 
-- Use `ul > li > button` for project and session lists.
+- Use list semantics for project navigation. Keep the project-selection button
+  separate from its sibling rename and remove buttons; never nest controls.
+- Rename and remove controls stay visible, have descriptive accessible names,
+  and remain keyboard reachable without relying on hover.
 - Active rows use a left indicator plus contrast/weight, not color alone.
 - Preserve full names through wrapping or a keyboard-accessible tooltip when
   truncation is unavoidable.
@@ -138,14 +149,17 @@ status bar
 ### Terminals
 
 - xterm owns terminal rendering and focus. PTY bytes never enter React state.
+- A live terminal establishes an explicit dark token island (`#080b10`
+  background, `#f1f5f9` foreground, cyan cursor/focus) so light shell tokens do
+  not change xterm rendering.
 - The active tile has a visible border and title; focus is never color-only.
 - Resize only after measured dimensions change. Avoid remounting a live terminal
-  solely because single/grid mode changed.
+  when selecting, moving, or focusing its canvas node.
 - Do not intercept terminal control sequences such as Ctrl+C for app commands.
 
 ## Keyboard and focus
 
-- Provide a skip link to the active terminal.
+- Provide a skip link to the primary workspace.
 - Every action available by pointer is available by keyboard.
 - Use a 2px or larger focus outline with at least 3:1 state contrast.
 - Do not remove focus rings. Sticky toolbars and dialogs must not obscure the
@@ -173,6 +187,8 @@ status bar
 ## Forbidden patterns
 
 - Consumer-chat bubbles or vendor-branded visual imitation.
+- A second dark shell, header, project/session rail, or fixed terminal-grid
+  navigation alongside the canvas.
 - Remote font dependency, gradients, glassmorphism, glow-heavy decoration, or
   animated backgrounds.
 - Shell output simulated with styled text instead of xterm and a real PTY.
@@ -190,4 +206,5 @@ status bar
   scrolling.
 - Confirm status has text/icon plus color and no terminal output is announced.
 - Confirm project removal never implies deleting its directory.
-- Confirm active terminals keep buffers and focus across single/grid changes.
+- Confirm active terminals keep buffers while canvas selection and navigation
+  change.

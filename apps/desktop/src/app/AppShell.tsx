@@ -1,11 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { AppHeader } from "./components/AppHeader";
 import { Icon } from "./components/Icon";
 import { CommandPalette, type CommandPaletteCommand } from "./features/commands/CommandPalette";
 import { CanvasSidebar } from "./features/navigation/CanvasSidebar";
-import { ProjectSidebar } from "./features/navigation/ProjectSidebar";
-import { SessionSidebar } from "./features/navigation/SessionSidebar";
 import { LocalStatusBar } from "./features/status/LocalStatusBar";
 import { Workspace } from "./features/workspace/Workspace";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
@@ -22,7 +19,14 @@ export function AppShell() {
   const [canvasSidebarCollapsed, setCanvasSidebarCollapsed] = useState(
     readCanvasSidebarCollapsed,
   );
+  const [sessionFocusRevision, setSessionFocusRevision] = useState(0);
+  const closeNavigationOnDesktop = useCallback(
+    () => setNavigationOpen(false),
+    [],
+  );
+  const isCompactNavigation = useCompactNavigation(closeNavigationOnDesktop);
   const navigationRef = useRef<HTMLDivElement>(null);
+  const navigationTriggerRef = useRef<HTMLButtonElement>(null);
   const modifier = workspace.platform === "macos" ? "⌘" : "Ctrl";
   const repositoryUnavailable =
     workspace.selectedProject?.availability === "missing" ||
@@ -38,59 +42,43 @@ export function AppShell() {
       ),
     [workspace.projectSessions],
   );
-  const selectedAgent = workspace.agents.find(
-    (agent) => agent.id === workspace.selectedSession?.agentId,
-  );
-  const usesCanvasShell =
-    workspace.view === "canvas" ||
-    workspace.view === "settings" ||
-    workspace.view === "diagnostics";
   const canvasSidebarView =
     workspace.view === "settings" || workspace.view === "diagnostics"
       ? workspace.view
       : "canvas";
 
+  const closeNavigationForOverlay = useCallback(() => {
+    if (navigationOpen && isCompactNavigation) {
+      setNavigationOpen(false);
+    }
+  }, [isCompactNavigation, navigationOpen]);
+
   const openAddProject = useCallback(() => {
     if (workspace.isConnected) {
+      closeNavigationForOverlay();
       workspace.openOverlay({ kind: "add-project" });
     }
-  }, [workspace]);
+  }, [closeNavigationForOverlay, workspace]);
 
   const openNewSession = useCallback(() => {
     if (canCreateSession && workspace.selectedProject) {
+      closeNavigationForOverlay();
       workspace.openOverlay({
         kind: "new-session",
         projectId: workspace.selectedProject.id,
       });
     }
-  }, [canCreateSession, workspace]);
+  }, [canCreateSession, closeNavigationForOverlay, workspace]);
 
   const openCommandPalette = useCallback(() => {
+    closeNavigationForOverlay();
     workspace.openOverlay({ kind: "command-palette" });
-  }, [workspace]);
-
-  const selectProject = useCallback(
-    (projectId: string) => {
-      workspace.selectProject(projectId);
-      workspace.setView("session");
-      setNavigationOpen(false);
-    },
-    [workspace],
-  );
+  }, [closeNavigationForOverlay, workspace]);
 
   const selectCanvasProject = useCallback(
     (projectId: string) => {
       workspace.selectProject(projectId);
       workspace.setView("canvas");
-      setNavigationOpen(false);
-    },
-    [workspace],
-  );
-
-  const selectSession = useCallback(
-    (sessionId: string) => {
-      workspace.selectSession(sessionId);
-      workspace.setView("session");
       setNavigationOpen(false);
     },
     [workspace],
@@ -102,26 +90,50 @@ export function AppShell() {
       (project) => project.id === workspace.selectedProjectId,
     );
     const nextProject = workspace.projects[(currentIndex + 1) % workspace.projects.length];
-    if (nextProject) selectProject(nextProject.id);
-  }, [selectProject, workspace.projects, workspace.selectedProjectId]);
+    if (nextProject) selectCanvasProject(nextProject.id);
+  }, [selectCanvasProject, workspace.projects, workspace.selectedProjectId]);
+
+  const requestSessionFocus = useCallback(
+    (sessionId: string) => {
+      workspace.selectSession(sessionId);
+      workspace.setView("canvas");
+      setNavigationOpen(false);
+      setSessionFocusRevision((revision) => revision + 1);
+    },
+    [workspace],
+  );
 
   const focusSessionByNumber = useCallback(
     (sessionNumber: number) => {
       const session = orderedProjectSessions[sessionNumber - 1];
-      if (session) selectSession(session.id);
+      if (session) requestSessionFocus(session.id);
     },
-    [orderedProjectSessions, selectSession],
+    [orderedProjectSessions, requestSessionFocus],
   );
 
   useGlobalShortcuts({
     platform: workspace.platform,
     onOpenCommandPalette: openCommandPalette,
     onNewSession: openNewSession,
-    onOpenGrid: () => {
-      if (workspace.selectedProject) workspace.setView("grid");
-    },
     onFocusSession: focusSessionByNumber,
   });
+
+  const toggleNavigation = useCallback(() => {
+    if (isCompactNavigation) {
+      setNavigationOpen((open) => !open);
+      return;
+    }
+    setCanvasSidebarCollapsed((collapsed) => !collapsed);
+  }, [isCompactNavigation]);
+
+  const hideNavigation = useCallback(() => {
+    if (isCompactNavigation) {
+      setNavigationOpen(false);
+      return;
+    }
+    setCanvasSidebarCollapsed(true);
+    queueMicrotask(() => navigationTriggerRef.current?.focus());
+  }, [isCompactNavigation]);
 
   useEffect(() => {
     try {
@@ -135,9 +147,7 @@ export function AppShell() {
   }, [canvasSidebarCollapsed]);
 
   useEffect(() => {
-    if (!navigationOpen) return undefined;
-    const compactNavigation = window.matchMedia("(max-width: 47.99rem)");
-    if (!compactNavigation.matches) {
+    if (!navigationOpen || !isCompactNavigation) {
       return undefined;
     }
     const navigation = navigationRef.current;
@@ -148,7 +158,7 @@ export function AppShell() {
         : null;
     const inertTargets = Array.from(
       document.querySelectorAll<HTMLElement>(
-        ".app-header, #workspace, .status-bar, .connection-banner",
+        ".skip-link, #workspace, .canvas-session-actions, .status-bar, .connection-banner",
       ),
     );
     const priorAriaHidden = inertTargets.map((target) =>
@@ -185,24 +195,20 @@ export function AppShell() {
       }
     }
 
-    function handleNavigationBreakpoint(event: MediaQueryListEvent) {
-      if (!event.matches) setNavigationOpen(false);
-    }
-
     window.addEventListener("keydown", handleNavigationKeyDown);
-    compactNavigation.addEventListener("change", handleNavigationBreakpoint);
     return () => {
       window.removeEventListener("keydown", handleNavigationKeyDown);
-      compactNavigation.removeEventListener("change", handleNavigationBreakpoint);
       inertTargets.forEach((target, index) => {
         target.removeAttribute("inert");
         const ariaHidden = priorAriaHidden[index];
         if (ariaHidden === null) target.removeAttribute("aria-hidden");
         else if (ariaHidden !== undefined) target.setAttribute("aria-hidden", ariaHidden);
       });
-      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+      if (previouslyFocused?.isConnected) {
+        previouslyFocused.focus();
+      }
     };
-  }, [navigationOpen]);
+  }, [isCompactNavigation, navigationOpen]);
 
   useEffect(() => {
     const suppressWebviewContextMenu = (event: MouseEvent) => {
@@ -216,6 +222,13 @@ export function AppShell() {
 
   const commands = useMemo<readonly CommandPaletteCommand[]>(() => {
     const session = workspace.selectedSession;
+    const project = workspace.selectedProject;
+    const worktree = workspace.selectedWorktree;
+    const hasMissingManagedWorktree = Boolean(session?.worktreeId && !worktree);
+    const sessionPath = hasMissingManagedWorktree
+      ? undefined
+      : worktree?.path ?? session?.worktreePath ?? session?.cwd;
+    const isSessionLive = session ? isLiveStatus(session.status) : false;
     const baseCommands: CommandPaletteCommand[] = [
       {
         id: "project.add",
@@ -246,19 +259,53 @@ export function AppShell() {
         onSelect: openNewSession,
       },
       {
-        id: "session.open",
-        label: "Open Session",
-        description: "Open the selected session workspace.",
-        disabled: !session,
-        disabledReason: "Select a session first.",
-        onSelect: () => workspace.setView("session"),
+        id: "project.rename",
+        label: "Rename Project",
+        description: "Change only the selected project's display name.",
+        disabled: !project || !workspace.isConnected,
+        disabledReason: "Select a project and connect the local daemon first.",
+        onSelect: () => {
+          if (project) {
+            workspace.openOverlay({ kind: "rename-project", projectId: project.id });
+          }
+        },
+      },
+      {
+        id: "project.remove",
+        label: "Remove Project",
+        description: "Forget the selected project without deleting its directory.",
+        disabled: !project || !workspace.isConnected,
+        disabledReason: "Select a project and connect the local daemon first.",
+        onSelect: () => {
+          if (project) {
+            workspace.openOverlay({ kind: "remove-project", projectId: project.id });
+          }
+        },
+      },
+      {
+        id: "session.start",
+        label: "Start Session",
+        description: "Start a fresh process for the selected session.",
+        disabled:
+          !session ||
+          !workspace.isConnected ||
+          isSessionLive ||
+          hasMissingManagedWorktree,
+        disabledReason: hasMissingManagedWorktree
+          ? "The selected session's managed worktree is unavailable."
+          : "Select a stopped session and connect the local daemon first.",
+        onSelect: () => {
+          if (session) {
+            void workspace.startSession({ sessionId: session.id }).catch(() => undefined);
+          }
+        },
       },
       {
         id: "session.stop",
         label: "Stop Session",
         description: "Stop only the selected agent process.",
         disabled:
-          !session || !workspace.isConnected || !isLiveStatus(session.status),
+          !session || !workspace.isConnected || !isSessionLive,
         disabledReason:
           "Select a live session and connect the local daemon first.",
         onSelect: () => {
@@ -269,8 +316,10 @@ export function AppShell() {
         id: "session.restart",
         label: "Restart Session",
         description: "Restart the selected agent process.",
-        disabled: !session || !workspace.isConnected,
-        disabledReason: "Select a session and connect the daemon first.",
+        disabled: !session || !workspace.isConnected || hasMissingManagedWorktree,
+        disabledReason: hasMissingManagedWorktree
+          ? "The selected session's managed worktree is unavailable."
+          : "Select a session and connect the daemon first.",
         onSelect: () => {
           if (session) {
             void workspace
@@ -280,19 +329,78 @@ export function AppShell() {
         },
       },
       {
+        id: "session.rename",
+        label: "Rename Session",
+        description: "Change only the selected session's display name.",
+        disabled: !session || !workspace.isConnected,
+        disabledReason: "Select a session and connect the local daemon first.",
+        onSelect: () => {
+          if (session) {
+            workspace.openOverlay({ kind: "rename-session", sessionId: session.id });
+          }
+        },
+      },
+      {
+        id: "session.git-status",
+        label: "Show Git Status",
+        description: "Inspect the selected session's working tree.",
+        disabled: !session || !workspace.isConnected || hasMissingManagedWorktree,
+        disabledReason: hasMissingManagedWorktree
+          ? "The selected session's managed worktree is unavailable."
+          : "Select a session and connect the local daemon first.",
+        onSelect: () => {
+          if (session) {
+            workspace.openOverlay({ kind: "git-status", sessionId: session.id });
+          }
+        },
+      },
+      {
+        id: "session.open-path",
+        label: "Open Session Path",
+        description: "Reveal the selected session directory in the system file manager.",
+        disabled: !sessionPath,
+        disabledReason: hasMissingManagedWorktree
+          ? "The selected session's managed worktree is unavailable."
+          : "Select a session first.",
+        onSelect: () => {
+          if (sessionPath) {
+            void workspace.openPath(sessionPath).catch(() => undefined);
+          }
+        },
+      },
+      {
+        id: "session.delete",
+        label: "Delete Session",
+        description: "Delete stopped session metadata without removing its worktree.",
+        disabled: !session || !workspace.isConnected || isSessionLive,
+        disabledReason: isSessionLive
+          ? "Stop the selected session before deleting its metadata."
+          : "Select a stopped session and connect the local daemon first.",
+        onSelect: () => {
+          if (session) {
+            workspace.openOverlay({ kind: "delete-session", sessionId: session.id });
+          }
+        },
+      },
+      {
+        id: "session.remove-worktree",
+        label: "Remove Session Worktree",
+        description: "Begin the guarded removal flow for the selected worktree.",
+        disabled: !session || !worktree || !workspace.isConnected || isSessionLive,
+        disabledReason: isSessionLive
+          ? "Stop the selected session before removing its worktree."
+          : "Select a stopped session with an available managed worktree.",
+        onSelect: () => {
+          if (worktree) {
+            workspace.openOverlay({ kind: "remove-worktree", worktreeId: worktree.id });
+          }
+        },
+      },
+      {
         id: "view.canvas",
         label: "Open Canvas",
         description: "Arrange terminals and notes in the spatial workspace.",
         onSelect: () => workspace.setView("canvas"),
-      },
-      {
-        id: "view.grid",
-        label: "Open Grid",
-        description: "Show sessions for the selected project in a grid.",
-        shortcut: `${modifier} Shift G`,
-        disabled: !workspace.selectedProject,
-        disabledReason: "Select a project first.",
-        onSelect: () => workspace.setView("grid"),
       },
       {
         id: "view.settings",
@@ -312,42 +420,66 @@ export function AppShell() {
       label: `Switch Project: ${project.name}`,
       description: project.repositoryRoot ?? project.path,
       keywords: ["recent repository", project.currentBranch ?? ""],
-      onSelect: () => selectProject(project.id),
+      onSelect: () => selectCanvasProject(project.id),
     }));
-    return [...baseCommands, ...switchCommands];
+    const focusCommands: CommandPaletteCommand[] = orderedProjectSessions.map(
+      (projectSession, index) => ({
+        id: `session.focus.${projectSession.id}`,
+        label: `Focus Session: ${projectSession.name}`,
+        description: "Reveal and focus this terminal node on the canvas.",
+        shortcut: index < 9 ? `${modifier} ${index + 1}` : undefined,
+        onSelect: () => requestSessionFocus(projectSession.id),
+      }),
+    );
+    const sessionIds = new Set(workspace.sessions.map(({ id }) => id));
+    const retainedWorktreeCommands: CommandPaletteCommand[] = workspace.worktrees
+      .filter(
+        (candidate) =>
+          candidate.projectId === project?.id &&
+          (!candidate.sessionId || !sessionIds.has(candidate.sessionId)),
+      )
+      .map((candidate) => ({
+        id: `worktree.remove.${candidate.id}`,
+        label: `Remove Retained Worktree: ${candidate.branch}`,
+        description: candidate.path,
+        disabled: !workspace.isConnected,
+        disabledReason: "Connect the local daemon first.",
+        onSelect: () =>
+          workspace.openOverlay({
+            kind: "remove-worktree",
+            worktreeId: candidate.id,
+          }),
+      }));
+    return [
+      ...baseCommands,
+      ...switchCommands,
+      ...focusCommands,
+      ...retainedWorktreeCommands,
+    ];
   }, [
     canCreateSession,
     cycleProject,
     modifier,
     openAddProject,
     openNewSession,
+    orderedProjectSessions,
     repositoryUnavailable,
-    selectProject,
+    requestSessionFocus,
+    selectCanvasProject,
     workspace,
   ]);
 
+  const isNavigationHidden = isCompactNavigation
+    ? !navigationOpen
+    : canvasSidebarCollapsed;
+
   return (
     <div
-      className={
-        usesCanvasShell
-          ? `app-shell app-shell--canvas${
-              canvasSidebarCollapsed
-                ? " app-shell--canvas-sidebar-collapsed"
-                : ""
-            }`
-          : "app-shell"
-      }
+      className={`app-shell${
+        canvasSidebarCollapsed ? " app-shell--canvas-sidebar-collapsed" : ""
+      }`}
     >
       <a className="skip-link" href="#workspace">Skip to workspace</a>
-      <AppHeader
-        project={workspace.selectedProject ?? undefined}
-        platform={workspace.platform}
-        canCreateSession={canCreateSession}
-        navigationOpen={navigationOpen}
-        onToggleNavigation={() => setNavigationOpen((open) => !open)}
-        onNewSession={openNewSession}
-        onOpenPalette={openCommandPalette}
-      />
       {workspace.connection.status === "disconnected" && workspace.snapshot ? (
         <div className="connection-banner" role="alert">
           <span><strong>Daemon disconnected.</strong> Existing metadata may be stale.</span>
@@ -372,19 +504,15 @@ export function AppShell() {
       ) : null}
       <div className="app-shell__body">
         <div
+          id="canvas-navigation"
           ref={navigationRef}
           className="navigation-pane"
           data-open={navigationOpen ? "true" : "false"}
-          aria-hidden={
-            usesCanvasShell && canvasSidebarCollapsed
-              ? true
-              : undefined
-          }
-          inert={
-            usesCanvasShell && canvasSidebarCollapsed
-              ? true
-              : undefined
-          }
+          role={isCompactNavigation ? "dialog" : undefined}
+          aria-label={isCompactNavigation ? "Workspace navigation" : undefined}
+          aria-modal={isCompactNavigation && navigationOpen ? true : undefined}
+          aria-hidden={isNavigationHidden ? true : undefined}
+          inert={isNavigationHidden ? true : undefined}
         >
           <div className="navigation-pane__mobile-header">
             <strong>Navigation</strong>
@@ -392,75 +520,99 @@ export function AppShell() {
               <Icon name="close" />
             </button>
           </div>
-          {usesCanvasShell ? (
-            <CanvasSidebar
-              projects={workspace.projects}
-              sessions={workspace.sessions}
-              selectedProjectId={workspace.selectedProjectId ?? undefined}
-              activeView={canvasSidebarView}
-              canManageProjects={workspace.isConnected}
-              onSelectProject={selectCanvasProject}
-              onOpenCanvas={() => {
-                workspace.setView("canvas");
-                setNavigationOpen(false);
-              }}
-              onHide={() => setCanvasSidebarCollapsed(true)}
-              onAddProject={openAddProject}
-              onOpenSettings={() => {
-                workspace.setView("settings");
-                setNavigationOpen(false);
-              }}
-              onOpenDiagnostics={() => {
-                workspace.setView("diagnostics");
-                setNavigationOpen(false);
-              }}
-            />
+          <CanvasSidebar
+            projects={workspace.projects}
+            sessions={workspace.sessions}
+            selectedProjectId={workspace.selectedProjectId ?? undefined}
+            activeView={canvasSidebarView}
+            canManageProjects={workspace.isConnected}
+            onSelectProject={selectCanvasProject}
+            onOpenCanvas={() => {
+              workspace.setView("canvas");
+              setNavigationOpen(false);
+            }}
+            onHide={hideNavigation}
+            onAddProject={openAddProject}
+            onRenameProject={(projectId) => {
+              closeNavigationForOverlay();
+              workspace.openOverlay({ kind: "rename-project", projectId });
+            }}
+            onRemoveProject={(projectId) => {
+              closeNavigationForOverlay();
+              workspace.openOverlay({ kind: "remove-project", projectId });
+            }}
+            onOpenSettings={() => {
+              workspace.setView("settings");
+              setNavigationOpen(false);
+            }}
+            onOpenDiagnostics={() => {
+              workspace.setView("diagnostics");
+              setNavigationOpen(false);
+            }}
+          />
+        </div>
+        {navigationOpen ? <button className="navigation-backdrop" type="button" aria-label="Dismiss navigation" onClick={() => setNavigationOpen(false)} /> : null}
+        <div className="canvas-session-actions" role="toolbar" aria-label="Workspace actions">
+          <button
+            ref={navigationTriggerRef}
+            className="canvas-tool canvas-navigation-trigger"
+            type="button"
+            aria-label={
+              isNavigationHidden
+                ? isCompactNavigation
+                  ? "Open navigation"
+                  : "Show workspace sidebar"
+                : "Hide navigation"
+            }
+            aria-controls="canvas-navigation"
+            aria-expanded={!isNavigationHidden}
+            onClick={toggleNavigation}
+          >
+            <Icon name="menu" />
+          </button>
+          <button
+            className="canvas-tool"
+            type="button"
+            aria-label={`Open command palette, ${modifier}+K`}
+            title={`Open command palette (${modifier}+K)`}
+            onClick={openCommandPalette}
+          >
+            <Icon name="search" />
+          </button>
+          {workspace.selectedProject ? (
+            <button
+              className="canvas-pill-button"
+              type="button"
+              aria-label="New Session"
+              aria-disabled={!canCreateSession ? true : undefined}
+              title={
+                canCreateSession
+                  ? "Create a session"
+                  : "Select an available project and connect the daemon first."
+              }
+              onClick={openNewSession}
+            >
+              <Icon name="plus" /> <span>New session</span>
+            </button>
           ) : (
-            <>
-              <ProjectSidebar
-                projects={workspace.projects}
-                selectedProjectId={workspace.selectedProjectId ?? undefined}
-                canManageProjects={workspace.isConnected}
-                onSelectProject={selectProject}
-                onAddProject={openAddProject}
-                onRenameProject={(projectId) => workspace.openOverlay({ kind: "rename-project", projectId })}
-                onRemoveProject={(projectId) => workspace.openOverlay({ kind: "remove-project", projectId })}
-                onOpenSettings={() => { workspace.setView("settings"); setNavigationOpen(false); }}
-                onOpenDiagnostics={() => { workspace.setView("diagnostics"); setNavigationOpen(false); }}
-              />
-              <SessionSidebar
-                sessions={workspace.projectSessions}
-                agents={workspace.agents}
-                canCreateSession={canCreateSession}
-                canManageWorktrees={workspace.isConnected}
-                worktrees={workspace.worktrees.filter(
-                  (worktree) =>
-                    worktree.projectId === workspace.selectedProject?.id,
-                )}
-                selectedSessionId={workspace.selectedSessionId ?? undefined}
-                projectSelected={workspace.selectedProject !== null}
-                onSelectSession={selectSession}
-                onNewSession={openNewSession}
-                onRemoveWorktree={(worktreeId) =>
-                  workspace.openOverlay({ kind: "remove-worktree", worktreeId })
-                }
-              />
-            </>
+            <button
+              className="canvas-pill-button"
+              type="button"
+              aria-label="Add Project"
+              aria-disabled={!workspace.isConnected ? true : undefined}
+              title={
+                workspace.isConnected
+                  ? "Add a project"
+                  : "Reconnect the daemon to add a project."
+              }
+              onClick={openAddProject}
+            >
+              <Icon name="plus" /> <span>Add project</span>
+            </button>
           )}
         </div>
-        {usesCanvasShell && canvasSidebarCollapsed ? (
-          <button
-            className="canvas-sidebar-reveal"
-            type="button"
-            aria-label="Show workspace sidebar"
-            title="Show sidebar"
-            onClick={() => setCanvasSidebarCollapsed(false)}
-          >
-            <Icon name="sidebar" />
-          </button>
-        ) : null}
-        {navigationOpen ? <button className="navigation-backdrop" type="button" aria-label="Dismiss navigation" onClick={() => setNavigationOpen(false)} /> : null}
         <Workspace
+          isCompact={isCompactNavigation}
           connectionStatus={workspace.connection.status}
           connectionError={workspace.connection.status === "disconnected" || workspace.connection.status === "fatal" ? workspace.connection.error : undefined}
           hello={workspace.hello ?? undefined}
@@ -470,16 +622,13 @@ export function AppShell() {
           projects={workspace.projects}
           project={workspace.selectedProject ?? undefined}
           agents={workspace.agents}
-          sessions={workspace.projectSessions}
-          session={workspace.selectedSession ?? undefined}
-          agent={selectedAgent}
-          worktree={workspace.selectedWorktree ?? undefined}
+          sessions={workspace.sessions}
+          worktrees={workspace.worktrees}
+          selectedSessionId={workspace.selectedSessionId ?? undefined}
+          sessionFocusRevision={sessionFocusRevision}
           onRetry={workspace.retry}
-          onAddProject={openAddProject}
-          onNewSession={openNewSession}
           onOpenCanvas={() => workspace.setView("canvas")}
-          onSelectProject={selectProject}
-          onSelectSession={selectSession}
+          onSelectSession={(sessionId) => workspace.selectSession(sessionId)}
           onCreateCustomAgent={workspace.createCustomAgent}
           onCreateSession={(input) =>
             workspace.createSession(input, { select: false })
@@ -492,10 +641,9 @@ export function AppShell() {
           onRenameSession={(sessionId) => workspace.openOverlay({ kind: "rename-session", sessionId })}
           onStopSession={(sessionId) => workspace.openOverlay({ kind: "stop-session", sessionId })}
           onDeleteSession={(sessionId) => workspace.openOverlay({ kind: "delete-session", sessionId })}
-          onRemoveWorktree={(sessionId) => {
-            const session = workspace.sessions.find((candidate) => candidate.id === sessionId);
-            if (session?.worktreeId) workspace.openOverlay({ kind: "remove-worktree", worktreeId: session.worktreeId });
-          }}
+          onRemoveWorktree={(worktreeId) =>
+            workspace.openOverlay({ kind: "remove-worktree", worktreeId })
+          }
           onGitStatus={(sessionId) => workspace.openOverlay({ kind: "git-status", sessionId })}
           onOpenPath={workspace.openPath}
           onLoadDiagnostics={workspace.getDiagnostics}
@@ -524,6 +672,35 @@ function readCanvasSidebarCollapsed(): boolean {
   } catch {
     return false;
   }
+}
+
+const COMPACT_NAVIGATION_QUERY = "(max-width: 47.99rem)";
+
+/** Keeps drawer behavior aligned with the CSS compact-navigation breakpoint. */
+function useCompactNavigation(onExitCompact: () => void): boolean {
+  const [isCompact, setIsCompact] = useState(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return false;
+    }
+    return window.matchMedia(COMPACT_NAVIGATION_QUERY).matches;
+  });
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") {
+      return undefined;
+    }
+    const query = window.matchMedia(COMPACT_NAVIGATION_QUERY);
+    const update = (event: MediaQueryListEvent) => {
+      setIsCompact(event.matches);
+      if (!event.matches) {
+        onExitCompact();
+      }
+    };
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, [onExitCompact]);
+
+  return isCompact;
 }
 
 const NAVIGATION_FOCUSABLE = [

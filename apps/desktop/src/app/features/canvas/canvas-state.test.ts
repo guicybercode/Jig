@@ -5,6 +5,7 @@ import {
   createCanvasNode,
   createInitialCanvasDocument,
   createInitialCanvasState,
+  createSessionTerminalCanvasNode,
   createTerminalCanvasNode,
   parseCanvasDocument,
   serializeCanvasDocument,
@@ -99,6 +100,21 @@ describe("canvas state", () => {
     );
   });
 
+  it("clears the selected node when the canvas background is selected", () => {
+    const initial = createInitialCanvasState();
+    const selected = canvasReducer(initial, {
+      type: "node/select",
+      nodeId: "note-first",
+    });
+    const cleared = canvasReducer(selected, {
+      type: "node/select",
+      nodeId: null,
+    });
+
+    expect(selected.selectedNodeId).toBe("note-first");
+    expect(cleared.selectedNodeId).toBeNull();
+  });
+
   it("connects distinct nodes once and removes their edges with the node", () => {
     const initial = createInitialCanvasState({
       version: 1,
@@ -140,6 +156,123 @@ describe("canvas state", () => {
     });
     expect(deleted.nodes).toHaveLength(1);
     expect(deleted.connections).toEqual([]);
+  });
+
+  it("dismisses attached cards without deleting or immediately recreating sessions", () => {
+    const sessionNode = createSessionTerminalCanvasNode(
+      { x: 20, y: 30 },
+      {
+        id: "session-one",
+        projectId: "project-one",
+        name: "Agent session",
+        cwd: "/repos/project-one",
+      },
+    );
+    const initial = createInitialCanvasState({
+      version: 1,
+      nodes: [sessionNode],
+      connections: [],
+      zoom: 1,
+      hiddenSessionIds: [],
+    });
+
+    const dismissed = canvasReducer(initial, {
+      type: "node/delete",
+      nodeId: sessionNode.id,
+    });
+    const reconciled = canvasReducer(dismissed, {
+      type: "sessions/reconcile",
+      knownSessionIds: ["session-one"],
+      sessionNodes: [sessionNode],
+    });
+
+    expect(reconciled.nodes).toEqual([]);
+    expect(reconciled.hiddenSessionIds).toEqual(["session-one"]);
+    expect(parseCanvasDocument(serializeCanvasDocument(reconciled))).toEqual(
+      expect.objectContaining({ hiddenSessionIds: ["session-one"] }),
+    );
+  });
+
+  it("reconciles known sessions, prunes stale dismissals, and refreshes names", () => {
+    const firstNode = createSessionTerminalCanvasNode(
+      { x: 20, y: 30 },
+      {
+        id: "session-one",
+        projectId: "project-one",
+        name: "Old name",
+        cwd: "/repos/project-one",
+      },
+    );
+    const secondNode = createSessionTerminalCanvasNode(
+      { x: 200, y: 300 },
+      {
+        id: "session-two",
+        projectId: "project-one",
+        name: "Hidden session",
+        cwd: "/repos/project-one",
+      },
+    );
+    const initial = createInitialCanvasState({
+      version: 1,
+      nodes: [firstNode],
+      connections: [],
+      zoom: 1,
+      hiddenSessionIds: ["session-two", "deleted-session"],
+    });
+    const renamedFirstNode = createSessionTerminalCanvasNode(
+      { x: 900, y: 900 },
+      {
+        id: "session-one",
+        projectId: "project-one",
+        name: "Renamed session",
+        cwd: "/repos/project-one",
+      },
+    );
+
+    const reconciled = canvasReducer(initial, {
+      type: "sessions/reconcile",
+      knownSessionIds: ["session-one", "session-two"],
+      sessionNodes: [renamedFirstNode, secondNode],
+    });
+
+    expect(reconciled.nodes).toHaveLength(1);
+    expect(reconciled.nodes[0]).toMatchObject({
+      id: firstNode.id,
+      sessionId: "session-one",
+      projectId: "project-one",
+      title: "Renamed session",
+      x: 20,
+      y: 30,
+    });
+    expect(reconciled.hiddenSessionIds).toEqual(["session-two"]);
+  });
+
+  it("reveals a dismissed session atomically and selects its terminal node", () => {
+    const sessionNode = createSessionTerminalCanvasNode(
+      { x: 20, y: 30 },
+      {
+        id: "session-one",
+        projectId: "project-one",
+        name: "Agent session",
+        cwd: "/repos/project-one",
+      },
+    );
+    const initial = createInitialCanvasState({
+      version: 1,
+      nodes: [],
+      connections: [],
+      zoom: 1,
+      hiddenSessionIds: ["session-one"],
+    });
+
+    const revealed = canvasReducer(initial, {
+      type: "session/reveal",
+      node: sessionNode,
+    });
+
+    expect(revealed.nodes).toEqual([sessionNode]);
+    expect(revealed.hiddenSessionIds).toEqual([]);
+    expect(revealed.selectedNodeId).toBe(sessionNode.id);
   });
 
   it("round-trips valid documents and drops unsafe persisted references", () => {
@@ -185,5 +318,6 @@ describe("canvas state", () => {
     ]);
     expect(parsed.connections).toEqual([]);
     expect(parsed.zoom).toBe(1.5);
+    expect(parsed.hiddenSessionIds).toEqual([]);
   });
 });

@@ -6,7 +6,7 @@ Terminals on a canvas.
 
 ## Install and run
 
-Jig is a local-first desktop app for Linux and macOS. Windows is out of scope for Beta v0.1.
+Jig is a local-first desktop app for Linux and macOS. Windows is out of scope for Beta v0.2.
 
 ### Prerequisites
 
@@ -40,7 +40,7 @@ Builds are unsigned. macOS notarization is not configured. See [docs/install.md]
 
 Jig hosts coding-agent CLIs in real terminals with projects and Git worktrees. It coordinates OpenAI Codex, Claude Code, Gemini CLI, OpenCode, and custom executables in isolated PTY sessions.
 
-**Current status:** Beta v0.1 architecture exists. The daemon, PTY management, and storage layers are operational. The IPC protocol is defined in `crates/core/src/wire`. Session creation, worktree isolation, and the terminal canvas UI are in active development. See [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) for the current domain-IPC gap and [ARCHITECTURE.md](ARCHITECTURE.md) for accepted design decisions.
+**Current status:** Beta v0.2 connects project management, isolated worktrees, agent discovery, live PTY sessions, and the terminal canvas through the packaged desktop and daemon. The stable IPC protocol is defined in `crates/core/src/wire`. See [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) for current limitations and [ARCHITECTURE.md](ARCHITECTURE.md) for accepted design decisions.
 
 This is a local-first application. No cloud account, telemetry, or vendor proxy is required. Each agent CLI keeps its own authentication.
 
@@ -65,7 +65,7 @@ The separate daemon owns live PTYs and SQLite. Closing the desktop window does n
 
 - **Linux:** First-class. AppImage is the initial package format.
 - **macOS:** First-class on Apple Silicon and supported modern releases. `.app` and `.dmg` artifacts.
-- **Windows:** Out of scope for Beta v0.1.
+- **Windows:** Out of scope for Beta v0.2.
 
 ## Validate changes
 

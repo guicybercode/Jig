@@ -56,8 +56,6 @@ import type {
 /** Main application destinations controlled independently from dialog state. */
 export type WorkspaceView =
   | "canvas"
-  | "session"
-  | "grid"
   | "settings"
   | "diagnostics";
 
@@ -158,7 +156,7 @@ export interface WorkspaceProviderProps {
   readonly children: ReactNode;
   /** Production uses the shared Tauri client; tests inject a strict fake. */
   readonly client?: IpcClient;
-  /** Allows legacy/detail surfaces to opt in while canvas remains the default. */
+  /** Allows tests or launchers to select a canvas utility destination. */
   readonly initialView?: WorkspaceView;
 }
 
@@ -716,10 +714,15 @@ export function WorkspaceProvider({
     projects.find((project) => project.id === state.selectedProjectId) ?? null;
   const selectedSession =
     sessions.find((session) => session.id === state.selectedSessionId) ?? null;
-  const selectedWorktree =
-    worktrees.find(
-      (worktree) => worktree.id === selectedSession?.worktreeId,
-    ) ?? null;
+  const selectedWorktree = selectedSession
+    ? (selectedSession.worktreeId
+        ? worktrees.find(
+            (worktree) => worktree.id === selectedSession.worktreeId,
+          )
+        : undefined) ??
+      worktrees.find((worktree) => worktree.sessionId === selectedSession.id) ??
+      null
+    : null;
   const projectSessions =
     state.selectedProjectId === null
       ? EMPTY_SESSIONS
@@ -943,7 +946,7 @@ function upsertProject(
     navigationRevision: shouldSelect
       ? state.navigationRevision + 1
       : state.navigationRevision,
-    view: shouldSelect ? "session" : state.view,
+    view: shouldSelect ? "canvas" : state.view,
   };
 }
 
@@ -970,7 +973,7 @@ function upsertSession(
     navigationRevision: shouldSelect
       ? state.navigationRevision + 1
       : state.navigationRevision,
-    view: shouldSelect ? "session" : state.view,
+    view: shouldSelect ? "canvas" : state.view,
   };
 }
 
@@ -1113,7 +1116,7 @@ function selectProjectInState(
     selectedProjectId: projectId,
     selectedSessionId,
     navigationRevision: state.navigationRevision + 1,
-    view: "session",
+    view: state.view,
   };
 }
 
@@ -1126,7 +1129,7 @@ function selectSessionInState(
       ...state,
       selectedSessionId: null,
       navigationRevision: state.navigationRevision + 1,
-      view: "session",
+      view: state.view,
     };
   }
   const session = state.snapshot?.sessions.find(
@@ -1140,7 +1143,7 @@ function selectSessionInState(
     selectedProjectId: session.projectId,
     selectedSessionId: session.id,
     navigationRevision: state.navigationRevision + 1,
-    view: "session",
+    view: state.view,
   };
 }
 
