@@ -94,6 +94,8 @@ real packaged GUI and bundled daemon.
 
 See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for limitations that are expected in
 the Beta and must not be reported as successful manual acceptance.
+Use [native-browser-smoke.md](native-browser-smoke.md) to exercise the same
+hostile-page boundary during development before repeating it in each package.
 
 ## Documentation
 
