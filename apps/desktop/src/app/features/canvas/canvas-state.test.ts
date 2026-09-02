@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   canvasReducer,
+  createBrowserCanvasNode,
   createCanvasNode,
   createInitialCanvasDocument,
   createInitialCanvasState,
@@ -35,13 +36,13 @@ describe("canvas state", () => {
       "terminal-codex",
     );
     const initial = createInitialCanvasState({
-      version: 1,
+      version: 2,
       nodes: [terminal],
       connections: [],
       zoom: 1,
     });
     const resized = canvasReducer(initial, {
-      type: "terminal/resize",
+      type: "node/resize",
       nodeId: terminal.id,
       size: { width: 2_000, height: 100 },
     });
@@ -66,6 +67,106 @@ describe("canvas state", () => {
     expect(parseCanvasDocument(serializeCanvasDocument(configured))).toEqual(
       expect.objectContaining({ nodes: configured.nodes }),
     );
+  });
+
+  it("normalizes, persists, and resizes HTTP browser nodes", () => {
+    const browser = createBrowserCanvasNode(
+      { x: 24, y: 32 },
+      "example.com/docs",
+      "browser-docs",
+    );
+    const initial = createInitialCanvasState({
+      version: 2,
+      nodes: [browser],
+      connections: [],
+      zoom: 1,
+    });
+    const navigated = canvasReducer(initial, {
+      type: "browser/navigate",
+      nodeId: browser.id,
+      url: "http://localhost:4173/preview",
+    });
+    const resized = canvasReducer(navigated, {
+      type: "node/resize",
+      nodeId: browser.id,
+      size: { width: 4_000, height: 20 },
+    });
+
+    expect(browser).toMatchObject({
+      kind: "browser",
+      url: "https://example.com/docs",
+      width: 640,
+      height: 420,
+    });
+    expect(resized.nodes[0]).toMatchObject({
+      url: "http://localhost:4173/preview",
+      width: 1_280,
+      height: 320,
+    });
+    expect(parseCanvasDocument(serializeCanvasDocument(resized))).toEqual(
+      expect.objectContaining({ version: 2, nodes: resized.nodes }),
+    );
+  });
+
+  it("rejects unsafe browser addresses without replacing a safe address", () => {
+    const browser = createBrowserCanvasNode(
+      { x: 0, y: 0 },
+      "https://example.com/",
+      "browser-safe",
+    );
+    const initial = createInitialCanvasState({
+      version: 2,
+      nodes: [browser],
+      connections: [],
+      zoom: 1,
+    });
+    const navigated = canvasReducer(initial, {
+      type: "browser/navigate",
+      nodeId: browser.id,
+      url: "https://user:secret@example.com/private",
+    });
+    const parsed = parseCanvasDocument(
+      JSON.stringify({
+        version: 2,
+        nodes: [
+          {
+            ...browser,
+            url: "file:///etc/passwd",
+          },
+        ],
+        connections: [],
+        zoom: 1,
+      }),
+    );
+
+    expect(navigated.nodes[0]).toBe(browser);
+    expect(parsed.nodes[0]).toMatchObject({ url: "" });
+  });
+
+  it("migrates version 1 canvas documents without resetting the layout", () => {
+    const parsed = parseCanvasDocument(
+      JSON.stringify({
+        version: 1,
+        nodes: [
+          {
+            id: "note-legacy",
+            kind: "note",
+            title: "Legacy note",
+            text: "Keep me",
+            x: 100,
+            y: 200,
+          },
+        ],
+        connections: [],
+        zoom: 0.75,
+      }),
+    );
+
+    expect(parsed).toMatchObject({
+      version: 2,
+      nodes: [{ id: "note-legacy", text: "Keep me" }],
+      zoom: 0.75,
+    });
   });
 
   it("moves, renames, and updates notes without changing other nodes", () => {
@@ -101,7 +202,7 @@ describe("canvas state", () => {
 
   it("connects distinct nodes once and removes their edges with the node", () => {
     const initial = createInitialCanvasState({
-      version: 1,
+      version: 2,
       nodes: [
         createCanvasNode("terminal", { x: 0, y: 0 }, "terminal-a"),
         createCanvasNode("note", { x: 100, y: 100 }, "note-b"),

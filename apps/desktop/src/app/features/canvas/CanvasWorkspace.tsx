@@ -535,7 +535,7 @@ export function CanvasWorkspace({
                   dispatch({ type: "node/move", nodeId: node.id, position })
                 }
                 onResize={(size) =>
-                  dispatch({ type: "terminal/resize", nodeId: node.id, size })
+                  dispatch({ type: "node/resize", nodeId: node.id, size })
                 }
                 onNoteChange={(text) =>
                   dispatch({ type: "note/update", nodeId: node.id, text })
@@ -939,9 +939,9 @@ function CanvasNodeCard({
             </button>
           ) : null}
         </>
-      ) : (
+      ) : node.kind === "note" ? (
         <NoteNodeBody node={node} onChange={onNoteChange} />
-      )}
+      ) : null}
     </article>
   );
 }
