@@ -45,7 +45,7 @@ pub(super) struct TrackedProcess {
 
 pub(super) struct ProcessTree {
     known: BTreeMap<i32, ProcessIdentity>,
-    root_snapshot_sequence: u64,
+    latest_snapshot_sequence: u64,
     scan_timeout: Duration,
     max_tracked_processes: usize,
 }
@@ -56,36 +56,45 @@ impl ProcessTree {
         scan_timeout: Duration,
         max_tracked_processes: usize,
     ) -> io::Result<Self> {
-        let records = process_snapshot(scan_timeout, true)?;
+        let snapshot = process_snapshot(scan_timeout, true)?;
         let root_pid = root_pid.as_raw();
         let mut tree = Self {
             known: BTreeMap::new(),
-            root_snapshot_sequence: records.sequence,
+            latest_snapshot_sequence: snapshot.sequence,
             scan_timeout,
             max_tracked_processes,
         };
-        if let Some(root) = records
+        if let Some(root) = snapshot
             .records
             .iter()
             .find(|record| record.identity.pid == root_pid && !record.zombie)
         {
             tree.known.insert(root_pid, root.identity.clone());
         }
-        let _ = tree.absorb(&records.records)?;
+        let _ = tree.absorb_snapshot(&snapshot)?;
         Ok(tree)
     }
 
     pub fn refresh(&mut self) -> io::Result<Vec<TrackedProcess>> {
-        // A global scan can begin before this tree's root exists and publish
-        // after the root-proving scan. Never let that older view prune the root.
-        let snapshot =
-            process_snapshot_after(self.scan_timeout, false, Some(self.root_snapshot_sequence))?;
-        self.absorb(&snapshot.records)
+        // A global scan can begin before this tree's latest evidence and
+        // publish afterward. Never let that older view prune a proven process.
+        let snapshot = process_snapshot_after(
+            self.scan_timeout,
+            false,
+            Some(self.latest_snapshot_sequence),
+        )?;
+        self.absorb_snapshot(&snapshot)
     }
 
     pub fn refresh_fresh(&mut self) -> io::Result<Vec<TrackedProcess>> {
         let snapshot = process_snapshot(self.scan_timeout, true)?;
-        self.absorb(&snapshot.records)
+        self.absorb_snapshot(&snapshot)
+    }
+
+    fn absorb_snapshot(&mut self, snapshot: &CachedSnapshot) -> io::Result<Vec<TrackedProcess>> {
+        let processes = self.absorb(&snapshot.records)?;
+        self.latest_snapshot_sequence = self.latest_snapshot_sequence.max(snapshot.sequence);
+        Ok(processes)
     }
 
     fn absorb(&mut self, records: &[ProcessRecord]) -> io::Result<Vec<TrackedProcess>> {
@@ -154,7 +163,7 @@ impl ProcessTree {
     fn with_root_for_test(root: ProcessRecord, max_tracked_processes: usize) -> Self {
         Self {
             known: BTreeMap::from([(root.identity.pid, root.identity)]),
-            root_snapshot_sequence: 1,
+            latest_snapshot_sequence: 1,
             scan_timeout: Duration::from_secs(1),
             max_tracked_processes,
         }
@@ -438,10 +447,29 @@ mod tests {
     }
 
     #[test]
-    fn cached_snapshot_from_before_root_proof_is_not_usable() {
+    fn cached_snapshot_from_before_latest_tree_evidence_is_not_usable() {
         let stale = snapshot(1, Instant::now(), Vec::<ProcessRecord>::new());
 
         assert!(!cached_snapshot_is_usable(&stale, Some(2)));
+    }
+
+    #[test]
+    fn fresh_snapshot_advances_the_tree_cache_floor() {
+        let root = record(100, 1, 100, "root");
+        let child = record(101, 100, 101, "child");
+        let mut tree = ProcessTree::with_root_for_test(root.clone(), 8);
+        let newer = snapshot(3, Instant::now(), vec![root.clone(), child]);
+
+        tree.absorb_snapshot(&newer)
+            .expect("newer process-tree evidence should be accepted");
+
+        let stale = snapshot(2, Instant::now(), vec![root]);
+        assert_eq!(tree.latest_snapshot_sequence, 3);
+        assert!(tree.known.contains_key(&101));
+        assert!(!cached_snapshot_is_usable(
+            &stale,
+            Some(tree.latest_snapshot_sequence)
+        ));
     }
 
     #[test]
