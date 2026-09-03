@@ -1,7 +1,10 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -12,11 +15,13 @@ const SNAPSHOT_CACHE_TTL: Duration = Duration::from_millis(20);
 
 #[derive(Clone)]
 struct CachedSnapshot {
+    sequence: u64,
     captured_at: Instant,
     records: Arc<[ProcessRecord]>,
 }
 
 static PROCESS_SNAPSHOT_CACHE: OnceLock<Mutex<Option<CachedSnapshot>>> = OnceLock::new();
+static NEXT_SNAPSHOT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ProcessIdentity {
@@ -40,6 +45,7 @@ pub(super) struct TrackedProcess {
 
 pub(super) struct ProcessTree {
     known: BTreeMap<i32, ProcessIdentity>,
+    root_snapshot_sequence: u64,
     scan_timeout: Duration,
     max_tracked_processes: usize,
 }
@@ -54,6 +60,7 @@ impl ProcessTree {
         let root_pid = root_pid.as_raw();
         let mut tree = Self {
             known: BTreeMap::new(),
+            root_snapshot_sequence: records.sequence,
             scan_timeout,
             max_tracked_processes,
         };
@@ -69,7 +76,10 @@ impl ProcessTree {
     }
 
     pub fn refresh(&mut self) -> io::Result<Vec<TrackedProcess>> {
-        let snapshot = process_snapshot(self.scan_timeout, false)?;
+        // A global scan can begin before this tree's root exists and publish
+        // after the root-proving scan. Never let that older view prune the root.
+        let snapshot =
+            process_snapshot_after(self.scan_timeout, false, Some(self.root_snapshot_sequence))?;
         self.absorb(&snapshot.records)
     }
 
@@ -144,6 +154,7 @@ impl ProcessTree {
     fn with_root_for_test(root: ProcessRecord, max_tracked_processes: usize) -> Self {
         Self {
             known: BTreeMap::from([(root.identity.pid, root.identity)]),
+            root_snapshot_sequence: 1,
             scan_timeout: Duration::from_secs(1),
             max_tracked_processes,
         }
@@ -151,7 +162,16 @@ impl ProcessTree {
 }
 
 fn process_snapshot(timeout: Duration, force: bool) -> io::Result<CachedSnapshot> {
+    process_snapshot_after(timeout, force, None)
+}
+
+fn process_snapshot_after(
+    timeout: Duration,
+    force: bool,
+    minimum_sequence: Option<u64>,
+) -> io::Result<CachedSnapshot> {
     let started = Instant::now();
+    let sequence = next_snapshot_sequence()?;
     let cache = PROCESS_SNAPSHOT_CACHE.get_or_init(|| Mutex::new(None));
     if !force {
         let Some(cached) = cache.try_lock_for(timeout) else {
@@ -161,7 +181,7 @@ fn process_snapshot(timeout: Duration, force: bool) -> io::Result<CachedSnapshot
             ));
         };
         if let Some(snapshot) = cached.as_ref() {
-            if snapshot.captured_at.elapsed() <= SNAPSHOT_CACHE_TTL {
+            if cached_snapshot_is_usable(snapshot, minimum_sequence) {
                 return Ok(snapshot.clone());
             }
         }
@@ -175,6 +195,7 @@ fn process_snapshot(timeout: Duration, force: bool) -> io::Result<CachedSnapshot
     }
     let records = Arc::from(scan_processes_uncached(remaining)?);
     let snapshot = CachedSnapshot {
+        sequence,
         captured_at: Instant::now(),
         records,
     };
@@ -184,9 +205,35 @@ fn process_snapshot(timeout: Duration, force: bool) -> io::Result<CachedSnapshot
     // itself is already complete and identity-checked.
     let remaining = timeout.saturating_sub(started.elapsed());
     if let Some(mut cache) = cache.try_lock_for(remaining) {
-        *cache = Some(snapshot.clone());
+        // Concurrent scans finish out of order, so only their start sequence is
+        // a reliable publication order.
+        publish_snapshot(&mut cache, snapshot.clone());
     }
     Ok(snapshot)
+}
+
+fn next_snapshot_sequence() -> io::Result<u64> {
+    // The counter is only an ordering token; the cache mutex publishes the
+    // snapshot data, so no cross-thread memory ordering is required here.
+    NEXT_SNAPSHOT_SEQUENCE
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |sequence| {
+            sequence.checked_add(1)
+        })
+        .map_err(|_| io::Error::other("process-tree snapshot sequence exhausted"))
+}
+
+fn cached_snapshot_is_usable(snapshot: &CachedSnapshot, minimum_sequence: Option<u64>) -> bool {
+    snapshot.captured_at.elapsed() <= SNAPSHOT_CACHE_TTL
+        && minimum_sequence.is_none_or(|minimum| snapshot.sequence >= minimum)
+}
+
+fn publish_snapshot(cache: &mut Option<CachedSnapshot>, snapshot: CachedSnapshot) {
+    let should_publish = cache
+        .as_ref()
+        .is_none_or(|cached| snapshot.sequence > cached.sequence);
+    if should_publish {
+        *cache = Some(snapshot);
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -363,6 +410,38 @@ mod tests {
             process_group_id,
             zombie: false,
         }
+    }
+
+    fn snapshot(
+        sequence: u64,
+        captured_at: Instant,
+        records: impl Into<Arc<[ProcessRecord]>>,
+    ) -> CachedSnapshot {
+        CachedSnapshot {
+            sequence,
+            captured_at,
+            records: records.into(),
+        }
+    }
+
+    #[test]
+    fn out_of_order_scan_cannot_replace_a_newer_cached_snapshot() {
+        let newer = snapshot(2, Instant::now(), vec![record(200, 1, 200, "newer")]);
+        let older = snapshot(1, Instant::now(), vec![record(100, 1, 100, "older")]);
+        let mut cache = Some(newer);
+
+        publish_snapshot(&mut cache, older);
+
+        let cached = cache.expect("newer cache entry should be retained");
+        assert_eq!(cached.sequence, 2);
+        assert_eq!(cached.records[0].identity.pid, 200);
+    }
+
+    #[test]
+    fn cached_snapshot_from_before_root_proof_is_not_usable() {
+        let stale = snapshot(1, Instant::now(), Vec::<ProcessRecord>::new());
+
+        assert!(!cached_snapshot_is_usable(&stale, Some(2)));
     }
 
     #[test]
