@@ -22,6 +22,10 @@ const xtermMocks = vi.hoisted(() => {
       Listener<{ cols: number; rows: number }>
     >();
     readonly addons: Addon[] = [];
+    readonly modes = {
+      bracketedPasteMode: false,
+      applicationCursorKeysMode: false,
+    };
     readonly options: {
       disableStdin?: boolean;
       screenReaderMode?: boolean;
@@ -332,6 +336,25 @@ describe("TerminalSurface", () => {
 
     expect(xtermMocks.terminalInstances).toHaveLength(1);
     expect(terminal.options.screenReaderMode).toBe(false);
+  });
+
+  it("exposes current input modes and makes retained handles unavailable after unmount", () => {
+    const terminalRef = createRef<TerminalSurfaceHandle>();
+    const { unmount } = render(
+      <TerminalSurface ref={terminalRef} accessibleLabel="Composed input terminal" />,
+    );
+    const handle = requireValue(terminalRef.current);
+    const terminal = requireItem(xtermMocks.terminalInstances, 0);
+    const initialModes = handle.getInputModes();
+    expect(initialModes).toEqual({ bracketedPasteMode: false, applicationCursorKeysMode: false });
+
+    terminal.modes.bracketedPasteMode = true;
+    terminal.modes.applicationCursorKeysMode = true;
+    expect(handle.getInputModes()).toEqual({ bracketedPasteMode: true, applicationCursorKeysMode: true });
+    expect(initialModes).toEqual({ bracketedPasteMode: false, applicationCursorKeysMode: false });
+
+    unmount();
+    expect(handle.getInputModes()).toBeNull();
   });
 
   it("coalesces ResizeObserver work and reports only changed dimensions", () => {
