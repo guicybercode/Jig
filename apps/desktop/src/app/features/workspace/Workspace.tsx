@@ -1,4 +1,4 @@
-import type { AppPlatform } from "../../../ipc/client";
+import type { AppPlatform, IpcClient } from "../../../ipc/client";
 import type {
   AgentRecord,
   ApiErrorData,
@@ -33,6 +33,9 @@ interface WorkspaceProps extends LiveTerminalTransport {
   readonly worktrees: readonly Worktree[];
   readonly selectedSessionId?: string;
   readonly sessionFocusRevision: number;
+  readonly knowledgeClient?: Pick<IpcClient, "listKnowledge" | "saveKnowledge" | "deleteKnowledge" | "discoverKnowledge" | "readKnowledge">;
+  readonly knowledgeConnectionKey?: string;
+  readonly knowledgeOpenRevision?: number;
   readonly onRetry: () => void;
   readonly onOpenCanvas: () => void;
   readonly onSelectSession: (sessionId: string | null) => void;
@@ -82,6 +85,9 @@ export function Workspace(props: WorkspaceProps) {
       worktrees={props.worktrees}
       selectedSessionId={props.selectedSessionId}
       sessionFocusRevision={props.sessionFocusRevision}
+      knowledgeClient={props.knowledgeClient}
+      knowledgeConnectionKey={props.knowledgeConnectionKey}
+      knowledgeOpenRevision={props.knowledgeOpenRevision}
       onSelectSession={props.onSelectSession}
       onCreateCustomAgent={props.onCreateCustomAgent}
       onCreateSession={props.onCreateSession}

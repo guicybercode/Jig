@@ -1,5 +1,6 @@
 import { decodeKnowledgeEntry, decodeKnowledgePage } from "./knowledge-schema";
-import type { KnowledgeEntry, KnowledgeListRequest, KnowledgeListResponse, KnowledgeSaveRequest, KnowledgeDeleteRequest, WorktreeListRequest } from "./domain";
+import { decodeKnowledgeDiscoverResponse, decodeKnowledgeReadResponse } from "./discovery-schema";
+import type { KnowledgeEntry, KnowledgeListRequest, KnowledgeListResponse, KnowledgeSaveRequest, KnowledgeDeleteRequest, KnowledgeDiscoverRequest, KnowledgeDiscoverResponse, KnowledgeReadRequest, KnowledgeReadResponse, WorktreeListRequest } from "./domain";
 import type {
   FileListRequest,
   FileListResponse,
@@ -78,6 +79,8 @@ export interface IpcClient {
   listKnowledge(input: KnowledgeListRequest): Promise<KnowledgeListResponse>;
   saveKnowledge(input: KnowledgeSaveRequest): Promise<KnowledgeEntry>;
   deleteKnowledge(input: KnowledgeDeleteRequest): Promise<void>;
+  discoverKnowledge(input: KnowledgeDiscoverRequest): Promise<KnowledgeDiscoverResponse>;
+  readKnowledge(input: KnowledgeReadRequest): Promise<KnowledgeReadResponse>;
   initialize(): Promise<BootstrapResult>;
   subscribe(
     handler: IpcEventHandler,
@@ -177,6 +180,18 @@ class TauriIpcClient implements IpcClient {
 
   async deleteKnowledge(input: KnowledgeDeleteRequest): Promise<void> {
     await this.request("knowledge.delete", input);
+  }
+
+  async discoverKnowledge(input: KnowledgeDiscoverRequest): Promise<KnowledgeDiscoverResponse> {
+    return decodeKnowledgeDiscoverResponse(await this.request("knowledge.discover", input));
+  }
+
+  async readKnowledge(input: KnowledgeReadRequest): Promise<KnowledgeReadResponse> {
+    const response = decodeKnowledgeReadResponse(await this.request("knowledge.read", input));
+    if (response.entry.entryId !== input.entryId) {
+      throw new IpcContractError("Discovery read returned another source capability");
+    }
+    return response;
   }
 
   async initialize(): Promise<BootstrapResult> {

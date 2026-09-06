@@ -1,0 +1,71 @@
+.knowledge-inspector .knowledge-inspector__provenance,
+.knowledge-inspector .knowledge-inspector__notice,
+.knowledge-inspector .knowledge-inspector__issues {
+  margin: var(--space-3) var(--space-4);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-inspector__provenance { color: var(--color-text-muted); }
+
+.knowledge-inspector__issues {
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-small);
+  background: var(--color-surface-raised);
+}
+
+.knowledge-inspector__issues summary {
+  min-height: var(--control-height);
+  padding: var(--space-1);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.knowledge-inspector__issues ul {
+  display: grid;
+  gap: var(--space-3);
+  max-height: 12rem;
+  padding-inline-start: var(--space-4);
+  overflow-y: auto;
+}
+
+.knowledge-inspector__issues code { font-size: 0.75rem; }
+
+.knowledge-inspector__warning {
+  padding: var(--space-3);
+  border-left: 2px solid var(--color-warning);
+  color: var(--color-warning);
+  background: var(--color-warning-muted);
+  font-size: 0.8125rem;
+}
+
+.knowledge-inspector__unavailable { color: var(--color-warning); font-size: 0.75rem; }
+
+.knowledge-inspector__metadata { display: grid; gap: var(--space-2); margin: 0; }
+.knowledge-inspector__metadata div { display: grid; grid-template-columns: 6rem minmax(0, 1fr); gap: var(--space-2); }
+.knowledge-inspector__metadata dt { color: var(--color-text-muted); font-size: 0.75rem; }
+.knowledge-inspector__metadata dd { min-width: 0; margin: 0; font-size: 0.8125rem; overflow-wrap: anywhere; }
+.knowledge-inspector__metadata code { font-size: 0.75rem; }
+.knowledge-inspector__precedence { display: grid; gap: var(--space-1); font-size: 0.8125rem; }
+.knowledge-inspector__precedence h4 { margin: 0; font-size: inherit; }
+
+.knowledge-inspector__content {
+  max-height: 32rem;
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-3);
+  overflow: auto;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-small);
+  background: var(--color-inset);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  scroll-padding: var(--space-3);
+}
+
+@container (max-width: 22rem) {
+  .knowledge-inspector__metadata div { grid-template-columns: minmax(0, 1fr); gap: var(--space-1); }
+}

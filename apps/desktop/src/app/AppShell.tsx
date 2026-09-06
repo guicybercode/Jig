@@ -20,6 +20,7 @@ export function AppShell() {
     readCanvasSidebarCollapsed,
   );
   const [sessionFocusRevision, setSessionFocusRevision] = useState(0);
+  const [knowledgeOpenRevision, setKnowledgeOpenRevision] = useState(0);
   const closeNavigationOnDesktop = useCallback(
     () => setNavigationOpen(false),
     [],
@@ -397,6 +398,16 @@ export function AppShell() {
         },
       },
       {
+        id: "knowledge.open",
+        label: "Open prompts and context",
+        description: "Browse saved content and insert a snapshot into a terminal draft.",
+        keywords: ["library", "knowledge", "templates", "XIRP"],
+        onSelect: () => {
+          workspace.setView("canvas");
+          setKnowledgeOpenRevision((revision) => revision + 1);
+        },
+      },
+      {
         id: "view.canvas",
         label: "Open Canvas",
         description: "Arrange terminals and notes in the spatial workspace.",
@@ -638,6 +649,9 @@ export function AppShell() {
           worktrees={workspace.worktrees}
           selectedSessionId={workspace.selectedSessionId ?? undefined}
           sessionFocusRevision={sessionFocusRevision}
+          knowledgeOpenRevision={knowledgeOpenRevision}
+          knowledgeClient={workspace.knowledgeClient}
+          knowledgeConnectionKey={`${workspace.connection.status}:${workspace.hello?.instanceId ?? "none"}`}
           onRetry={workspace.retry}
           onOpenCanvas={() => workspace.setView("canvas")}
           onSelectSession={(sessionId) => workspace.selectSession(sessionId)}

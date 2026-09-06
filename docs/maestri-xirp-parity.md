@@ -39,10 +39,29 @@ botão, tipo, mock, método anunciado ou biblioteca sem ligação ao fluxo real.
 Esta inspeção não executou a suíte nem validou pacotes nas duas plataformas.
 
 Entregas posteriores ao baseline e suas verificações estão no
-[relatório S1](codex/maestri-canvas-report.md). A `origin/main` já contém
-implementação de navegador nativo ausente desta branch inicial; M37 deve
-reaproveitá-la antes de criar outro host. Não confundir ausência nesta
-worktree com ausência em todas as branches.
+[relatório S1](codex/maestri-canvas-report.md) e no checkpoint abaixo. O
+navegador nativo que estava apenas em `origin/main` já foi integrado em
+`1e75081`. As tabelas originais são mantidas como baseline auditável, não como
+declaração de ausência no HEAD atual.
+
+### Progresso após o baseline — checkpoint `9329d01`
+
+Todas as linhas abaixo permanecem **parciais** em relação ao escopo integral.
+Os comandos, contagens, CI e limitações de plataforma estão no relatório S1.
+
+| IDs | Caminho agora integrado | Ainda não demonstrado/entregue |
+| --- | --- | --- |
+| M02, M06, M46 | Seleção múltipla, movimento/duplicação/remoção de subgrafo; busca local; canvas compacto, sem encerrar sessões ao ocultar cartões. | Copiar/colar, grupos persistidos, alinhamento, undo/redo, indexadores globais, atalhos configuráveis e todas as telas da referência. |
+| M14, M47, X08 | Gemini no catálogo real UUIDv7 e no diálogo do canvas; probe de executáveis testado. | Login/uso nativo de cada fornecedor, resume/roles/opções específicas e demais agentes da matriz. |
+| M18, M19, X02 | Composer por terminal, draft/revisão persistidos, Enter explícito e fila comum com teclado; modos xterm e troca de PTY protegidos; inserção de snapshots. | Anexos, menções vivas, entrega de objetivo no lançamento e aceitação em CLI nativa Linux/macOS. |
+| M34, M35 | Saga conectada ao daemon: preparar checkout separado de start; worktree.list real, refresh protegido e escolha de isolamento no canvas. | Floors para várias sessões, clonar layout e landing completo. |
+| M37 | Host WKWebView/WebKitGTK existente integrado, navegação/foco, URL persistida sanitizada e ocultação sob overlays. | Smoke nativo das permissões, armazenamento/automação e recursos completos de M38/M39. |
+| X07, X09 | Biblioteca de prompts/contexto global ou por projeto em SQLite, revisão otimista, cliente tipado e montagem no canvas/paleta; inserir não envia. | Organização/workflow, uso/custo, coleção de entidades e referências vivas; retenção de edições não salvas fora do canvas. |
+| M05, X06 | Inventário limitado de regras/skills global e na configuração raiz do projeto; leitura explícita por capability; inspetor real no canvas, com origem, limites, erros e invalidação por conexão. | Edição, importação, todas as fontes aninhadas/plugins, avaliação de ativação e comprovação de carregamento pela CLI. |
+
+Arquivos e organização publicados nas branches S2/S3 só entram neste checkpoint
+após integração e validação; consultar os relatórios dessas frentes para o
+trabalho paralelo. Descoberta não implica execução nem carregamento de regras.
 
 ## Evidências locais de referência
 

@@ -3,8 +3,8 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use cli_master_core::{
     ApiError, DaemonInstanceId, EnvelopeKind, EventEnvelope, PROTOCOL_V1, Project, RequestEnvelope,
@@ -79,6 +79,7 @@ struct ServerState {
     sessions: SessionRegistry,
     files: LocalFileService,
     git_storage: Storage,
+    knowledge_discovery: Mutex<crate::knowledge::discovery::DiscoveryService>,
     git: Option<Git>,
     event_sequence: AtomicU64,
 }
@@ -159,6 +160,9 @@ impl Daemon {
                 )
             })?,
             git_storage,
+            knowledge_discovery: Mutex::new(crate::knowledge::discovery::DiscoveryService::new(
+                crate::knowledge::discovery::DiscoveryRoots::from_environment(),
+            )),
             git,
             files: LocalFileService::default(),
             event_sequence: AtomicU64::new(0),
@@ -575,10 +579,19 @@ async fn dispatch(
                 ))
             })
         }
-        method::KNOWLEDGE_LIST | method::KNOWLEDGE_SAVE | method::KNOWLEDGE_DELETE => {
+        method::KNOWLEDGE_LIST
+        | method::KNOWLEDGE_SAVE
+        | method::KNOWLEDGE_DELETE
+        | method::KNOWLEDGE_DISCOVER
+        | method::KNOWLEDGE_READ => {
             let state = Arc::clone(state);
             match tokio::task::spawn_blocking(move || {
-                crate::knowledge::dispatch(&request.method, request.payload, &state.git_storage)
+                crate::knowledge::dispatch(
+                    &request.method,
+                    request.payload,
+                    &state.git_storage,
+                    &state.knowledge_discovery,
+                )
             })
             .await
             {
@@ -896,3 +909,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "knowledge/socket_tests.rs"]
+mod knowledge_socket_tests;

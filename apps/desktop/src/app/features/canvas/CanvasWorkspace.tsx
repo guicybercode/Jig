@@ -9,6 +9,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import type { Ref } from "react";
+import type { IpcClient } from "../../../ipc/client";
 
 import type {
   AgentRecord,
@@ -45,6 +46,8 @@ import {
   browserUrlForTerminal,
 } from "./browser-handoff";
 import { CanvasConnections } from "./CanvasConnections";
+import { CanvasKnowledgePanel } from "./CanvasKnowledgePanel";
+import type { KnowledgeInsertion } from "../knowledge/knowledge-types";
 import { CanvasElementSearch } from "./CanvasElementSearch";
 import {
   CANVAS_ORIGIN_X,
@@ -94,6 +97,9 @@ interface CanvasWorkspaceProps extends LiveTerminalTransport {
   readonly onGitStatus: (sessionId: string) => void;
   readonly onOpenPath: (path: string) => Promise<void>;
   readonly browserRuntime?: BrowserRuntime;
+  readonly knowledgeClient?: Pick<IpcClient, "listKnowledge" | "saveKnowledge" | "deleteKnowledge" | "discoverKnowledge" | "readKnowledge">;
+  readonly knowledgeConnectionKey?: string;
+  readonly knowledgeOpenRevision?: number;
 }
 
 const ZOOM_STEP = 0.1;
@@ -123,6 +129,9 @@ export function CanvasWorkspace({
   onGitStatus,
   onOpenPath,
   browserRuntime = defaultBrowserRuntime,
+  knowledgeClient,
+  knowledgeConnectionKey,
+  knowledgeOpenRevision = 0,
   subscribeTerminal,
   writeTerminal,
   resizeTerminal,
@@ -138,6 +147,7 @@ export function CanvasWorkspace({
   const terminalInputsRef = useRef(new Map<string, LiveTerminalInputHandle>());
   const pendingComposerInputRef = useRef(new Set<string>());
   const canvasComposingRef = useRef(false);
+  const handledKnowledgeRequestRef = useRef(0);
   const panRef = useRef<{
     readonly pointerId: number;
     readonly clientX: number;
@@ -150,6 +160,8 @@ export function CanvasWorkspace({
   );
   const [layersOpen, setLayersOpen] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
+  const [knowledgeOpen, setKnowledgeOpen] = useState(false);
+  const [knowledgeVisited, setKnowledgeVisited] = useState(false);
   const [pendingComposerNodes, setPendingComposerNodes] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -283,6 +295,13 @@ export function CanvasWorkspace({
     if (handle) terminalInputsRef.current.set(nodeId, handle);
     else terminalInputsRef.current.delete(nodeId);
   }, []);
+  useLayoutEffect(() => {
+    if (!knowledgeClient || knowledgeOpenRevision <= handledKnowledgeRequestRef.current) return;
+    handledKnowledgeRequestRef.current = knowledgeOpenRevision;
+    setKnowledgeVisited(true);
+    setKnowledgeOpen(true);
+    setLayersOpen(false);
+  }, [knowledgeClient, knowledgeOpenRevision]);
   const sessionCanvasTopologyKey = useMemo(
     () =>
       JSON.stringify({
@@ -584,7 +603,7 @@ export function CanvasWorkspace({
         projectId: project.id,
         name: node.title,
         agentId: agent.id,
-        isolation: "current",
+        isolation: node.isolation ?? "current",
         relativeDirectory: relativeWorkingDirectory(project, node.workingDirectory),
       });
       dispatch({
@@ -644,7 +663,28 @@ export function CanvasWorkspace({
   function toggleComposer(node: TerminalCanvasNode) {
     selectNode(node);
     setLayersOpen(false);
+    setKnowledgeOpen(false);
     setComposerOpen((open) => !(open && selectedNode?.id === node.id));
+  }
+
+  function toggleKnowledge() {
+    if (!knowledgeClient) return;
+    setKnowledgeVisited(true);
+    setKnowledgeOpen((open) => !open);
+    setLayersOpen(false);
+  }
+
+  function insertKnowledge(content: KnowledgeInsertion) {
+    if (selectedNode?.kind !== "terminal") {
+      throw new Error("Select a terminal before inserting this snapshot.");
+    }
+    const current = selectedNode.promptDraft ?? "";
+    const separator = current.endsWith("\n\n") || !current ? "" : current.endsWith("\n") ? "\n" : "\n\n";
+    const title = content.title || (content.kind === "prompt" ? "Untitled prompt" : "Untitled context");
+    const text = `${current}${separator}Knowledge snapshot: ${title}\n${content.body}\n`;
+    dispatch({ type: "terminal/draft", nodeId: selectedNode.id, text });
+    setComposerOpen(true);
+    setKnowledgeOpen(false);
   }
 
   function setZoom(zoom: number) {
@@ -798,6 +838,7 @@ export function CanvasWorkspace({
           || event.metaKey === event.ctrlKey || event.key.toLowerCase() !== "p"
         ) return;
         const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest('[data-shortcut-scope="knowledge-library"]')) return;
         const targetId = target?.closest("[data-canvas-node-id]")?.getAttribute("data-canvas-node-id");
         const targetNode = visibleNodes.find((node) => node.id === targetId);
         if (targetNode && targetNode.kind !== "terminal") return;
@@ -895,6 +936,15 @@ export function CanvasWorkspace({
             if (selectedNode?.kind === "terminal") toggleComposer(selectedNode);
           }}
         ><Icon name="pencil" /></button>
+        <button
+          className="canvas-tool"
+          type="button"
+          aria-label="Open prompts and context"
+          title="Prompts and context library"
+          aria-expanded={knowledgeOpen}
+          disabled={!knowledgeClient}
+          onClick={toggleKnowledge}
+        ><Icon name="repository" /></button>
         <button
           className={
             visibleConnectionSourceId
@@ -1202,6 +1252,7 @@ export function CanvasWorkspace({
                   !terminalDialogOpen &&
                   !layersOpen &&
                   !composerNode &&
+                  !knowledgeOpen &&
                   !canvasInteracting &&
                   !canvasScrolling
                 }
@@ -1216,6 +1267,8 @@ export function CanvasWorkspace({
                       ? "The browser is hidden while canvas search is open."
                     : composerNode
                       ? "The browser is hidden while Prompt Composer is open."
+                    : knowledgeOpen
+                      ? "The browser is hidden while the knowledge library is open."
                     : state.zoom !== 1
                       ? "Use 100% zoom to interact with this page."
                       : undefined
@@ -1241,7 +1294,7 @@ export function CanvasWorkspace({
         />
       ) : null}
 
-      {composerNode && !layersOpen && !terminalDialogOpen ? (
+      {composerNode && !layersOpen && !terminalDialogOpen && !knowledgeOpen ? (
         <div className="canvas-prompt-composer" data-browser-obstruction="true" data-shortcut-scope="prompt-composer">
           <PromptComposer
             nodeId={composerNode.id}
@@ -1258,7 +1311,21 @@ export function CanvasWorkspace({
         </div>
       ) : null}
 
-      {selectedNode && selectedConnections.length > 0 && !layersOpen && !composerNode ? (
+      {knowledgeVisited && knowledgeClient ? (
+        <CanvasKnowledgePanel
+          open={knowledgeOpen && !layersOpen && !terminalDialogOpen}
+          client={knowledgeClient}
+          connectionKey={knowledgeConnectionKey}
+          currentProject={project ?? null}
+          projects={projects}
+          targetTitle={selectedNode?.kind === "terminal" ? selectedNode.title : undefined}
+          insertDisabledReason={selectedNode?.kind === "terminal" ? undefined : "Select a terminal to insert content into its draft."}
+          onInsert={insertKnowledge}
+          onClose={() => setKnowledgeOpen(false)}
+        />
+      ) : null}
+
+      {selectedNode && selectedConnections.length > 0 && !layersOpen && !composerNode && !knowledgeOpen ? (
         <section
           className="canvas-connections-panel"
           aria-label={`Connections for ${selectedNode.title}`}
@@ -2471,7 +2538,7 @@ function isCanvasEditingTarget(target: EventTarget | null): boolean {
   return (
     target instanceof Element &&
     target.closest(
-      "input, textarea, select, button, a, summary, [contenteditable]:not([contenteditable='false']), [role='textbox'], [data-terminal-root], .xterm, [role='dialog']",
+      "input, textarea, select, button, a, summary, [contenteditable]:not([contenteditable='false']), [role='textbox'], [data-terminal-root], [data-shortcut-scope], .xterm, [role='dialog']",
     ) !== null
   );
 }

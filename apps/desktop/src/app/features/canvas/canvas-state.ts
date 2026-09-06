@@ -1,3 +1,5 @@
+import type { SessionIsolation } from "../../../ipc/types";
+
 export const CANVAS_STORAGE_KEY = "cli-master.canvas.v1";
 export const CANVAS_DOCUMENT_VERSION = 2;
 export const CANVAS_DOCUMENT_UPDATED_EVENT = "cli-master:canvas-document-updated";
@@ -30,6 +32,7 @@ export interface TerminalCanvasNode extends CanvasNodeBase {
   /** User-authored composer text, never PTY output or an auto-send instruction. */
   readonly promptDraft?: string;
   readonly promptDraftRevision?: number;
+  readonly isolation?: SessionIsolation;
   readonly preset: TerminalPreset;
   readonly executable?: string;
   readonly workingDirectory?: string;
@@ -54,6 +57,7 @@ export type CanvasNode = TerminalCanvasNode | NoteCanvasNode | BrowserCanvasNode
 export interface CanvasTerminalConfiguration {
   readonly title: string;
   readonly preset: TerminalPreset;
+  readonly isolation?: SessionIsolation;
   readonly executable?: string;
   readonly workingDirectory?: string;
 }
@@ -501,6 +505,7 @@ export function createTerminalCanvasNode(
     kind: "terminal",
     title: normalizeTitle(configuration.title, titleForPreset(preset)),
     preset,
+    isolation: configuration.isolation === "new_worktree" ? "new_worktree" : undefined,
     executable,
     workingDirectory: normalizeOptionalText(
       configuration.workingDirectory,
@@ -896,6 +901,7 @@ function parseNode(value: unknown): CanvasNode | null {
     ...base,
     kind: "terminal",
     preset: normalizeTerminalPreset(value.preset),
+    isolation: value.isolation === "new_worktree" ? "new_worktree" : undefined,
     executable: normalizeOptionalText(
       typeof value.executable === "string"
         ? value.executable
@@ -951,6 +957,7 @@ function configureTerminalNode(
     ...node,
     title: normalizeTitle(configuration.title, titleForPreset(preset)),
     preset,
+    isolation: configuration.isolation === "new_worktree" ? "new_worktree" : undefined,
     executable: normalizeOptionalText(
       configuration.executable ?? executableForPreset(preset),
       MAX_EXECUTABLE_LENGTH,

@@ -78,6 +78,10 @@ pub const KNOWLEDGE_LIST: &str = "knowledge.list";
 pub const KNOWLEDGE_SAVE: &str = "knowledge.save";
 /// Delete a saved prompt/context after checking its revision.
 pub const KNOWLEDGE_DELETE: &str = "knowledge.delete";
+/// Inventory known local rule and skill locations without reading content.
+pub const KNOWLEDGE_DISCOVER: &str = "knowledge.discover";
+/// Read a bounded source selected by an expiring discovery capability.
+pub const KNOWLEDGE_READ: &str = "knowledge.read";
 
 /// Every method implemented by the Beta v1 contract.
 pub const ALL: &[&str] = &[
@@ -116,6 +120,8 @@ pub const ALL: &[&str] = &[
     KNOWLEDGE_LIST,
     KNOWLEDGE_SAVE,
     KNOWLEDGE_DELETE,
+    KNOWLEDGE_DISCOVER,
+    KNOWLEDGE_READ,
 ];
 
 /// Returns whether a dotted method belongs to the Beta v1 contract.

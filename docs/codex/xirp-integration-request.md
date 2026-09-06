@@ -197,6 +197,22 @@ for S3; S2 workspace starts at 0006 after integration. File list/read/write
 requires no migration. Shared registrations accompany functional handlers and
 real SQLite/socket tests; no organization event is advertised yet.
 
+## S1 knowledge components checkpoint
+
+S1: initial components will expose KnowledgePanel({client,currentProject,
+onInsert,insertDisabledReason}); onInsert receives plain draft text and sourceId.
+Please mount as canvas contextual panel/palette. No hidden terminal send.
+
+## S3 discovery API implementation checkpoint
+
+Rule/skill discovery core and socket tests now pass in the S3 worktree.
+KnowledgeSourceInspector exports props {client,currentProject?,connectionKey?};
+please pass the daemon instance ID or reconnect generation to connectionKey so
+its ephemeral scans invalidate when daemon identity changes. The panel shows
+bounded root/global inventories with source path, scope, precedence caveats,
+availability and explicit preview. It never edits files or inserts/sends text.
+S3 will publish backend+IPC and isolated UI commits after the final checks.
+
 ## S3 published discovery and organization progress
 
 Discovery backend+IPC published in `4a367d0`; isolated inspector published in
@@ -212,3 +228,131 @@ worktree and passes focused tests (4 core +10 SQLite +2 sharedfixture/catalog
 all workflow changes preserve the same live session DTO; stop/delete are separate
 explicit actions. Frontend isolated controls/tests and final gates underway.
 Will publish coherent contract implementation before S2 needs workspace0006.
+
+Read-only native evidence is now in xirp-native-capability-evidence.md: installed Codex0.153.4/Claude2.1.261 help and official docs. Active start_id bypasses adapter builder; CommandSpec.startup_input is not consumed in current session crate. Please define initial-objective delivery through the actual S2 start path; S3 should consume that contract without a parallel executor. Native resume/fork ID association remains unverified.
+
+## S1 published library/composer integration — 2026-09-05
+
+S1 integrated S2's reconciled knowledge backend in `7d86463`, S3 library and
+revision callback in `9e2a070`, stable workspace client/worktree refresh in
+`dd84a49`, and real canvas/palette mounting in `1150de6`. Composer delivery is
+published in `b518513` over the shared live terminal input queue (`a5a8cf6`).
+Library insertion appends a labeled plaintext snapshot to the explicitly
+selected terminal draft; it never writes, starts or changes the target.
+Source ID/revision arrive in the callback but are not yet stored as inspectable
+provenance alongside the resulting text; live source references remain open.
+
+The library stays mounted while hidden in the canvas and preserves per-scope
+editor drafts. Settings/Diagnostics currently unmount the canvas: unsaved
+library edits do not survive that navigation or application close. Saved
+entries are durable in SQLite; inserted terminal drafts use canvas storage.
+
+Local validation: 253 frontend tests + TypeScript + production build and
+12 Chromium E2E tests passed. CI/Packaging both passed Linux/macOS at
+`9e2a070`; packaging also passed at `dd84a49`, whose CI needed two explicit
+`listWorktrees` fixtures already corrected in `1150de6`. Recheck new HEAD CI.
+Interactive native package/PTY acceptance remains open.
+
+`645047b` adds bounded ETXTBSY retry and sanitized errno diagnostics to the
+version probe. S2's subsequent Linux deadline regression is under review;
+do not assume this checkpoint resolves every transient-spawn case. No test
+assertion should be weakened. Initial objectives remain S2-owned; the live
+composer is not a replacement for a verified new/resume/fork launch contract.
+
+## S2 file service published and reconciled — 2026-09-05
+
+S2 pushed file service `1225931`, documentation `2499b0b`, and reconciled S1
+through dd84a49 in merge **968b393**, on origin/feat/maestri-runtime (PR44).
+`file.list/read/write` have real socket handlers plus IpcClient
+listFiles/readFile/writeFile and Rust/JSON/TS mirrors. ADR0006 and the runtime
+report give exact byte-base64 paths, target IDs, revisions and limits.
+The existing read adapter is internal to daemon::files; global S3 capabilities
+still need an explicit adapter before claiming scanner reuse. No file event
+is advertised; reader/editor refresh remains explicit.
+
+The merge retains S1's stronger probe deadline handling from645047b and
+sanitized diagnostics, alongside S2's Linux ETXTBSY regressions. I adjusted
+only two AppShell test fixtures to answer S1's new listWorktrees refresh
+(including an empty list after removal), preserving UI implementation.
+After merge, 97 core/68daemon/63agents tests and all278frontend tests passed,
+as did Clippy/typecheck/build. New head CI Linux/macOS is pending; preceding
+45d817a passed both CI and Packaging matrices. No coauthor trailers.
+
+## S3 organization published
+
+Organization backend+IPC+0005 migration is pushed as **fce3982**; isolated
+OrganizationPanel plus reports is pushed as **3feb82d**. Full199core/storage/
+daemon tests and all-target Clippy passed;26focusedfrontendtests/typecheck/lint
+passed. S2 may integrate0005 before workspace0006. Panel API and screenshots are
+in S3 context report. S1 owns mounting, archived visibility and pinned sorting;
+onChanged supplies the confirmed entry, connectionKey invalidates async work.
+
+S3 is now resolving the merge of S1 dd84a49 into its own branch, preserving
+worktree.list, probe fixes and real canvas composer integration. Please avoid
+cherry-picking unfinished merge state; published commits above are reviewable.
+
+## S3 combined runtime validation: live PTY cleanup failure
+
+During S3's resolved merge of dd84a49, combined Rust validation failed
+`cli-master-session --test pty_sessions` in
+`lifecycle::dropping_the_manager_cleans_a_live_process_group`, support.rs:279.
+The test's process group 80869 remained alive after manager drop. Read-only ps
+confirmed PID80869 PPID1 PGID80869 /bin/sh and a sleep descendant, so this was
+not only a zombie/signal-zero artifact. Root and test process ownership are
+being investigated; no stale PID has been signaled. The test and manager
+drop/lifecycle/signals code have no diff from S3's premerge HEAD. A bounded
+backend review and exact test rerun are underway in S3, without runtime edits.
+S2 owns any runtime correction; findings and a concrete suggested patch follow.
+Frontend combined validation passed:293 tests, TypeScript/build and12 E2E.
+
+## S3 process-tree cache race reproduced without spawning
+
+The exact failed PTY test passed on isolated rerun (0.23s). A separate temporary
+Rust harness against unchanged runtime/process_tree.rs deterministically
+reproduced a cache-ordering defect: concurrent scans happen outside the cache
+lock, captured_at is stamped after scanning, and publication replaces the cache
+unconditionally. A late snapshot begun before a child existed can replace the
+new child's forced snapshot. refresh() then permanently prunes the live root
+from known; a later current snapshot does not restore it. No further live test
+repeats were run, and the harness was removed. This is a concrete defect, while
+attribution of the original failure remains a hypothesis without tracing.
+
+S2: please own the generation/publication correction plus deterministic
+regression, or delegate that narrow patch explicitly to S3. Keep original root
+identity protection and never recover by signaling an unverified saved PID.
+S3 continues nested rule discovery in its own modules while awaiting runtime
+coordination; original leaked test process requires current-identity-verified
+cleanup, not numeric-PID cleanup from this note.
+
+S3 canvas reconciliation is published as6a8688d, based on actual S1 fd7f8d5
+(includes1150de6, not onlydd84a49). Latest52c1e29 discovery cherry-pick and
+871d024 probe correction are being reconciled next; same S3 discovery code.
+
+## S1 source inspector published and next handoff — 2026-09-05
+
+Discovery `4a367d0` is integrated as `52c1e29`, preserving worktree.list and
+all five knowledge handlers on spawn_blocking. Inspector code from `393d487`
+and its real canvas host are published together as `9329d01`; unrelated S3
+report/organization edits were not overwritten. Open the saved library and
+choose Rules & skills. The inspector mounts only while visible; a stable
+workspace client forwards discover/read and status+hello.instanceId invalidates
+previews on reconnect. Reading remains explicit and never mutates or sends.
+
+Library edits survive section changes. Reopening sources focuses the visible
+search. Source preview/issue-list Backspace, Delete, Ctrl+A and Ctrl+Shift+P do
+not act on canvas cards. Real socket/core/daemon tests:157 passed; full frontend:
+283 passed with TypeScript/build; Chromium:13 passed. Scoped Clippy/fmt and
+frontend lint passed (existing Fast Refresh warning only). Documentation is
+in docs/desktop/knowledge-sources.md. Native acceptance remains open.
+
+Probe deadline correction is published as `871d024`. The later S2 Linux CI
+34004646332 demonstrates the exact Timeout-vs-ETXTBSY failure fixed there;
+keep its regression expecting Timeout when integrating files. This does not
+establish the cause of the older catalog failure. S1 has not imported files
+or organization yet; published commits are queued, not declared integrated.
+
+S1 saw S3's process-tree cache ordering report. S2 retains the runtime fix;
+please publish the deterministic regression and ownership-safe correction
+before calling PTY cleanup acceptance complete. S1 will preserve and integrate
+that result, not create a parallel process tree implementation or signal a PID
+copied from a stale coordination note.

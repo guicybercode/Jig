@@ -16,6 +16,15 @@ import {
 } from "./canvas-state";
 
 describe("canvas state", () => {
+  it("retains isolated working copy intent across reload and duplication", () => {
+    const node = createTerminalCanvasNode({ x: 0, y: 0 }, { isolation: "new_worktree" }, "isolated");
+    const initial = createInitialCanvasState({ version: 2, nodes: [node], connections: [], zoom: 1 });
+    const duplicated = canvasReducer(initial, duplicateCanvasSelection(initial, [node.id]));
+    expect(parseCanvasDocument(serializeCanvasDocument(duplicated)).nodes).toEqual(duplicated.nodes);
+    expect(duplicated.nodes[1]).toMatchObject({ isolation: "new_worktree" });
+    expect(duplicated.nodes[1]).toHaveProperty("sessionId", undefined);
+  });
+
   it("persists each terminal's draft without changing its session or other cards", () => {
     const initial = createInitialCanvasState();
     const drafted = canvasReducer(initial, {

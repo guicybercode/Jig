@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "../App";
 import { IpcError } from "../ipc/client";
+import type { KnowledgeSourceEntry } from "../ipc/domain";
 import type {
   AgentDetection,
   AgentRecord,
@@ -44,6 +45,131 @@ describe("AppShell canvas workflows", () => {
       writable: true,
       value: viewportScrollTo,
     });
+  });
+
+  it("opens the project knowledge library from the command palette and keeps its IPC scope current", async () => {
+    const project = createProject({ lastOpenedAtMs: TEST_TIME + 1 });
+    const otherProject = createProject({ id: "project-other", name: "Other repository" });
+    const client = createMockIpcClient({
+      bootstrap: createBootstrap({ projects: [project, otherProject] }),
+      handlers: { listKnowledge: async () => ({ entries: [], nextCursor: null }) },
+    });
+    const user = await renderApp(client);
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(client.listKnowledge).not.toHaveBeenCalled();
+    const palette = await openCommandPalette(user);
+    await selectPaletteCommand(user, palette, "Open prompts and context");
+
+    const library = await screen.findByRole("region", { name: "Prompts & context" });
+    expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: project.name, level: 1 })).toBeVisible();
+    await waitFor(() => expect(client.listKnowledge).toHaveBeenCalledExactlyOnceWith({ projectId: project.id }));
+    await user.type(within(library).getByLabelText("Title"), "Current project draft");
+    await user.type(within(library).getByLabelText("Content"), "Keep project scope");
+    expect(client.listKnowledge).toHaveBeenCalledTimes(1);
+    await user.click(within(screen.getByRole("navigation", { name: "Workspaces" })).getByRole("button", { name: /^Other repository/ }));
+    if (!screen.queryByRole("region", { name: "Knowledge library" })) {
+      await user.click(screen.getByRole("button", { name: "Open prompts and context" }));
+    }
+
+    await waitFor(() => expect(client.listKnowledge).toHaveBeenLastCalledWith({ projectId: otherProject.id }));
+    expect(screen.getByLabelText("Title")).toHaveValue("");
+    expect(screen.getByLabelText("Scope")).toHaveValue(otherProject.id);
+    expect(client.saveKnowledge).not.toHaveBeenCalled();
+    expect(client.writeTerminal).not.toHaveBeenCalled();
+    expect(client.createSession).not.toHaveBeenCalled();
+    expect(client.startSession).not.toHaveBeenCalled();
+  });
+
+  it("routes the command palette to the global knowledge library without a project", async () => {
+    const client = createMockIpcClient({
+      bootstrap: EMPTY_BOOTSTRAP,
+      handlers: { listKnowledge: async () => ({ entries: [], nextCursor: null }) },
+    });
+    const user = await renderApp(client);
+    const palette = await openCommandPalette(user);
+    expect(client.listKnowledge).not.toHaveBeenCalled();
+    await selectPaletteCommand(user, palette, "Open prompts and context");
+
+    const library = await screen.findByRole("region", { name: "Prompts & context" });
+    await waitFor(() => expect(client.listKnowledge).toHaveBeenCalledExactlyOnceWith({ projectId: null }));
+    expect(within(library).getByText("Global library")).toBeVisible();
+    expect(within(library).getByLabelText("Scope")).toHaveValue("");
+    expect(client.writeTerminal).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("discovers rules and skills only in their section and reads an explicitly selected source (project: %s)", async (hasProject) => {
+    const project = createProject();
+    const entry = createKnowledgeSource({ scope: hasProject ? "project" : "global" });
+    const content = "# Local instructions\n<script>not executable</script>\n";
+    const client = createMockIpcClient({
+      bootstrap: createBootstrap({ projects: hasProject ? [project] : [] }),
+      handlers: {
+        listKnowledge: async () => ({ entries: [], nextCursor: null }),
+        discoverKnowledge: async () => ({ scanId: "opaque-scan", entries: [entry], truncated: false, issues: [] }),
+        readKnowledge: async () => ({ entry, content }),
+      },
+    });
+    const user = await renderApp(client);
+    const palette = await openCommandPalette(user);
+    await selectPaletteCommand(user, palette, "Open prompts and context");
+    const library = await screen.findByRole("region", { name: "Knowledge library" });
+    await waitFor(() => expect(client.listKnowledge).toHaveBeenCalledOnce());
+    expect(client.discoverKnowledge).not.toHaveBeenCalled();
+    expect(client.readKnowledge).not.toHaveBeenCalled();
+    await user.click(within(library).getByRole("button", { name: "Rules & skills" }));
+    const sourceButton = await within(library).findByRole("button", { name: entry.name });
+    expect(client.discoverKnowledge).toHaveBeenCalledExactlyOnceWith({ projectId: hasProject ? project.id : null });
+    expect(client.readKnowledge).not.toHaveBeenCalled();
+    await user.click(sourceButton);
+
+    expect(client.readKnowledge).toHaveBeenCalledExactlyOnceWith({ scanId: "opaque-scan", entryId: entry.entryId });
+    expect((await within(library).findByLabelText("Source content")).textContent).toBe(content);
+    expect(document.querySelector("script")).not.toBeInTheDocument();
+    expect(client.writeTerminal).not.toHaveBeenCalled();
+    expect(client.startSession).not.toHaveBeenCalled();
+    expect(client.createSession).not.toHaveBeenCalled();
+    expect(client.saveKnowledge).not.toHaveBeenCalled();
+    expect(client.openPath).not.toHaveBeenCalled();
+  });
+
+  it("invalidates a source preview when the same client reconnects to a new daemon", async () => {
+    const project = createProject();
+    const entry = createKnowledgeSource();
+    const bootstrap = createBootstrap({ projects: [project] });
+    const client = createMockIpcClient({
+      bootstrap,
+      handlers: { listKnowledge: async () => ({ entries: [], nextCursor: null }) },
+    });
+    client.discoverKnowledge.mockResolvedValueOnce({ scanId: "scan-before", entries: [entry], truncated: false, issues: [] });
+    client.discoverKnowledge.mockResolvedValue({ scanId: "scan-after", entries: [entry], truncated: false, issues: [] });
+    client.readKnowledge.mockResolvedValueOnce({ entry, content: "Preview from the old daemon" });
+    client.readKnowledge.mockResolvedValue({ entry, content: "Revalidated instructions" });
+    const user = await renderApp(client);
+    await user.click(screen.getByRole("button", { name: "Open prompts and context" }));
+    await user.click(screen.getByRole("button", { name: "Rules & skills" }));
+    await user.click(await screen.findByRole("button", { name: entry.name }));
+    expect(await screen.findByLabelText("Source content")).toHaveTextContent("Preview from the old daemon");
+    expect(client.readKnowledge).toHaveBeenCalledExactlyOnceWith({ scanId: "scan-before", entryId: entry.entryId });
+    client.initialize.mockResolvedValue({ ...bootstrap, hello: { ...bootstrap.hello, instanceId: "daemon-after-reconnect" } });
+    await act(async () => {
+      client.emit("daemon.shutting_down", { reasonCode: "restart_requested", activeSessionCount: 0 });
+    });
+    expect(screen.queryByLabelText("Source content")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Reconnect" }));
+    await waitFor(() => {
+      expect(client.initialize).toHaveBeenCalledTimes(2);
+      expect(screen.queryByRole("button", { name: "Reconnect" })).not.toBeInTheDocument();
+    });
+    expect(screen.queryByLabelText("Source content")).not.toBeInTheDocument();
+    expect(client.readKnowledge).toHaveBeenCalledTimes(1);
+    await user.click(await screen.findByRole("button", { name: entry.name }));
+
+    expect(client.readKnowledge).toHaveBeenLastCalledWith({ scanId: "scan-after", entryId: entry.entryId });
+    expect(await screen.findByLabelText("Source content")).toHaveTextContent("Revalidated instructions");
+    expect(client.saveKnowledge).not.toHaveBeenCalled();
+    expect(client.writeTerminal).not.toHaveBeenCalled();
+    expect(client.startSession).not.toHaveBeenCalled();
   });
 
   it("keeps local notes available when first connection fails and retries without losing them", async () => {
@@ -1684,6 +1810,15 @@ function createProject(overrides: Partial<Project> = {}): Project {
     createdAtMs: TEST_TIME,
     lastOpenedAtMs: TEST_TIME,
     ...overrides,
+  };
+}
+
+function createKnowledgeSource(overrides: Partial<KnowledgeSourceEntry> = {}): KnowledgeSourceEntry {
+  return {
+    entryId: "opaque-entry", kind: "rule", provider: "codex", scope: "project",
+    sourcePath: "/repos/project/AGENTS.md", name: "AGENTS.md", scopeDirectory: ".",
+    precedenceHint: "Native loading depends on the CLI.",
+    viaSymlink: false, availability: "available", ...overrides,
   };
 }
 
