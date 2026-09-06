@@ -11,7 +11,7 @@ mantida por S1. Os IDs M01–M48 e X01–X10 continuam sendo os dela; as descri�
 completas, fontes por recurso e critérios visuais não são duplicados aqui.
 Na auditoria, a matriz e `docs/codex/parallel-goals.md` foram lidos na worktree
 principal, `/Users/eguimacs/cli-master`, onde ainda não estavam no baseline
-de S2. Publicar este recorte não substitui integrar esses documentos centrais.
+de S2. Esses documentos foram posteriormente integrados pelo merge `45d817a`.
 
 ## Fontes e interpretação
 
@@ -62,8 +62,16 @@ Os 118 testes core/daemon passaram no macOS, incluindo 9 novos de worktree;
 sagas/storage, Clippy e contratos frontend também foram verificados conforme
 [relatório S2](codex/maestri-runtime-report.md). Isso comprova o incremento de
 runtime M14/M34/M35; **os IDs completos continuam P**, pois floors/landing e
-integração desktop não estão concluídos. Linux/CI/pacote seguem sem resultado.
-Nenhum recurso posterior ganha V com essa execução.
+integração desktop não estão concluídos. CI e Packaging Linux/macOS aprovaram
+`45d817a`, conforme links no relatório. Isso não prova integração visual completa.
+
+`1225931` acrescenta list/read/write real sob alvos registrados e cliente IPC
+com decodificação. No macOS passaram 13 testes de contratos file, 8 de disco/
+falhas, 12 pelo socket e 5 de ACL, além de 51 testes IPC frontend. **M29/M30
+passam de A a P neste incremento**: faltam gerenciamento completo de arquivos,
+watcher, integração de editor S1 e confirmação Linux/macOS na nova CI.
+A limitação APFS a nomes válidos em UTF-8 e o CAS otimista externo estão
+registrados em ADR 0006. O read interno ainda não prova reúso pela S3.
 
 ## Recorte de runtime por ID central
 
@@ -93,8 +101,8 @@ agrupadas mantêm todos os IDs para auditoria sem redefinir seu escopo.
 | M25 — persistência de processo | P: R8 | Distinguir cliente reconectado de daemon novo e attachment tmux verificado. | S1 mostrar capacidade real; persistência após crash exige novo ADR. |
 | M26 — conversa | P metadados: R8; resume A | Adapter persiste e valida identidade nativa; retoma a conversa escolhida. | Nunca reconstruir conversa a partir do PID ou de replay PTY. |
 | M27, M28 — ambientes | A: R3/R7 | Resolver execução, cwd, arquivo e provisionamento no mesmo host; reconexão não duplica agente. | S1 ambiente/override; SSH/Docker/custom usam argv e transporte definido em ADR. |
-| M29 — arquivo | A: R3 | Listar/criar/mover/remover sob raiz registrada, tratar nomes Unix e links sem escapar do escopo. | S1 árvore; S3 reutiliza segurança de I/O. |
-| M30 — editor | A: R3 | Read/write em disco com limite de tamanho e revisão esperada; mudança externa gera conflito. | S1 buffers/edição; proteger conteúdo não salvo. |
+| M29 — arquivo | P: `1225931`, listagem socket macOS | Criar/mover/remover sob raiz registrada; confirmar os novos testes Linux. | S1 árvore; S3 reutiliza segurança de I/O. |
+| M30 — editor | P: `1225931`, read/write socket macOS | Integrar editor real, conflitos/reload e watcher; confirmar nova CI Linux/macOS. | S1 buffers/edição; proteger conteúdo não salvo. |
 | M31 — busca/tabs | A: R3/R4 | Busca cancelável com paginação estável; persistência de tabs/defaults. | S1 abre arquivo/linha; definir indexação e limites após file service. |
 | M32 — Git local | P: R6 | Stage/unstage/commit e descarte revisado no repositório derivado do alvo. | S1 diff real; descarte precisa prova de estado, não um booleano force. |
 | M33 — Git remoto/histórico | A: R6 | Git argv real com exclusão mútua, cancelamento e erros acionáveis. | S1 opções/history; credenciais continuam com Git do usuário. |
