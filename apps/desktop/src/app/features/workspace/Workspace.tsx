@@ -57,9 +57,6 @@ export function Workspace(props: WorkspaceProps) {
   if (props.connectionStatus === "fatal") {
     return <ConnectionWorkspace fatal error={props.connectionError} onRetry={props.onRetry} />;
   }
-  if (props.connectionStatus === "disconnected" && !props.snapshot) {
-    return <ConnectionWorkspace error={props.connectionError} onRetry={props.onRetry} />;
-  }
   if (props.view === "settings") {
     return <SettingsWorkspace platform={props.platform} onOpenCanvas={props.onOpenCanvas} />;
   }

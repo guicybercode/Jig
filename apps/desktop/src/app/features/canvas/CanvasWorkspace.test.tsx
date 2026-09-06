@@ -1,5 +1,6 @@
 import type { ComponentProps } from "react";
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -7,11 +8,20 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { IpcError } from "../../../ipc/client";
 import type { Session, Worktree } from "../../../ipc/types";
-import { CANVAS_STORAGE_KEY, parseCanvasDocument } from "./canvas-state";
+import type { BrowserRuntime } from "../browser/browser-runtime";
+import type { LiveTerminalTransport } from "../terminal/LiveTerminal";
+import {
+  CANVAS_STORAGE_KEY,
+  parseCanvasDocument,
+  type BrowserCanvasNode,
+  type CanvasDocument,
+  type NoteCanvasNode,
+  type TerminalCanvasNode,
+} from "./canvas-state";
 import { CanvasWorkspace } from "./CanvasWorkspace";
 
 vi.mock("../terminal/LiveTerminal", () => ({
@@ -72,9 +82,60 @@ const MANAGED_WORKTREE: Worktree = {
   updatedAtMs: 3,
 };
 
+const BROWSER_NODE: BrowserCanvasNode = {
+  id: "browser-test",
+  kind: "browser",
+  title: "Browser",
+  url: "https://docs.example.com/guide",
+  x: 160,
+  y: 120,
+  width: 640,
+  height: 420,
+};
+
+const NOTE_NODE: NoteCanvasNode = {
+  id: "note-test",
+  kind: "note",
+  title: "Notes",
+  text: "Review the integration",
+  x: 840,
+  y: 120,
+};
+
+const LIVE_SESSION: Session = {
+  id: "0198f000-0000-7000-8000-000000000004",
+  projectId: PROJECT.id,
+  name: "Terminal 1",
+  agentId: SHELL_AGENT.id,
+  cwd: PROJECT.path,
+  pid: 123,
+  ptyId: "pty-browser-handoff",
+  status: "running",
+  createdAtMs: 2,
+  updatedAtMs: 2,
+};
+
+const TERMINAL_NODE: TerminalCanvasNode = {
+  id: "terminal-test",
+  kind: "terminal",
+  title: "Terminal 1",
+  sessionId: LIVE_SESSION.id,
+  preset: "shell",
+  x: 840,
+  y: 120,
+  width: 432,
+  height: 256,
+};
+
 describe("CanvasWorkspace", () => {
   beforeEach(() => {
     localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it("renders the first-launch terminal and note composition", () => {
@@ -241,6 +302,436 @@ describe("CanvasWorkspace", () => {
     });
   });
 
+  it("adds an integrated browser card to the persisted canvas", async () => {
+    const user = userEvent.setup();
+    const { container } = renderCanvas();
+
+    await user.click(screen.getByRole("button", { name: "Add browser" }));
+
+    const browser = screen.getByRole("article", {
+      name: "Browser, browser canvas item",
+    });
+    expect(
+      within(browser).getByRole("region", {
+        name: "Browser surface for Browser",
+      }),
+    ).toBeVisible();
+    expect(within(browser).getByRole("textbox", { name: "Address" })).toHaveValue(
+      "",
+    );
+    expect(container.querySelector("iframe")).not.toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(readCanvasDocument().nodes).toContainEqual(
+        expect.objectContaining({
+          kind: "browser",
+          title: "Browser",
+          url: "",
+          width: 640,
+          height: 420,
+        }),
+      );
+    });
+  });
+
+  it("persists a normalized address entered in the browser chrome", async () => {
+    const user = userEvent.setup();
+    renderCanvas();
+    await user.click(screen.getByRole("button", { name: "Add browser" }));
+
+    const browser = screen.getByRole("article", {
+      name: "Browser, browser canvas item",
+    });
+    const address = within(browser).getByRole("textbox", { name: "Address" });
+    await user.type(address, "docs.example.com/guides?mode=compact{Enter}");
+
+    expect(address).toHaveValue(
+      "https://docs.example.com/guides?mode=compact",
+    );
+    await waitFor(() => {
+      const persistedBrowser = readCanvasDocument().nodes.find(
+        (node) => node.kind === "browser",
+      );
+      expect(persistedBrowser).toEqual(
+        expect.objectContaining({
+          kind: "browser",
+          url: "https://docs.example.com/guides?mode=compact",
+        }),
+      );
+    });
+  });
+
+  it("keeps address-field arrow keys out of canvas panning", () => {
+    seedCanvasDocument([BROWSER_NODE]);
+    const { container } = renderCanvas();
+    const viewport = container.querySelector<HTMLElement>(".canvas-viewport");
+    expect(viewport).not.toBeNull();
+    viewport!.scrollLeft = 2_000;
+    viewport!.scrollTop = 1_500;
+
+    const address = screen.getByRole("textbox", { name: "Address" });
+    address.focus();
+    fireEvent.keyDown(address, { key: "ArrowRight" });
+    fireEvent.keyDown(address, { key: "ArrowDown" });
+
+    expect(viewport!.scrollLeft).toBe(2_000);
+    expect(viewport!.scrollTop).toBe(1_500);
+  });
+
+  it("connects a browser to a note and appends its URL as plain text", async () => {
+    const user = userEvent.setup();
+    seedCanvasDocument([BROWSER_NODE, NOTE_NODE]);
+    renderCanvas();
+
+    const browser = screen.getByRole("article", {
+      name: "Browser, browser canvas item",
+    });
+    const note = screen.getByRole("article", {
+      name: "Notes, note canvas item",
+    });
+    await user.click(
+      within(browser).getByRole("button", {
+        name: "Start connection from Browser",
+      }),
+    );
+    await user.click(
+      within(note).getByRole("button", { name: "Connect to Notes" }),
+    );
+
+    const inspector = screen.getByRole("region", {
+      name: "Connections for Notes",
+    });
+    await user.click(
+      within(inspector).getByRole("button", {
+        name: "Add browser URL to Notes",
+      }),
+    );
+
+    expect(within(note).getByRole("textbox", { name: "Notes content" })).toHaveValue(
+      "Review the integration\n\nhttps://docs.example.com/guide",
+    );
+    await waitFor(() => {
+      const document = readCanvasDocument();
+      expect(document.connections).toContainEqual(
+        expect.objectContaining({
+          sourceNodeId: "browser-test",
+          targetNodeId: "note-test",
+        }),
+      );
+      expect(document.nodes.find((node) => node.id === NOTE_NODE.id)).toEqual(
+        expect.objectContaining({
+          text: "Review the integration\n\nhttps://docs.example.com/guide",
+        }),
+      );
+    });
+  });
+
+  it("inserts a POSIX-quoted browser URL into a live terminal without submitting it", async () => {
+    const user = userEvent.setup();
+    stubMatchMedia();
+    const browserUrl =
+      "https://example.test/it's/$(touch-pwned)?q=a;b|c&next=`id`";
+    const writeTerminal = vi.fn<LiveTerminalTransport["writeTerminal"]>(
+      async () => undefined,
+    );
+    seedCanvasDocument([{ ...BROWSER_NODE, url: browserUrl }, TERMINAL_NODE]);
+    renderProjectCanvas({
+      sessions: [LIVE_SESSION],
+      writeTerminal,
+      subscribeTerminal: vi.fn(async () => vi.fn()),
+    });
+
+    const browser = screen.getByRole("article", {
+      name: "Browser, browser canvas item",
+    });
+    const terminal = screen.getByRole("article", {
+      name: "Terminal 1, terminal canvas item",
+    });
+    await user.click(
+      within(browser).getByRole("button", {
+        name: "Start connection from Browser",
+      }),
+    );
+    await user.click(
+      within(terminal).getByRole("button", {
+        name: "Connect to Terminal 1",
+      }),
+    );
+
+    const inspector = screen.getByRole("region", {
+      name: "Connections for Terminal 1",
+    });
+    await user.click(
+      within(inspector).getByRole("button", {
+        name: "Insert browser URL into Terminal 1",
+      }),
+    );
+
+    await waitFor(() => expect(writeTerminal).toHaveBeenCalledOnce());
+    const [sessionId, bytes] = writeTerminal.mock.calls[0] ?? [];
+    const payload = new TextDecoder().decode(bytes);
+    expect(sessionId).toBe(LIVE_SESSION.id);
+    expect(payload).toBe(
+      "'https://example.test/it'\\''s/$(touch-pwned)?q=a;b|c&next=`id`'",
+    );
+    expect(payload).not.toMatch(/[\r\n]/);
+    expect(within(inspector).getByRole("status")).toHaveTextContent(
+      "Inserted a shell-safe URL into Terminal 1. Review it before pressing Enter.",
+    );
+  });
+
+  it("hides an active native browser surface while its card is manipulated", async () => {
+    const user = userEvent.setup();
+    stubVisibleBrowserGeometry();
+    seedCanvasDocument([BROWSER_NODE]);
+    renderCanvas({ browserRuntime: createAvailableBrowserRuntime() });
+
+    const browser = screen.getByRole("article", {
+      name: "Browser, browser canvas item",
+    });
+    await user.click(browser);
+    const webPage = within(browser).getByRole("region", { name: "Web page" });
+    await waitFor(() => {
+      expect(browser).toHaveAttribute("data-selected", "true");
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "true");
+    });
+
+    const header = browser.querySelector<HTMLElement>(".canvas-node__header");
+    expect(header).not.toBeNull();
+    fireEvent.pointerDown(header!, {
+      pointerId: 41,
+      clientX: 100,
+      clientY: 100,
+    });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "false"),
+    );
+    expect(
+      within(browser).getByText(
+        "The browser is hidden while the canvas item moves.",
+      ),
+    ).toBeVisible();
+    fireEvent.pointerUp(header!, { pointerId: 41 });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "true"),
+    );
+
+    const resizeHandle = within(browser).getByRole("button", {
+      name: "Resize Browser",
+    });
+    fireEvent.pointerDown(resizeHandle, {
+      pointerId: 42,
+      clientX: 100,
+      clientY: 100,
+    });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "false"),
+    );
+    fireEvent.pointerCancel(resizeHandle, { pointerId: 42 });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "true"),
+    );
+
+    browser.focus();
+    fireEvent.keyDown(browser, { key: "ArrowRight" });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "false"),
+    );
+    fireEvent.keyUp(browser, { key: "ArrowRight" });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "true"),
+    );
+
+    resizeHandle.focus();
+    fireEvent.keyDown(resizeHandle, { key: "ArrowDown" });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "false"),
+    );
+    fireEvent.keyUp(resizeHandle, { key: "ArrowDown" });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "true"),
+    );
+  });
+
+  it("hides the active browser until keyboard, wheel, and scroll movement settles", async () => {
+    const user = userEvent.setup();
+    const runtime = createAvailableBrowserRuntime();
+    stubVisibleBrowserGeometry();
+    seedCanvasDocument([BROWSER_NODE]);
+    const { container } = renderCanvas({ browserRuntime: runtime });
+
+    const browser = screen.getByRole("article", {
+      name: "Browser, browser canvas item",
+    });
+    await user.click(browser);
+    const webPage = within(browser).getByRole("region", { name: "Web page" });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "true"),
+    );
+    await waitFor(() =>
+      expect(runtime.update).toHaveBeenCalledWith(
+        expect.objectContaining({ visible: true }),
+      ),
+    );
+    const viewport = container.querySelector<HTMLElement>(".canvas-viewport");
+    expect(viewport).not.toBeNull();
+
+    vi.useFakeTimers();
+    vi.mocked(runtime.update).mockClear();
+    viewport!.focus();
+    fireEvent.keyDown(viewport!, { key: "ArrowRight" });
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "false");
+    expect(runtime.update).toHaveBeenCalledWith(
+      expect.objectContaining({ visible: false }),
+    );
+
+    act(() => vi.advanceTimersByTime(100));
+    fireEvent.wheel(viewport!, { deltaY: 40 });
+    act(() => vi.advanceTimersByTime(100));
+    fireEvent.scroll(viewport!);
+    act(() => vi.advanceTimersByTime(159));
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "false");
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "true");
+    act(() => vi.advanceTimersByTime(20));
+    expect(runtime.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({ visible: true }),
+    );
+  });
+
+  it("hides the active browser while smooth focus and fit scrolling settles", async () => {
+    const user = userEvent.setup();
+    const runtime = createAvailableBrowserRuntime();
+    stubVisibleBrowserGeometry();
+    seedCanvasDocument([BROWSER_NODE]);
+    const { container } = renderCanvas({ browserRuntime: runtime });
+
+    const browser = screen.getByRole("article", {
+      name: "Browser, browser canvas item",
+    });
+    await user.click(browser);
+    const webPage = within(browser).getByRole("region", { name: "Web page" });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "true"),
+    );
+    const viewport = container.querySelector<HTMLElement>(".canvas-viewport");
+    expect(viewport).not.toBeNull();
+    const scrollTo = vi.fn();
+    Object.defineProperties(viewport!, {
+      clientWidth: { configurable: true, value: 1_000 },
+      clientHeight: { configurable: true, value: 700 },
+      scrollTo: { configurable: true, value: scrollTo },
+    });
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole("button", { name: "Show canvas items" }));
+    const panel = screen.getByRole("region", { name: "Canvas items" });
+    fireEvent.click(within(panel).getByRole("button", { name: /Browser/ }));
+    expect(scrollTo).toHaveBeenLastCalledWith(
+      expect.objectContaining({ behavior: "smooth" }),
+    );
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "false");
+    act(() => vi.advanceTimersByTime(160));
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Fit canvas to items" }));
+    expect(scrollTo).toHaveBeenLastCalledWith(
+      expect.objectContaining({ behavior: "smooth" }),
+    );
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "false");
+    act(() => vi.advanceTimersByTime(160));
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "true");
+  });
+
+  it("keeps only the primary browser active during group selection and movement", async () => {
+    const user = userEvent.setup();
+    const runtime = createAvailableBrowserRuntime();
+    stubVisibleBrowserGeometry();
+    seedCanvasDocument([
+      BROWSER_NODE,
+      { ...BROWSER_NODE, id: "browser-second", title: "Preview", x: 840 },
+    ]);
+    renderCanvas({ browserRuntime: runtime });
+    const browser = screen.getByRole("article", { name: "Browser, browser canvas item" });
+    const preview = screen.getByRole("article", { name: "Preview, browser canvas item" });
+    const firstPage = within(browser).getByRole("region", { name: "Web page" });
+    const secondPage = within(preview).getByRole("region", { name: "Web page" });
+
+    await user.click(browser);
+    await waitFor(() => expect(firstPage).toHaveAttribute("data-native-browser-visible", "true"));
+    await user.keyboard("{Shift>}");
+    await user.click(preview);
+    await user.keyboard("{/Shift}");
+
+    expect(browser).toHaveAttribute("data-selected", "true");
+    expect(preview).toHaveAttribute("data-selected", "true");
+    await waitFor(() => {
+      expect(firstPage).toHaveAttribute("data-native-browser-visible", "false");
+      expect(secondPage).toHaveAttribute("data-native-browser-visible", "true");
+      expect(runtime.close).toHaveBeenCalledWith({ nodeId: BROWSER_NODE.id });
+    });
+    expect(runtime.open).toHaveBeenCalledTimes(2);
+
+    const header = within(preview).getByLabelText("Move Preview");
+    fireEvent.pointerDown(header, { pointerId: 51, button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(header, { pointerId: 51, clientX: 124, clientY: 116 });
+    expect(secondPage).toHaveAttribute("data-native-browser-visible", "false");
+    expect(readNodePosition(BROWSER_NODE.id)).toEqual({ x: 184, y: 136 });
+    expect(readNodePosition("browser-second")).toEqual({ x: 864, y: 136 });
+    fireEvent.pointerUp(header, { pointerId: 51 });
+    await waitFor(() => expect(secondPage).toHaveAttribute("data-native-browser-visible", "true"));
+
+    await user.click(screen.getByRole("button", { name: "Duplicate selected canvas items" }));
+    expect(screen.getAllByRole("article", { name: /browser canvas item/ })).toHaveLength(4);
+    await waitFor(() => expect(runtime.open).toHaveBeenCalledTimes(3));
+    expect(runtime.close).toHaveBeenCalledWith({ nodeId: "browser-second" });
+    expect(document.querySelectorAll('[data-native-browser-visible="true"]')).toHaveLength(1);
+  });
+
+  it("scopes browsers and URL search to the selected project and hides the surface while searching", async () => {
+    const user = userEvent.setup();
+    const runtime = createAvailableBrowserRuntime();
+    stubVisibleBrowserGeometry();
+    seedCanvasDocument([
+      { ...BROWSER_NODE, projectId: PROJECT.id },
+      { ...BROWSER_NODE, id: "other-browser", title: "Private preview", projectId: OTHER_PROJECT.id, url: "https://other.example.com/private" },
+    ]);
+    const { props, rerender } = renderProjectCanvas({
+      projects: [PROJECT, OTHER_PROJECT],
+      browserRuntime: runtime,
+    });
+    const browser = screen.getByRole("article", { name: "Browser, browser canvas item" });
+    const webPage = within(browser).getByRole("region", { name: "Web page" });
+    expect(screen.queryByRole("article", { name: /Private preview/ })).not.toBeInTheDocument();
+    expect(screen.getByText(/1 browsers/)).toBeVisible();
+    await user.click(browser);
+    await waitFor(() => expect(webPage).toHaveAttribute("data-native-browser-visible", "true"));
+
+    await user.click(screen.getByRole("button", { name: "Show canvas items" }));
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "false");
+    expect(screen.getByRole("region", { name: "Canvas items" })).toHaveAttribute("data-browser-obstruction", "true");
+    const search = screen.getByRole("searchbox", { name: "Search canvas items" });
+    await user.type(search, "docs.example.com guide");
+    expect(screen.getByRole("button", { name: /Browser https:\/\/docs.example.com/ })).toBeVisible();
+    await user.clear(search);
+    await user.type(search, "other.example.com");
+    expect(screen.getByText(/No matching items/)).toBeVisible();
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("button", { name: "Show canvas items" })).toHaveFocus();
+    await waitFor(() => expect(webPage).toHaveAttribute("data-native-browser-visible", "true"));
+
+    await user.click(screen.getByRole("button", { name: "Add browser" }));
+    const added = readCanvasDocument().nodes.find((node) => node.kind === "browser" && node.url === "");
+    expect(added).toEqual(expect.objectContaining({ projectId: PROJECT.id }));
+    rerender(<CanvasWorkspace {...props} project={OTHER_PROJECT} />);
+    expect(screen.getAllByRole("article", { name: /browser canvas item/ })).toHaveLength(1);
+    expect(screen.getByRole("article", { name: "Private preview, browser canvas item" })).toBeVisible();
+    expect(screen.getByText(/1 browsers/)).toBeVisible();
+    expect(runtime.close).toHaveBeenCalledWith({ nodeId: BROWSER_NODE.id });
+    expect(runtime.open).not.toHaveBeenCalledWith(expect.objectContaining({ nodeId: "other-browser" }));
+  });
+
   it("moves a selected node with keyboard and pointer alternatives", async () => {
     const user = userEvent.setup();
     const { container } = renderCanvas();
@@ -277,6 +768,193 @@ describe("CanvasWorkspace", () => {
       expect(readNodePosition("terminal-primary")).toEqual({ x: 210, y: 233 });
     });
     expect(container.querySelector(".canvas-node--selected")).toBe(terminal);
+  });
+
+  it("toggles group selection with Shift+click and Shift+Space without child focus collapsing it", async () => {
+    const user = userEvent.setup();
+    renderCanvas();
+    const terminal = screen.getByRole("article", { name: "Terminal 1, terminal canvas item" });
+    const other = screen.getByRole("article", { name: "Terminal 2, terminal canvas item" });
+    const note = screen.getByRole("article", { name: "Notes, note canvas item" });
+    await user.click(terminal);
+    await user.keyboard("{Shift>}");
+    await user.click(within(other).getByLabelText("Move Terminal 2"));
+    await user.keyboard("{/Shift}");
+    expect(terminal).toHaveAttribute("data-selected", "true");
+    expect(other).toHaveAttribute("data-selected", "true");
+    expect(screen.getByText(/2 selected/)).toBeVisible();
+    await user.click(within(terminal).getByRole("region", { name: "Terminal surface for Terminal 1" }));
+    expect(screen.getByText(/2 selected/)).toBeVisible();
+    await user.click(screen.getByRole("textbox", { name: "Notes content" }));
+    expect(note).not.toHaveAttribute("data-selected");
+    expect(screen.getByText(/2 selected/)).toBeVisible();
+    note.focus();
+    await user.keyboard("{Shift>} {/Shift}");
+    expect(screen.getByText(/3 selected/)).toBeVisible();
+    await user.keyboard("{Shift>}");
+    await user.click(other);
+    await user.keyboard("{/Shift}");
+    expect(other).not.toHaveAttribute("data-selected");
+    expect(screen.getByText(/2 selected/)).toBeVisible();
+  });
+
+  it("moves the selected group by keyboard and drag while preserving relative spacing", async () => {
+    const user = userEvent.setup();
+    renderCanvas();
+    const terminal = screen.getByRole("article", { name: "Terminal 1, terminal canvas item" });
+    const other = screen.getByRole("article", { name: "Terminal 2, terminal canvas item" });
+    await user.click(terminal);
+    await user.keyboard("{Shift>}");
+    await user.click(other);
+    await user.keyboard("{/Shift}{ArrowRight}");
+    await waitFor(() => {
+      expect(readNodePosition("terminal-primary")).toEqual({ x: 178, y: 210 });
+      expect(readNodePosition("terminal-secondary")).toEqual({ x: 568, y: 90 });
+    });
+    const header = within(terminal).getByLabelText("Move Terminal 1");
+    fireEvent.pointerDown(header, { button: 0, pointerId: 7, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(header, { pointerId: 7, clientX: 120, clientY: 130 });
+    fireEvent.pointerMove(header, { pointerId: 7, clientX: 132, clientY: 140 });
+    fireEvent.pointerUp(header, { pointerId: 7 });
+    await waitFor(() => {
+      expect(readNodePosition("terminal-primary")).toEqual({ x: 210, y: 250 });
+      expect(readNodePosition("terminal-secondary")).toEqual({ x: 600, y: 130 });
+      expect(readNodePosition("note-first")).toEqual({ x: 600, y: 390 });
+    });
+    expect(screen.getByText(/2 selected/)).toBeVisible();
+  });
+
+  it("selects, duplicates, and removes groups with shortcuts without daemon mutations", async () => {
+    const user = userEvent.setup();
+    const { props } = renderCanvas();
+    const viewport = screen.getByLabelText("Pannable canvas");
+    viewport.focus();
+    await user.keyboard("{Control>}a{/Control}{Control>}d{/Control}");
+    expect(screen.getAllByRole("article")).toHaveLength(6);
+    expect(screen.getByText(/3 selected/)).toBeVisible();
+    expect(screen.getByRole("article", { name: "Notes copy, note canvas item" })).toHaveFocus();
+    await waitFor(() => expect(readCanvasDocument()?.connections).toHaveLength(4));
+    await user.keyboard("{Delete}");
+    expect(screen.getAllByRole("article")).toHaveLength(3);
+    expect(viewport).toHaveFocus();
+    expect(props.onCreateCustomAgent).not.toHaveBeenCalled();
+    expect(props.onCreateSession).not.toHaveBeenCalled();
+    expect(props.onStartSession).not.toHaveBeenCalled();
+    expect(props.onStopSession).not.toHaveBeenCalled();
+    expect(props.onDeleteSession).not.toHaveBeenCalled();
+    expect(props.onRemoveWorktree).not.toHaveBeenCalled();
+  });
+
+  it("leaves group shortcuts inside editors, terminal surfaces, and buttons to those controls", async () => {
+    const user = userEvent.setup();
+    renderCanvas();
+    await user.click(screen.getByRole("button", { name: "Select all canvas items" }));
+    const note = screen.getByRole("textbox", { name: "Notes content" });
+    const terminal = screen.getByRole("region", { name: "Terminal surface for Terminal 1" });
+    const button = screen.getByRole("button", { name: "Duplicate selected canvas items" });
+    for (const target of [note, terminal, button]) {
+      expect(fireEvent.keyDown(target, { key: "d", ctrlKey: true })).toBe(true);
+      expect(fireEvent.keyDown(target, { key: "a", metaKey: true })).toBe(true);
+      expect(fireEvent.keyDown(target, { key: "Backspace" })).toBe(true);
+    }
+    expect(screen.getAllByRole("article")).toHaveLength(3);
+    expect(screen.getByText(/3 selected/)).toBeVisible();
+  });
+
+  it("copies the exact attached agent and starts it only when explicitly requested", async () => {
+    const user = userEvent.setup();
+    const agent = {
+      ...SHELL_AGENT,
+      displayName: "Review Codex",
+      command: { executable: "/opt/bin/codex", args: ["--model", "review"], env: { CUSTOM_TOKEN: "must-not-persist" } },
+    };
+    const { props } = renderProjectCanvas({ agents: [agent], sessions: [STOPPED_SESSION], worktrees: [MANAGED_WORKTREE] });
+    await user.click(screen.getByRole("article", { name: "Review agent, terminal canvas item" }));
+    await user.click(screen.getByRole("button", { name: "Duplicate selected canvas items" }));
+    const copied = screen.getByRole("article", { name: "Review agent copy, terminal canvas item" });
+    expect(within(copied).getByText("Review Codex draft")).toBeVisible();
+    expect(copied).not.toHaveAttribute("data-canvas-session-id");
+    expect(props.onCreateSession).not.toHaveBeenCalled();
+    expect(props.onStartSession).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(readCanvasDocument()?.nodes).toContainEqual(expect.objectContaining({ title: "Review agent copy", agentId: agent.id }));
+      expect(localStorage.getItem(CANVAS_STORAGE_KEY)).not.toContain("must-not-persist");
+    });
+    await user.click(within(copied).getByRole("button", { name: "Start terminal" }));
+    expect(props.onCreateSession).toHaveBeenCalledWith({
+      projectId: PROJECT.id,
+      name: "Review agent copy",
+      agentId: agent.id,
+      isolation: "current",
+      relativeDirectory: ".worktrees/review",
+    });
+    expect(props.onCreateCustomAgent).not.toHaveBeenCalled();
+    expect(props.onStartSession).toHaveBeenCalledWith(STOPPED_SESSION.id);
+  });
+
+  it.each(["missing", "disabled"])("refuses to replace a %s saved agent with a shell", async (availability) => {
+    const user = userEvent.setup();
+    const { props } = renderProjectCanvas({
+      agents: availability === "missing" ? [] : [{ ...SHELL_AGENT, enabled: false }],
+      sessions: [STOPPED_SESSION],
+    });
+    await user.click(screen.getByRole("article", { name: "Review agent, terminal canvas item" }));
+    await user.click(screen.getByRole("button", { name: "Duplicate selected canvas items" }));
+    const copied = screen.getByRole("article", { name: "Review agent copy, terminal canvas item" });
+    await user.click(within(copied).getByRole("button", { name: "Start terminal" }));
+    expect(within(copied).getByText(/The original agent is (unavailable|disabled)/)).toBeVisible();
+    expect(props.onCreateSession).not.toHaveBeenCalled();
+    expect(props.onCreateCustomAgent).not.toHaveBeenCalled();
+    expect(props.onStartSession).not.toHaveBeenCalled();
+  });
+
+  it("scopes group actions to the current project and prunes selection after switching", async () => {
+    const user = userEvent.setup();
+    const otherSession = { ...STOPPED_SESSION, id: "other-session", projectId: OTHER_PROJECT.id, name: "Other agent" };
+    const { props, rerender } = renderProjectCanvas({ sessions: [STOPPED_SESSION, otherSession], projects: [PROJECT, OTHER_PROJECT] });
+    await user.click(screen.getByRole("article", { name: "Review agent, terminal canvas item" }));
+    rerender(<CanvasWorkspace {...props} project={OTHER_PROJECT} />);
+    expect(screen.queryByText(/1 selected/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Select all canvas items" }));
+    await user.click(screen.getByRole("button", { name: "Remove selected items from canvas" }));
+    expect(screen.queryByRole("article")).not.toBeInTheDocument();
+    rerender(<CanvasWorkspace {...props} />);
+    expect(screen.getByRole("article", { name: "Review agent, terminal canvas item" })).toBeVisible();
+    await waitFor(() => {
+      expect(readCanvasDocument()?.hiddenSessionIds).toContain(otherSession.id);
+      expect(readCanvasDocument()?.hiddenSessionIds).not.toContain(STOPPED_SESSION.id);
+    });
+    expect(props.onStopSession).not.toHaveBeenCalled();
+    expect(props.onDeleteSession).not.toHaveBeenCalled();
+  });
+
+  it("searches metadata, focuses results, and keeps live terminals mounted while filtering", async () => {
+    const user = userEvent.setup();
+    const { props } = renderProjectCanvas({ sessions: [{ ...STOPPED_SESSION, status: "running" }] });
+    const terminal = screen.getByTestId(`live-terminal-${STOPPED_SESSION.id}`);
+    const viewport = screen.getByLabelText("Pannable canvas");
+    const scrollTo = vi.fn();
+    Object.defineProperty(viewport, "scrollTo", { configurable: true, value: scrollTo });
+    viewport.focus();
+    await user.keyboard("{Meta>}f{/Meta}");
+    const search = screen.getByRole("searchbox", { name: "Search canvas items" });
+    expect(search).toHaveFocus();
+    await user.type(search, "agent/review");
+    const panel = screen.getByRole("region", { name: "Canvas items" });
+    expect(within(panel).getByText("1 of 4 items")).toBeVisible();
+    expect(screen.getByTestId(`live-terminal-${STOPPED_SESSION.id}`)).toBe(terminal);
+    await user.keyboard("{ArrowDown}{Enter}");
+    expect(screen.queryByRole("region", { name: "Canvas items" })).not.toBeInTheDocument();
+    expect(screen.getByRole("article", { name: "Review agent, terminal canvas item" })).toHaveFocus();
+    expect(scrollTo).toHaveBeenCalledOnce();
+    expect(props.onSelectSession).toHaveBeenCalledWith(STOPPED_SESSION.id);
+    await user.click(screen.getByRole("button", { name: "Show canvas items" }));
+    await user.type(screen.getByRole("searchbox"), "no-such-item");
+    expect(screen.getByText(/No matching items/)).toBeVisible();
+    expect(screen.getByTestId(`live-terminal-${STOPPED_SESSION.id}`)).toBe(terminal);
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("button", { name: "Show canvas items" })).toHaveFocus();
+    expect(props.onStopSession).not.toHaveBeenCalled();
   });
 
   it("resizes a terminal by keyboard and pointer", async () => {
@@ -651,6 +1329,41 @@ describe("CanvasWorkspace", () => {
       ).not.toBeInTheDocument();
     });
     expect(onDeleteSession).not.toHaveBeenCalled();
+  });
+
+  it("preserves dismissed sessions during offline edits and connected reconciliation", async () => {
+    localStorage.setItem(CANVAS_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      nodes: [],
+      connections: [],
+      zoom: 1,
+      hiddenSessionIds: [STOPPED_SESSION.id],
+    }));
+    const user = userEvent.setup();
+    const { props, rerender } = renderCanvas({ isConnected: false });
+
+    await user.click(screen.getByRole("button", { name: "Add note" }));
+    await waitFor(() => {
+      expect(readCanvasDocument().nodes).toHaveLength(1);
+      expect(readCanvasDocument().hiddenSessionIds).toContain(STOPPED_SESSION.id);
+    });
+
+    rerender(<CanvasWorkspace
+      {...props}
+      isConnected
+      project={PROJECT}
+      projects={[PROJECT]}
+      agents={[SHELL_AGENT]}
+      sessions={[STOPPED_SESSION]}
+    />);
+
+    expect(screen.queryByRole("article", {
+      name: "Review agent, terminal canvas item",
+    })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Notes content" })).toBeVisible();
+    expect(readCanvasDocument().hiddenSessionIds).toContain(STOPPED_SESSION.id);
+    expect(props.onDeleteSession).not.toHaveBeenCalled();
+    expect(props.onStopSession).not.toHaveBeenCalled();
   });
 
   it("reconciles project sessions again after resetting the canvas document", async () => {
@@ -1228,8 +1941,10 @@ function renderProjectCanvas(
   return { ...render(<CanvasWorkspace {...props} />), props };
 }
 
-function readCanvasDocument() {
-  return parseCanvasDocument(localStorage.getItem(CANVAS_STORAGE_KEY));
+function readCanvasDocument(): CanvasDocument {
+  const document = parseCanvasDocument(localStorage.getItem(CANVAS_STORAGE_KEY));
+  if (!document) throw new Error("Expected a persisted canvas document.");
+  return document;
 }
 
 function connectionEndpointX(container: HTMLElement): number {
@@ -1239,6 +1954,65 @@ function connectionEndpointX(container: HTMLElement): number {
     throw new Error("Expected a rendered canvas connection path.");
   }
   return Number(coordinates[coordinates.length - 2]);
+}
+
+function seedCanvasDocument(
+  nodes: CanvasDocument["nodes"],
+  connections: CanvasDocument["connections"] = [],
+) {
+  const document: CanvasDocument = {
+    version: 2,
+    nodes,
+    connections,
+    zoom: 1,
+    hiddenSessionIds: [],
+  };
+  localStorage.setItem(CANVAS_STORAGE_KEY, JSON.stringify(document));
+}
+
+function createAvailableBrowserRuntime(): BrowserRuntime {
+  return {
+    isAvailable: () => true,
+    open: vi.fn(async () => undefined),
+    navigate: vi.fn(async () => undefined),
+    update: vi.fn(async () => undefined),
+    reload: vi.fn(async () => undefined),
+    goBack: vi.fn(async () => undefined),
+    goForward: vi.fn(async () => undefined),
+    focus: vi.fn(async () => undefined),
+    close: vi.fn(async () => undefined),
+    openExternal: vi.fn(async () => undefined),
+  };
+}
+
+function stubMatchMedia() {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn(() => ({
+      matches: false,
+      media: "(prefers-reduced-motion: reduce)",
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(() => false),
+    })),
+  );
+}
+
+function stubVisibleBrowserGeometry() {
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+    function getBoundingClientRect(this: HTMLElement) {
+      if (this.hasAttribute("data-browser-surface-node-id")) {
+        return new DOMRect(100, 100, 640, 360);
+      }
+      if (this.hasAttribute("data-browser-viewport")) {
+        return new DOMRect(0, 0, 1_024, 768);
+      }
+      return new DOMRect();
+    },
+  );
 }
 
 function readNodePosition(nodeId: string) {

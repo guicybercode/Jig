@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use cli_master_agents::{AgentAdapter, DetectionResult, GeminiCliAdapter, LaunchEnvironment};
 use cli_master_core::wire::{
     AgentCommand, AgentCustomCreateRequest, AgentDetectRequest, AgentDetectResponse,
     AgentDetection, AgentListResponse, AgentRecord, EmptyResponse, SessionCreateRequest,
@@ -13,6 +14,7 @@ use cli_master_core::wire::{
 };
 use cli_master_core::{
     AgentId, AgentSource, ApiError, DaemonInstanceId, Project, Session, SessionId, SessionStatus,
+    builtin_agent_ids,
 };
 use cli_master_git::Git;
 use cli_master_session::{
@@ -104,6 +106,14 @@ impl SessionRegistry {
         &self,
         request: &AgentDetectRequest,
     ) -> Result<AgentDetectResponse, ApiError> {
+        self.detect_agents_in_environment(request, &LaunchEnvironment::from_current_process_path())
+    }
+
+    fn detect_agents_in_environment(
+        &self,
+        request: &AgentDetectRequest,
+        environment: &LaunchEnvironment,
+    ) -> Result<AgentDetectResponse, ApiError> {
         let requested = request.agent_ids();
         let detections = self
             .storage()?
@@ -114,12 +124,18 @@ impl SessionRegistry {
                 agent.enabled && (requested.is_empty() || requested.contains(&agent.id))
             })
             .map(|agent| {
-                let executable_path = resolve_executable(&agent.executable);
+                let (executable_path, error_code) = match environment.detect(&agent.executable) {
+                    DetectionResult::Found { executable } => (Some(executable), None),
+                    DetectionResult::NotFound => (None, Some("executable_not_found".to_owned())),
+                    DetectionResult::NotExecutable { .. } => {
+                        (None, Some("executable_not_executable".to_owned()))
+                    }
+                };
                 AgentDetection {
                     agent_id: agent.id,
                     available: executable_path.is_some(),
                     executable_path,
-                    error_code: None,
+                    error_code,
                 }
             })
             .collect();
@@ -401,6 +417,7 @@ impl SessionRegistry {
     fn seed_builtin_agents(&self) -> Result<(), ApiError> {
         let now = unix_timestamp_ms()?;
         let shell = login_shell();
+        let gemini = GeminiCliAdapter;
         let builtins = [
             (SHELL_AGENT_ID, "Shell", shell, vec!["-l".to_owned()]),
             (CODEX_AGENT_ID, "Codex", "codex".to_owned(), Vec::new()),
@@ -410,6 +427,12 @@ impl SessionRegistry {
                 "OpenCode",
                 "opencode".to_owned(),
                 Vec::new(),
+            ),
+            (
+                builtin_agent_ids::gemini().as_uuid().as_u128(),
+                gemini.display_name(),
+                gemini.executable_name().to_owned(),
+                gemini.default_args().to_vec(),
             ),
         ];
         let storage = self.storage()?;
@@ -483,6 +506,7 @@ fn agent_record(agent: StoredAgent) -> Result<AgentRecord, ApiError> {
             "codex" => Some("OpenAI Codex CLI".to_owned()),
             "claude" => Some("Claude Code CLI".to_owned()),
             "opencode" => Some("OpenCode CLI".to_owned()),
+            "gemini" => Some("Google Gemini CLI".to_owned()),
             _ if agent.source == AgentSource::BuiltIn => Some("Local login shell".to_owned()),
             _ => None,
         },
@@ -557,17 +581,6 @@ fn session_directory(
         ));
     }
     Ok(canonical)
-}
-
-fn resolve_executable(executable: &str) -> Option<PathBuf> {
-    let path = Path::new(executable);
-    if path.is_absolute() {
-        return path.is_file().then(|| path.to_path_buf());
-    }
-    env::split_paths(&env::var_os("PATH")?).find_map(|directory| {
-        let candidate = directory.join(executable);
-        candidate.is_file().then_some(candidate)
-    })
 }
 
 fn login_shell() -> String {
@@ -723,3 +736,6 @@ pub(super) fn encode_base64(bytes: &[u8]) -> String {
     }
     encoded
 }
+
+#[cfg(test)]
+mod tests;

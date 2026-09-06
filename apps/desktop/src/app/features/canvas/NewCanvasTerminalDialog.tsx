@@ -25,6 +25,7 @@ const TERMINAL_PRESETS: readonly TerminalPresetOption[] = [
   { value: "shell", label: "Shell", shortLabel: ">_" },
   { value: "codex", label: "Codex", shortLabel: "Cx", executable: "codex" },
   { value: "claude", label: "Claude", shortLabel: "Cl", executable: "claude" },
+  { value: "gemini", label: "Gemini", shortLabel: "Gm", executable: "gemini" },
   {
     value: "opencode",
     label: "OpenCode",

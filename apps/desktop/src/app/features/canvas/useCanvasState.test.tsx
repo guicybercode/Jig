@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CANVAS_DOCUMENT_UPDATED_EVENT,
   CANVAS_STORAGE_KEY,
+  createBrowserCanvasNode,
 } from "./canvas-state";
 import { useCanvasState } from "./useCanvasState";
 
@@ -13,8 +14,29 @@ describe("useCanvasState", () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
+  it("redacts browser URLs in both storage and published documents", () => {
+    const publish = vi.spyOn(globalThis, "dispatchEvent");
+    const { result } = renderHook(() => useCanvasState());
+    const browser = {
+      ...createBrowserCanvasNode({ x: 20, y: 30 }, "", "browser"),
+      projectId: "project",
+      url: "https://example.com/?tab=review&token=private#secret",
+    };
+    act(() => result.current.dispatch({
+      type: "document/hydrate",
+      document: { version: 2, nodes: [browser], connections: [], zoom: 1, hiddenSessionIds: ["hidden"] },
+    }));
+    const persisted = JSON.parse(localStorage.getItem(CANVAS_STORAGE_KEY) ?? "{}");
+    expect(persisted.nodes[0]).toMatchObject({ url: "https://example.com/?tab=review", projectId: "project" });
+    expect(persisted.hiddenSessionIds).toEqual(["hidden"]);
+    expect(publish).toHaveBeenLastCalledWith(expect.objectContaining({
+      detail: expect.objectContaining({ nodes: persisted.nodes }),
+    }));
+    expect(JSON.stringify(persisted)).not.toMatch(/private|secret/);
+  });
+
   it("does not save or publish another document for transient selection changes", () => {
-    const write = vi.spyOn(Storage.prototype, "setItem");
+    const write = spyOnStorageWrites();
     const publish = vi.spyOn(globalThis, "dispatchEvent");
     const { result } = renderHook(() => useCanvasState());
     write.mockClear();
@@ -34,7 +56,7 @@ describe("useCanvasState", () => {
   });
 
   it("reports failed saves while retaining edits and recovers on the next successful save", () => {
-    const write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    const write = spyOnStorageWrites().mockImplementation(() => {
       throw new DOMException("Storage full", "QuotaExceededError");
     });
     const { result } = renderHook(() => useCanvasState());
@@ -103,3 +125,11 @@ describe("useCanvasState", () => {
     ]);
   });
 });
+
+function spyOnStorageWrites() {
+  // Node 25's fallback owns its methods; jsdom Storage exposes them on its prototype.
+  const owner = Object.prototype.hasOwnProperty.call(localStorage, "setItem")
+    ? localStorage
+    : Storage.prototype;
+  return vi.spyOn(owner, "setItem");
+}

@@ -50,7 +50,8 @@ file is missing, then runs `cli-masterd --version` and `--preflight`.
 
 - CI builds on `macos-15` (Apple Silicon).
 - `bundle.macOS.signingIdentity` is `null`.
-- Hardened Runtime is off until a human sets a real Developer ID.
+- Hardened Runtime is enabled in bundle configuration. It is enforced by
+  codesign; the unsigned CI artifact still has no signing/notarization trust.
 - Gatekeeper warnings on first launch are expected for unsigned builds.
 
 ## CI
