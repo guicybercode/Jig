@@ -480,10 +480,21 @@ export function AppShell() {
       }`}
     >
       <a className="skip-link" href="#workspace">Skip to workspace</a>
-      {workspace.connection.status === "disconnected" && workspace.snapshot ? (
-        <div className="connection-banner" role="alert">
-          <span><strong>Daemon disconnected.</strong> Existing metadata may be stale.</span>
-          <button className="button button--secondary" type="button" onClick={workspace.retry}>Reconnect</button>
+      {workspace.connection.status === "disconnected" ? (
+        <div
+          className="connection-banner"
+          role={workspace.snapshot ? "alert" : "region"}
+          aria-label={workspace.snapshot ? undefined : "Daemon disconnected"}
+        >
+          <span>
+            <strong>Daemon disconnected.</strong>{" "}
+            {workspace.snapshot
+              ? "Existing metadata may be stale."
+              : "Notes and terminal drafts are available offline."}
+          </span>
+          <button className="button button--secondary" type="button" onClick={workspace.retry}>
+            {workspace.snapshot ? "Reconnect" : "Retry Connection"}
+          </button>
         </div>
       ) : null}
       {workspace.operationError ? (

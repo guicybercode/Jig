@@ -840,6 +840,41 @@ describe("CanvasWorkspace", () => {
     expect(onDeleteSession).not.toHaveBeenCalled();
   });
 
+  it("preserves dismissed sessions during offline edits and connected reconciliation", async () => {
+    localStorage.setItem(CANVAS_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      nodes: [],
+      connections: [],
+      zoom: 1,
+      hiddenSessionIds: [STOPPED_SESSION.id],
+    }));
+    const user = userEvent.setup();
+    const { props, rerender } = renderCanvas({ isConnected: false });
+
+    await user.click(screen.getByRole("button", { name: "Add note" }));
+    await waitFor(() => {
+      expect(readCanvasDocument().nodes).toHaveLength(1);
+      expect(readCanvasDocument().hiddenSessionIds).toContain(STOPPED_SESSION.id);
+    });
+
+    rerender(<CanvasWorkspace
+      {...props}
+      isConnected
+      project={PROJECT}
+      projects={[PROJECT]}
+      agents={[SHELL_AGENT]}
+      sessions={[STOPPED_SESSION]}
+    />);
+
+    expect(screen.queryByRole("article", {
+      name: "Review agent, terminal canvas item",
+    })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Notes content" })).toBeVisible();
+    expect(readCanvasDocument().hiddenSessionIds).toContain(STOPPED_SESSION.id);
+    expect(props.onDeleteSession).not.toHaveBeenCalled();
+    expect(props.onStopSession).not.toHaveBeenCalled();
+  });
+
   it("reconciles project sessions again after resetting the canvas document", async () => {
     const user = userEvent.setup();
     renderProjectCanvas({ sessions: [STOPPED_SESSION] });

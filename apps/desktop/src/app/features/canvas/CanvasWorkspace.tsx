@@ -255,6 +255,8 @@ export function CanvasWorkspace({
   );
 
   useLayoutEffect(() => {
+    // An offline empty session list is not evidence that saved sessions vanished.
+    if (!isConnected) return;
     dispatch({
       type: "sessions/reconcile",
       knownSessionIds: sessions.map((session) => session.id),
@@ -265,7 +267,7 @@ export function CanvasWorkspace({
         ),
       ),
     });
-  }, [dispatch, projectSessions, sessionCanvasTopologyKey, sessions]);
+  }, [dispatch, isConnected, projectSessions, sessionCanvasTopologyKey, sessions]);
 
   useLayoutEffect(() => {
     const remainingSelection = state.selectedNodeIds.filter((id) =>

@@ -46,6 +46,33 @@ describe("AppShell canvas workflows", () => {
     });
   });
 
+  it("keeps local notes available when first connection fails and retries without losing them", async () => {
+    const client = createMockIpcClient({
+      initialize: async () => { throw new Error("Local daemon is unavailable"); },
+    });
+    const user = userEvent.setup();
+    render(<App client={client} />);
+    const offline = await screen.findByRole("region", { name: "Daemon disconnected" });
+    expect(screen.getByRole("main")).toHaveClass("canvas-workspace");
+    expect(screen.getByRole("button", { name: "Add workspace project" })).toBeDisabled();
+    for (const button of screen.getAllByRole("button", { name: "Start terminal" })) {
+      expect(button).toHaveAttribute("aria-disabled", "true");
+      await user.click(button);
+    }
+
+    const note = screen.getByRole("textbox", { name: "Notes content" });
+    await user.clear(note);
+    await user.type(note, "Keep this plan while offline");
+    expect(localStorage.getItem(CANVAS_STORAGE_KEY)).toContain("Keep this plan while offline");
+    expect(client.createSession).not.toHaveBeenCalled();
+    expect(client.startSession).not.toHaveBeenCalled();
+
+    client.initialize.mockResolvedValue(EMPTY_BOOTSTRAP);
+    await user.click(within(offline).getByRole("button", { name: "Retry Connection" }));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Daemon disconnected" })).not.toBeInTheDocument());
+    expect(screen.getByRole("textbox", { name: "Notes content" })).toHaveValue("Keep this plan while offline");
+  });
+
   it("starts a terminal inside the canvas without changing workspace", async () => {
     const project = createProject();
     const shellAgent: AgentRecord = {
