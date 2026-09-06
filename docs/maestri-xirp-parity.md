@@ -38,6 +38,12 @@ código atual e atualizar a evidência. Não promover uma linha por existir um
 botão, tipo, mock, método anunciado ou biblioteca sem ligação ao fluxo real.
 Esta inspeção não executou a suíte nem validou pacotes nas duas plataformas.
 
+Entregas posteriores ao baseline e suas verificações estão no
+[relatório S1](codex/maestri-canvas-report.md). A `origin/main` já contém
+implementação de navegador nativo ausente desta branch inicial; M37 deve
+reaproveitá-la antes de criar outro host. Não confundir ausência nesta
+worktree com ausência em todas as branches.
+
 ## Evidências locais de referência
 
 | Código | Fonte no repositório | O que a inspeção permite afirmar |

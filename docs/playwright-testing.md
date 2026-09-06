@@ -1,19 +1,21 @@
 # Playwright testing
 
-Playwright covers the disconnected desktop state that the browser preview can
-actually exercise. It does not inject fake project/session state into the
-existing terminal grid or add production hooks so a browser test can pretend
-the daemon domain API is implemented.
+Playwright covers the disconnected desktop and local canvas that the browser
+preview can exercise. Notes, drafts and layout remain available without the
+daemon. It does not inject fake project/session state or add production hooks
+to pretend the daemon domain API is implemented.
 
 ## What runs in CI
 
-`apps/desktop/e2e/empty-shell.spec.ts` starts the Vite production preview and
-drives the current `AppShell` with role locators:
+The specs start the Vite production preview and drive `AppShell` with role
+locators:
 
-- New Session stays disabled until a project exists
-- Add Project explains that the local daemon is required
-- the empty workspace copy is honest
-- the skip link is first in tab order
+- `empty-shell.spec.ts` checks disabled project management, offline notice,
+  sidebar navigation and the first keyboard skip link.
+- `canvas-interactions.spec.ts` checks group selection/movement/duplication/
+  removal, note persistence after reload, metadata search preserving draft
+  card DOM identity, shortcuts inside note editors, Gemini draft creation
+  and compact canvas geometry at 360 and 640 px.
 
 Those tests wait on Playwright's auto-waiting assertions. They do not use
 `page.waitForTimeout`.
@@ -32,7 +34,8 @@ test a path users never run.
 The runtime portions are implemented in `crates/e2e` against the production
 `SessionWorktreeSaga<SessionManager>`, Git, SQLite, and `Daemon::bind`. Dropping
 and recreating PTY subscriptions verifies replay semantics, but it is not
-described as a real window test. There are no placeholder or unconditionally
+described as a real window test. Browser tests use drafts and do not prove
+PTY continuity, Gemini authentication or native packaging. There are no placeholder or unconditionally
 skipped Playwright cases: every test listed by Playwright executes.
 
 Add a separate Tauri-driver suite after the daemon domain API can populate the
