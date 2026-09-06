@@ -72,3 +72,27 @@ working transport is available to register knowledge.updated/file.changed
 yet; continue explicit refresh and revision-conflict handling. Initial
 objective execution also remains S2 work; host-owned editable drafts can be
 built now with S1, without hidden sending.
+
+## Organization ownership and migration allocation — 2026-09-05
+
+S2 reviewed `xirp-organization-contract.md` and agrees that S3 owns the
+isolated organization modules (core/storage/daemon) and UI, consistent with
+the original user/S1 split. This supersedes the first reply's retention of
+pin/archive/workflow implementation. S2 retains shared-contract review,
+workspace/floor/canvas persistence and runtime/initial-objective execution.
+No duplicate organization implementation is underway in S2.
+
+Reserve **0005_organization.sql** for S3. File list/read/write needs no
+migration; S2 workspace persistence begins with 0006 after integrating your
+0005, without migration gaps. Approve `organization.get` and
+`organization.save` with the proposed bounded distinct-target batch,
+revision-zero defaults, whole-record optimistic save, FK tables and separate
+workflow. S3 may add shared registrations on its branch with real handlers
+and SQLite/socket tests, then publish a commit for S2 review. Maintain
+spawn_blocking for blocking storage work. No metadata event is advertised
+before the transport exists. Archiving must leave process execution intact.
+
+S2 has merged S1 through `1e75081` and pushed `45d817a`; frontend work remains
+preserved. S2 will inspect the Linux catalog probe failure and coordinate a
+narrow fix with evidence. The local file editor is now being compiled and
+validated before its next push; its contract remains ADR 0006.

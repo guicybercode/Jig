@@ -96,3 +96,64 @@ remain unverified; CI state must be checked rather than inferred from push.
   initial-objective contracts; mount with S1; verify additional agent features
   only against trustworthy native sources. Portal/MCP remain explicit separate
   dependencies; no connection is simulated.
+
+
+## Canvas integration and revision provenance checkpoint
+
+Published `cfc79ba` merges S1 canvas through `6f6af26`, preserving both owners'
+coordination notes. The merged frontend check passed TypeScript, all 137 tests
+and production build without the earlier NODE_OPTIONS workaround; all 39 daemon
+tests passed. S1 subsequently began the per-terminal prompt composer and will
+mount the library while retaining hidden editor drafts.
+
+Published `b7b0b4e` adds sourceRevision to KnowledgeInsertion. SourceId/revision
+identify the editor's base snapshot; title/body are the actual draft and can
+include unsaved edits. Both provenance fields are null for a never-saved draft.
+Fourteen library tests, typecheck and targeted ESLint passed. Insertion remains
+explicit draft composition; S1 owns delivery through its terminal input queue.
+
+For b7b0b4e, macOS Quality and Packaging passed. Linux Quality failed in the
+existing adapter catalog test `detect_and_set_enabled_do_not_require_real_clis`
+with a version-probe spawn failure; frontend, Playwright and clippy passed first.
+The runtime owner received the exact log and is investigating. Linux acceptance
+is not complete: https://github.com/guicybercode/Jig/actions/runs/34002926329
+
+The concrete next organization contract is
+[xirp-organization-contract.md](xirp-organization-contract.md). S1 supports S3's
+bounded modules; S2 has now delegated their implementation and allocated
+0005_organization.sql. S3 owns those modules, with S2 retaining runtime and
+initial-objective execution. Implementation continues toward the original
+objective.
+
+
+## Rule/skill discovery increment
+
+Backend and typed IPC published as `4a367d0`. Approved knowledge.discover/read
+inventory known root/global/admin rule and skill locations. They accept registered
+project IDs and opaque expiring selectors, never caller paths. Reads revalidate
+file/directory identity and nanosecond mtime/ctime, stay <=64 KiB and never execute
+content. Skill-directory links bind the captured target. See the precise bounds,
+source policy and remaining nested-scope gaps in
+[xirp-discovery-contract.md](xirp-discovery-contract.md).
+
+The isolated KnowledgeSourceInspector consumes discoverKnowledge/readKnowledge
+from the existing IpcClient. Props are client, optional currentProject and
+connectionKey. S1 should pass daemon instance/reconnect generation. Lists show
+path/provider/scope/precedence, linked origin, availability and incomplete-scan
+issues. Source previews are plain text. Correlation and full source-descriptor
+checks prevent displaying another source's content; request epochs discard stale
+responses. It neither edits sources nor sends terminal input.
+
+Verification on macOS: full core/daemon 146 tests passed; a subsequent independent
+QA review found an enumeration-budget edge case that discarded already collected
+candidates. It was fixed with a real-directory regression; the final 21 knowledge
+daemon tests passed, including both socket tests. Final core/daemon all-target
+clippy and formatting passed. Full frontend check passed TypeScript, 162 tests
+and Vite build. Targeted inspector/IPC/library 43 tests and ESLint passed.
+
+Chromium screenshots use an isolated mock fixture at 1100px and 375px, not a claim
+of canvas integration: [desktop](artifacts/xirp/knowledge-inspector-desktop.png),
+[narrow preview with keyboard focus](artifacts/xirp/knowledge-inspector-narrow.png).
+Both had no horizontal viewport overflow. Temporary preview files/server removed.
+S1 mounting, real desktop smoke and this new increment's Linux/macOS CI remain
+separate integration evidence.
