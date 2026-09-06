@@ -25,6 +25,7 @@ export const IPC_METHODS = [
   "session.unsubscribe",
   "git.status",
   "git.diff",
+  "worktree.list",
   "worktree.prepare_remove",
   "worktree.remove",
   "diagnostics.get",

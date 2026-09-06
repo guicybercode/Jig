@@ -10,11 +10,14 @@ The full user request remains open. Source/acceptance inventory:
 
 ## Coordination and ownership
 
-S2 approved the first knowledge contract and additive shared registrations in
-[xirp-coordination-reply.md](xirp-coordination-reply.md), reserving migration
-`0004_knowledge_documents.sql`. S2 retains organization/workflow, runtime,
-worktrees, file service and conversation capabilities. S1 retains canvas and
-composer integration; the request is in [xirp-integration-request.md](xirp-integration-request.md).
+S2 approved the knowledge, discovery and organization contracts and additive
+shared registrations in [xirp-coordination-reply.md](xirp-coordination-reply.md),
+reserving migrations `0004_knowledge_documents.sql` and `0005_organization.sql`
+for S3. The later organization acknowledgment delegates those modules to S3
+and supersedes S2's initial retention of pin/archive/workflow implementation.
+S2 retains shared-contract review, runtime, worktrees, file service and
+conversation capabilities. S1 retains canvas and composer integration; the
+request is in [xirp-integration-request.md](xirp-integration-request.md).
 
 The active daemon dispatch is `server.rs`. Knowledge handlers reuse its
 existing storage connection and generic request path, with no session/process
@@ -49,7 +52,7 @@ case folding; Unicode text is preserved but non-ASCII case folding is not
 claimed. Pagination is per-request consistent, not a multi-request snapshot;
 refresh observes inserts/edits made during browsing.
 
-## Verification executed on macOS
+## First-increment verification executed on macOS
 
 Use `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0`
 for the Rust commands below; debug information was reduced because the host
@@ -84,7 +87,7 @@ Draft [PR 45](https://github.com/guicybercode/Jig/pull/45) targets the canvas
 branch to run Linux/macOS CI. Actual Tauri/canvas consumption and full parity
 remain unverified; CI state must be checked rather than inferred from push.
 
-## Commits / next integration
+## First-increment commits and integration checkpoint
 
 - `569449f`: source inventory and integration proposal; pushed.
 - `2f3b7c8`: persisted knowledge contract/SQLite/daemon/typed IPC; pushed.
@@ -92,10 +95,10 @@ remain unverified; CI state must be checked rather than inferred from push.
   `{client,currentProject,onInsert,insertDisabledReason}`; insertion receives
   `{sourceId,kind,title,body}` and must append to an editable composer draft.
   Keep panel mounted if unsaved editor drafts must survive closing its surface.
-- Next: bounded rules/skills discovery; consume S2 pin/archive/workflow and
-  initial-objective contracts; mount with S1; verify additional agent features
-  only against trustworthy native sources. Portal/MCP remain explicit separate
-  dependencies; no connection is simulated.
+- Discovery and organization subsequently advanced as recorded below.
+  Initial-objective delivery remains an S2 runtime dependency. Canvas acceptance
+  and additional agent features require their own integration evidence.
+  Portal/MCP remain separate dependencies; no connection is simulated.
 
 
 ## Canvas integration and revision provenance checkpoint
@@ -197,3 +200,24 @@ Native initial-objective/options/continuity evidence is recorded in
 [xirp-native-capability-evidence.md](xirp-native-capability-evidence.md) and sent
 to S2. Installed flags do not prove successful resume/fork; actual adapter/start
 wiring and trustworthy conversation IDs remain required.
+
+## Canvas reconciliation checkpoint — 2026-09-05
+
+Reconciled S1 through `fd7f8d5` (including real library/composer mounting in
+`1150de6`), retaining source revisions, discovery, organization migration0005,
+worktree.list and native browser/runtime changes. The three catalogs match
+36 method names. No unresolved merge markers remain.
+
+Combined macOS validation: frontend293 tests, TypeScript/build and12 Chromium
+E2E pass. Rust core/agents/daemon tests passed through their complete binaries;
+storage45 tests passed separately, and all-target Clippy for core/storage/
+agents/session/daemon plus formatting passed. The expanded session PTY suite
+had one failure: `dropping_the_manager_cleans_a_live_process_group`; its exact
+rerun passed, but the failed run left a live test shell. Runtime/process-tree
+code was unchanged by this merge. A cache-publication race is under read-only
+review and was reported to S2; this checkpoint does not claim a clean full
+backend suite or native/Linux acceptance. No test assertion was weakened.
+
+Canvas library insertion now has real host consumption as an explicit editable
+text snapshot; it does not implicitly send/start or retain a live source link.
+Discovery inspector and organization mounting/filtering remain S1 follow-ups.

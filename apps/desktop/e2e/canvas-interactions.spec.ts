@@ -172,6 +172,86 @@ test("creates and finds a Gemini draft in a compact window", async ({ page }, te
   await expect(gemini).toHaveCount(1);
 });
 
+test("keeps separate composer drafts across terminal switches, Escape and reload while offline", async ({ page }, testInfo) => {
+  const first = canvasCard(page, "Terminal 1", "terminal");
+  const second = canvasCard(page, "Terminal 2", "terminal");
+  const note = canvasCard(page, "Notes", "note");
+  await note.getByRole("textbox").fill("Verify Linux and macOS before release.");
+  await first.getByRole("button", { name: "Open Prompt Composer for Terminal 1" }).click();
+  const editor = page.getByRole("textbox", { name: "Prompt for Terminal 1", exact: true });
+  await expect(editor).toBeFocused();
+  await editor.fill("Review the changes.");
+  await page.getByText("Insert context", { exact: false }).click();
+  await page.getByRole("button", { name: "Insert context from Notes", exact: true }).click();
+  const draft = "Review the changes.\n\nContext snapshot: Notes\nVerify Linux and macOS before release.\n";
+  await expect(editor).toHaveValue(draft);
+  await expect(page.getByRole("button", { name: "Send prompt", exact: true })).toBeDisabled();
+  await editor.press("Escape");
+  await expect(editor).toHaveCount(0);
+
+  await second.getByRole("button", { name: "Open Prompt Composer for Terminal 2" }).click();
+  const secondEditor = page.getByRole("textbox", { name: "Prompt for Terminal 2", exact: true });
+  await expect(secondEditor).toHaveValue("");
+  await secondEditor.fill("A different investigation.");
+  await secondEditor.press("Escape");
+  await page.reload();
+
+  await first.getByRole("button", { name: "Open Prompt Composer for Terminal 1" }).click();
+  await expect(editor).toHaveValue(draft);
+  await page.screenshot({ path: testInfo.outputPath("canvas-prompt-composer-desktop.png") });
+  await editor.press("Escape");
+  await second.getByRole("button", { name: "Open Prompt Composer for Terminal 2" }).click();
+  await expect(secondEditor).toHaveValue("A different investigation.");
+  await expect(page.getByRole("article")).toHaveCount(3);
+});
+
+test("keeps the compact composer visible and text-editing shortcuts inside its draft", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 640, height: 800 });
+  await canvasCard(page, "Terminal 1", "terminal").getByRole("button", { name: "Open Prompt Composer for Terminal 1" }).click();
+  const editor = page.getByRole("textbox", { name: "Prompt for Terminal 1", exact: true });
+  await editor.fill("Replace this prompt");
+  await editor.press("ControlOrMeta+a");
+  await editor.press("Backspace");
+  await expect(editor).toHaveValue("");
+  await expect(page.getByRole("article")).toHaveCount(3);
+  await editor.fill("First line");
+  await editor.press("Shift+Enter");
+  await editor.pressSequentially("Second line");
+  await expect(editor).toHaveValue("First line\nSecond line");
+  await expect(editor).toBeInViewport({ ratio: 1 });
+  await expect(page.getByRole("button", { name: "Close Prompt Composer", exact: true })).toBeInViewport({ ratio: 1 });
+  await page.screenshot({ path: testInfo.outputPath("canvas-prompt-composer-compact.png") });
+  await editor.press("ControlOrMeta+Shift+p");
+  await expect(editor).toHaveCount(0);
+  await page.getByRole("button", { name: "Toggle Prompt Composer", exact: true }).click();
+  await expect(editor).toHaveValue("First line\nSecond line");
+});
+
+test("uses the local knowledge editor as an explicit draft source while offline", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 640, height: 800 });
+  await canvasCard(page, "Terminal 1", "terminal").getByRole("button", { name: "Open Prompt Composer for Terminal 1" }).click();
+  await page.getByRole("textbox", { name: "Prompt for Terminal 1", exact: true }).fill("Start with this draft.");
+  await page.getByRole("button", { name: "Close Prompt Composer", exact: true }).click();
+  await page.getByRole("button", { name: "Open prompts and context", exact: true }).click();
+  const library = page.getByRole("region", { name: "Knowledge library", exact: true });
+  await expect(library).toBeVisible();
+  await library.getByRole("textbox", { name: "Title", exact: true }).fill("Review checklist");
+  await library.getByRole("textbox", { name: "Content", exact: true }).fill("Inspect the Linux and macOS acceptance evidence.");
+  await library.getByRole("button", { name: "Close knowledge library", exact: true }).click();
+  await page.getByRole("button", { name: "Open prompts and context", exact: true }).click();
+  await expect(library.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Review checklist");
+  await library.getByRole("button", { name: "Insert into draft", exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath("canvas-knowledge-compact.png") });
+  await library.getByRole("button", { name: "Insert into draft", exact: true }).click();
+  const editor = page.getByRole("textbox", { name: "Prompt for Terminal 1", exact: true });
+  const expected = "Start with this draft.\n\nKnowledge snapshot: Review checklist\nInspect the Linux and macOS acceptance evidence.\n";
+  await expect(editor).toHaveValue(expected);
+  await expect(page.getByRole("button", { name: "Send prompt", exact: true })).toBeDisabled();
+  await page.reload();
+  await canvasCard(page, "Terminal 1", "terminal").getByRole("button", { name: "Open Prompt Composer for Terminal 1" }).click();
+  await expect(editor).toHaveValue(expected);
+});
+
 /** Resolves a canvas card through its user-facing accessible name. */
 function canvasCard(page: Page, title: string, kind: "terminal" | "note") {
   return page.getByRole("article", { name: `${title}, ${kind} canvas item`, exact: true });

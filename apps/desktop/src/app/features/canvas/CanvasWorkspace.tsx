@@ -8,6 +8,8 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import type { Ref } from "react";
+import type { IpcClient } from "../../../ipc/client";
 
 import type {
   AgentRecord,
@@ -20,6 +22,11 @@ import type {
 } from "../../../ipc/types";
 import { Icon } from "../../components/Icon";
 import { StatusBadge } from "../../components/StatusBadge";
+import { BrowserSurface } from "../browser/BrowserSurface";
+import {
+  defaultBrowserRuntime,
+  type BrowserRuntime,
+} from "../browser/browser-runtime";
 import {
   createCanvasNode,
   createInitialCanvasDocument,
@@ -27,12 +34,20 @@ import {
   createTerminalCanvasNode,
   duplicateCanvasSelection,
   getCanvasNodeSize,
+  normalizeBrowserUrl,
+  type BrowserCanvasNode,
   type CanvasTerminalConfiguration,
   type CanvasNode,
   type NoteCanvasNode,
   type TerminalCanvasNode,
 } from "./canvas-state";
+import {
+  appendBrowserUrlToNote,
+  browserUrlForTerminal,
+} from "./browser-handoff";
 import { CanvasConnections } from "./CanvasConnections";
+import { CanvasKnowledgePanel } from "./CanvasKnowledgePanel";
+import type { KnowledgeInsertion } from "../knowledge/knowledge-types";
 import { CanvasElementSearch } from "./CanvasElementSearch";
 import {
   CANVAS_ORIGIN_X,
@@ -41,11 +56,16 @@ import {
   toStagePoint,
 } from "./canvas-geometry";
 import { NewCanvasTerminalDialog } from "./NewCanvasTerminalDialog";
+import { PromptComposer } from "./PromptComposer";
+import type { PromptContextItem, PromptTerminalKey } from "./PromptComposer";
+import { encodePromptInput, encodePromptTerminalKey, getPromptInputError } from "./prompt-input";
 import { useCanvasState } from "./useCanvasState";
 import {
   LiveTerminal,
+  type LiveTerminalInputHandle,
   type LiveTerminalTransport,
 } from "../terminal/LiveTerminal";
+import type { TerminalInputModes } from "../terminal/terminal-runtime";
 import { errorData, isLiveStatus } from "../../utils";
 
 export interface CanvasSessionFocusRequest {
@@ -76,10 +96,14 @@ interface CanvasWorkspaceProps extends LiveTerminalTransport {
   readonly onRemoveWorktree: (worktreeId: string) => void;
   readonly onGitStatus: (sessionId: string) => void;
   readonly onOpenPath: (path: string) => Promise<void>;
+  readonly browserRuntime?: BrowserRuntime;
+  readonly knowledgeClient?: Pick<IpcClient, "listKnowledge" | "saveKnowledge" | "deleteKnowledge">;
+  readonly knowledgeOpenRevision?: number;
 }
 
 const ZOOM_STEP = 0.1;
 const COMPACT_TERMINAL_GUTTER_PX = 48;
+const SCROLL_SETTLE_DELAY_MS = 160;
 
 /** Spatial terminal and notes workspace inspired by the supplied references. */
 export function CanvasWorkspace({
@@ -103,6 +127,9 @@ export function CanvasWorkspace({
   onRemoveWorktree,
   onGitStatus,
   onOpenPath,
+  browserRuntime = defaultBrowserRuntime,
+  knowledgeClient,
+  knowledgeOpenRevision = 0,
   subscribeTerminal,
   writeTerminal,
   resizeTerminal,
@@ -115,6 +142,10 @@ export function CanvasWorkspace({
   const handledFocusRequestRef = useRef<CanvasSessionFocusRequest | null>(null);
   const focusSelectionRef = useRef(false);
   const layersTriggerRef = useRef<HTMLButtonElement>(null);
+  const terminalInputsRef = useRef(new Map<string, LiveTerminalInputHandle>());
+  const pendingComposerInputRef = useRef(new Set<string>());
+  const canvasComposingRef = useRef(false);
+  const handledKnowledgeRequestRef = useRef(0);
   const panRef = useRef<{
     readonly pointerId: number;
     readonly clientX: number;
@@ -122,7 +153,16 @@ export function CanvasWorkspace({
     readonly scrollLeft: number;
     readonly scrollTop: number;
   } | null>(null);
+  const scrollSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const [layersOpen, setLayersOpen] = useState(false);
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [knowledgeOpen, setKnowledgeOpen] = useState(false);
+  const [knowledgeVisited, setKnowledgeVisited] = useState(false);
+  const [pendingComposerNodes, setPendingComposerNodes] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [terminalDialogOpen, setTerminalDialogOpen] = useState(false);
   const [pendingTerminals, setPendingTerminals] = useState<ReadonlySet<string>>(
     () => new Set(),
@@ -130,6 +170,11 @@ export function CanvasWorkspace({
   const [terminalErrors, setTerminalErrors] = useState<
     Readonly<Record<string, string>>
   >({});
+  const [canvasInteracting, setCanvasInteracting] = useState(false);
+  const [canvasScrolling, setCanvasScrolling] = useState(false);
+  const [browserHandoffStatus, setBrowserHandoffStatus] = useState<
+    string | null
+  >(null);
   const terminalSessions = useMemo(
     () => new Map(sessions.map((session) => [session.id, session])),
     [sessions],
@@ -198,6 +243,25 @@ export function CanvasWorkspace({
   const selectedNode = visibleNodes.find(
     (node) => node.id === state.selectedNodeId,
   );
+  const composerNode = composerOpen && selectedNode?.kind === "terminal"
+    ? selectedNode
+    : undefined;
+  const composerSession = composerNode?.sessionId
+    ? terminalSessions.get(composerNode.sessionId)
+    : undefined;
+  const composerDisabledReason = composerNode
+    ? !isConnected
+      ? "Reconnect to the daemon to send input. You can keep drafting."
+      : !composerSession
+        ? "Attach a running session to send input. You can keep drafting."
+        : !isLiveStatus(composerSession.status)
+          ? "This terminal is stopped. Start it to send input."
+          : pendingComposerNodes.has(composerNode.id)
+            ? "Input is being delivered to this terminal. You can keep drafting."
+            : composerNode.promptDraft?.trim()
+              ? getPromptInputError(composerNode.promptDraft)
+              : undefined
+    : undefined;
   const selectedNodeIds = state.selectedNodeIds.filter((id) =>
     visibleNodeIds.has(id),
   );
@@ -213,6 +277,29 @@ export function CanvasWorkspace({
         return otherNode ? [{ connection, otherNode }] : [];
       })
     : [];
+  const composerContextItems: readonly PromptContextItem[] = composerNode
+    ? selectedConnections.flatMap(({ otherNode }) => {
+        if (otherNode.kind === "note") {
+          return [{ id: otherNode.id, title: otherNode.title, text: otherNode.text }];
+        }
+        if (otherNode.kind === "browser") {
+          const url = normalizeBrowserUrl(otherNode.url);
+          return url ? [{ id: otherNode.id, title: `${otherNode.title} URL`, text: url }] : [];
+        }
+        return [];
+      })
+    : [];
+  const registerTerminalInput = useCallback((nodeId: string, handle: LiveTerminalInputHandle | null) => {
+    if (handle) terminalInputsRef.current.set(nodeId, handle);
+    else terminalInputsRef.current.delete(nodeId);
+  }, []);
+  useLayoutEffect(() => {
+    if (!knowledgeClient || knowledgeOpenRevision <= handledKnowledgeRequestRef.current) return;
+    handledKnowledgeRequestRef.current = knowledgeOpenRevision;
+    setKnowledgeVisited(true);
+    setKnowledgeOpen(true);
+    setLayersOpen(false);
+  }, [knowledgeClient, knowledgeOpenRevision]);
   const sessionCanvasTopologyKey = useMemo(
     () =>
       JSON.stringify({
@@ -223,6 +310,16 @@ export function CanvasWorkspace({
       }),
     [state.hiddenSessionIds, state.nodes],
   );
+  const markCanvasScrolling = useCallback(() => {
+    setCanvasScrolling(true);
+    if (scrollSettleTimerRef.current !== null) {
+      globalThis.clearTimeout(scrollSettleTimerRef.current);
+    }
+    scrollSettleTimerRef.current = globalThis.setTimeout(() => {
+      scrollSettleTimerRef.current = null;
+      setCanvasScrolling(false);
+    }, SCROLL_SETTLE_DELAY_MS);
+  }, []);
   const focusNode = useCallback(
     (node: CanvasNode) => {
       const viewport = viewportRef.current;
@@ -237,6 +334,7 @@ export function CanvasWorkspace({
       }
 
       const size = getCanvasNodeSize(node);
+      markCanvasScrolling();
       viewport.scrollTo({
         left: Math.max(
           0,
@@ -251,7 +349,7 @@ export function CanvasWorkspace({
         behavior: canvasScrollBehavior(),
       });
     },
-    [dispatch, onSelectSession, state.zoom],
+    [dispatch, markCanvasScrolling, onSelectSession, state.zoom],
   );
 
   useLayoutEffect(() => {
@@ -355,6 +453,16 @@ export function CanvasWorkspace({
     visibleNodes,
   ]);
 
+  useLayoutEffect(
+    () => () => {
+      if (scrollSettleTimerRef.current !== null) {
+        globalThis.clearTimeout(scrollSettleTimerRef.current);
+        scrollSettleTimerRef.current = null;
+      }
+    },
+    [],
+  );
+
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport || viewportInitializedRef.current) {
@@ -397,6 +505,16 @@ export function CanvasWorkspace({
     });
   }
 
+  function addBrowser() {
+    const node = createCanvasNode("browser", nextNodePosition());
+    setBrowserHandoffStatus(null);
+    onSelectSession(null);
+    dispatch({
+      type: "node/add",
+      node: project ? { ...node, projectId: project.id } : node,
+    });
+  }
+
   function addTerminal(configuration: CanvasTerminalConfiguration) {
     const terminal = createTerminalCanvasNode(
       nextNodePosition(),
@@ -413,6 +531,45 @@ export function CanvasWorkspace({
     setTerminalDialogOpen(false);
     if (project && isConnected) {
       void launchTerminal(node);
+    }
+  }
+
+  async function handoffBrowserUrl(
+    browser: BrowserCanvasNode,
+    target: NoteCanvasNode | TerminalCanvasNode,
+  ) {
+    if (target.kind === "note") {
+      const text = appendBrowserUrlToNote(target.text, browser.url);
+      if (text === target.text) {
+        setBrowserHandoffStatus("Enter a valid browser address first.");
+        return;
+      }
+      dispatch({ type: "note/update", nodeId: target.id, text });
+      setBrowserHandoffStatus(`Added the browser URL to ${target.title}.`);
+      return;
+    }
+
+    const session = terminalSessions.get(target.sessionId ?? "");
+    const payload = browserUrlForTerminal(browser.url);
+    if (!session || !isLiveStatus(session.status)) {
+      setBrowserHandoffStatus(
+        `Start ${target.title} before inserting the browser URL.`,
+      );
+      return;
+    }
+    if (!payload) {
+      setBrowserHandoffStatus("Enter a valid browser address first.");
+      return;
+    }
+    try {
+      await writeTerminal(session.id, new TextEncoder().encode(payload));
+      setBrowserHandoffStatus(
+        `Inserted a shell-safe URL into ${target.title}. Review it before pressing Enter.`,
+      );
+    } catch {
+      setBrowserHandoffStatus(
+        `The browser URL could not be inserted into ${target.title}.`,
+      );
     }
   }
 
@@ -444,7 +601,7 @@ export function CanvasWorkspace({
         projectId: project.id,
         name: node.title,
         agentId: agent.id,
-        isolation: "current",
+        isolation: node.isolation ?? "current",
         relativeDirectory: relativeWorkingDirectory(project, node.workingDirectory),
       });
       dispatch({
@@ -469,7 +626,67 @@ export function CanvasWorkspace({
     }
   }
 
+  async function deliverComposerInput(
+    node: TerminalCanvasNode,
+    encode: (modes: TerminalInputModes) => Uint8Array,
+  ) {
+    const session = terminalSessions.get(node.sessionId ?? "");
+    const input = terminalInputsRef.current.get(node.id);
+    if (!isConnected || !session || !isLiveStatus(session.status) || !input) {
+      throw new Error("This terminal is not available for input.");
+    }
+    if (pendingComposerInputRef.current.has(node.id)) {
+      throw new Error("Input is already being delivered to this terminal.");
+    }
+    pendingComposerInputRef.current.add(node.id);
+    setPendingComposerNodes(new Set(pendingComposerInputRef.current));
+    try {
+      await input.writeInput(encode);
+    } finally {
+      pendingComposerInputRef.current.delete(node.id);
+      setPendingComposerNodes(new Set(pendingComposerInputRef.current));
+    }
+  }
+
+  async function sendComposerPrompt(node: TerminalCanvasNode, text: string) {
+    const revision = node.promptDraftRevision ?? 0;
+    await deliverComposerInput(node, (modes) => encodePromptInput(text, modes));
+    dispatch({ type: "terminal/draft_sent", nodeId: node.id, text, revision });
+  }
+
+  function sendComposerKey(node: TerminalCanvasNode, key: PromptTerminalKey) {
+    return deliverComposerInput(node, (modes) => encodePromptTerminalKey(key, modes));
+  }
+
+  function toggleComposer(node: TerminalCanvasNode) {
+    selectNode(node);
+    setLayersOpen(false);
+    setKnowledgeOpen(false);
+    setComposerOpen((open) => !(open && selectedNode?.id === node.id));
+  }
+
+  function toggleKnowledge() {
+    if (!knowledgeClient) return;
+    setKnowledgeVisited(true);
+    setKnowledgeOpen((open) => !open);
+    setLayersOpen(false);
+  }
+
+  function insertKnowledge(content: KnowledgeInsertion) {
+    if (selectedNode?.kind !== "terminal") {
+      throw new Error("Select a terminal before inserting this snapshot.");
+    }
+    const current = selectedNode.promptDraft ?? "";
+    const separator = current.endsWith("\n\n") || !current ? "" : current.endsWith("\n") ? "\n" : "\n\n";
+    const title = content.title || (content.kind === "prompt" ? "Untitled prompt" : "Untitled context");
+    const text = `${current}${separator}Knowledge snapshot: ${title}\n${content.body}\n`;
+    dispatch({ type: "terminal/draft", nodeId: selectedNode.id, text });
+    setComposerOpen(true);
+    setKnowledgeOpen(false);
+  }
+
   function setZoom(zoom: number) {
+    markCanvasScrolling();
     dispatch({ type: "zoom/set", zoom: Number(zoom.toFixed(2)) });
   }
 
@@ -549,6 +766,7 @@ export function CanvasWorkspace({
       ),
     );
 
+    markCanvasScrolling();
     setZoom(nextZoom);
     viewport.scrollTo({
       left: Math.max(
@@ -588,7 +806,7 @@ export function CanvasWorkspace({
     dispatch({
       type: "document/hydrate",
       document: {
-        version: 1,
+        version: 2,
         nodes: state.nodes.filter((node) => !projectNodeIds.has(node.id)),
         connections: state.connections.filter(
           (connection) =>
@@ -609,6 +827,28 @@ export function CanvasWorkspace({
       className="canvas-workspace"
       tabIndex={-1}
       aria-labelledby="canvas-workspace-title"
+      onCompositionStartCapture={() => { canvasComposingRef.current = true; }}
+      onCompositionEndCapture={() => { canvasComposingRef.current = false; }}
+      onKeyDownCapture={(event) => {
+        if (
+          event.defaultPrevented || event.repeat || canvasComposingRef.current || event.nativeEvent.isComposing
+          || event.nativeEvent.keyCode === 229 || !event.shiftKey || event.altKey
+          || event.metaKey === event.ctrlKey || event.key.toLowerCase() !== "p"
+        ) return;
+        const target = event.target instanceof Element ? event.target : null;
+        const targetId = target?.closest("[data-canvas-node-id]")?.getAttribute("data-canvas-node-id");
+        const targetNode = visibleNodes.find((node) => node.id === targetId);
+        if (targetNode && targetNode.kind !== "terminal") return;
+        const terminal = targetNode?.kind === "terminal" ? targetNode : selectedNode;
+        if (terminal?.kind !== "terminal") return;
+        if (
+          target?.closest("input, textarea, select, [contenteditable]:not([contenteditable='false']), [role='textbox'], [role='dialog']")
+          && !target?.closest("[data-terminal-root], .prompt-composer")
+        ) return;
+        event.preventDefault();
+        event.stopPropagation();
+        toggleComposer(terminal);
+      }}
       onKeyDown={(event) => {
         if (event.defaultPrevented || isCanvasEditingTarget(event.target)) {
           return;
@@ -631,7 +871,11 @@ export function CanvasWorkspace({
         }
       }}
     >
-      <div className="canvas-context" aria-live="polite">
+      <div
+        className="canvas-context"
+        aria-live="polite"
+        data-browser-obstruction="true"
+      >
         <span className="canvas-context__eyebrow">Workspace</span>
         <h1 id="canvas-workspace-title">
           {project?.name ?? "My Workspace"}
@@ -641,10 +885,18 @@ export function CanvasWorkspace({
           <span aria-hidden="true"> · </span>
           {visibleNodes.filter((node) => node.kind === "terminal").length}{" "}
           terminals
+          <span aria-hidden="true"> · </span>
+          {visibleNodes.filter((node) => node.kind === "browser").length}{" "}
+          browsers
         </span>
       </div>
 
-      <div className="canvas-toolbar" role="toolbar" aria-label="Canvas tools">
+      <div
+        className="canvas-toolbar"
+        role="toolbar"
+        aria-label="Canvas tools"
+        data-browser-obstruction="true"
+      >
         <button
           className="canvas-tool"
           type="button"
@@ -661,6 +913,35 @@ export function CanvasWorkspace({
         >
           <Icon name="note" />
         </button>
+        <button
+          className="canvas-tool"
+          type="button"
+          aria-label="Add browser"
+          onClick={addBrowser}
+        >
+          <Icon name="browser" />
+        </button>
+        <button
+          className="canvas-tool"
+          type="button"
+          aria-label="Toggle Prompt Composer"
+          title="Prompt Composer (⌘/Ctrl+Shift+P)"
+          aria-keyshortcuts="Control+Shift+P Meta+Shift+P"
+          aria-expanded={Boolean(composerNode)}
+          disabled={selectedNode?.kind !== "terminal"}
+          onClick={() => {
+            if (selectedNode?.kind === "terminal") toggleComposer(selectedNode);
+          }}
+        ><Icon name="pencil" /></button>
+        <button
+          className="canvas-tool"
+          type="button"
+          aria-label="Open prompts and context"
+          title="Prompts and context library"
+          aria-expanded={knowledgeOpen}
+          disabled={!knowledgeClient}
+          onClick={toggleKnowledge}
+        ><Icon name="repository" /></button>
         <button
           className={
             visibleConnectionSourceId
@@ -733,16 +1014,24 @@ export function CanvasWorkspace({
         </button>
       </div>
 
-      <p className="canvas-selection-status" role="status">
+      <p
+        className="canvas-selection-status"
+        role="status"
+        data-browser-obstruction="true"
+      >
         {selectedNodeIds.length > 0
           ? `${selectedNodeIds.length} selected · Shift+click to add or remove`
           : "Shift+click to select multiple items"}
       </p>
 
       {visibleConnectionSourceId ? (
-        <div className="canvas-connect-notice" role="status">
+        <div
+          className="canvas-connect-notice"
+          role="status"
+          data-browser-obstruction="true"
+        >
           <Icon name="link" />
-          Choose another terminal or note to finish the connection.
+          Choose another canvas item to finish the connection.
           <button
             type="button"
             onClick={() => dispatch({ type: "connection/cancel" })}
@@ -755,6 +1044,7 @@ export function CanvasWorkspace({
       <div
         ref={viewportRef}
         className="canvas-viewport"
+        data-browser-viewport="true"
         tabIndex={0}
         aria-label="Pannable canvas"
         aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight Control+a Meta+a Control+d Meta+d Control+f Meta+f Delete Backspace"
@@ -766,6 +1056,7 @@ export function CanvasWorkspace({
           const movement = keyboardMovement(event.key, step);
           if (movement) {
             event.preventDefault();
+            markCanvasScrolling();
             if (selectedNodeIds.length > 0) {
               dispatch({
                 type: "nodes/move",
@@ -796,6 +1087,8 @@ export function CanvasWorkspace({
             scrollLeft: event.currentTarget.scrollLeft,
             scrollTop: event.currentTarget.scrollTop,
           };
+          setCanvasInteracting(true);
+          markCanvasScrolling();
           event.currentTarget.setPointerCapture?.(event.pointerId);
         }}
         onPointerMove={(event) => {
@@ -803,6 +1096,7 @@ export function CanvasWorkspace({
           if (!pan || pan.pointerId !== event.pointerId) {
             return;
           }
+          markCanvasScrolling();
           event.currentTarget.scrollLeft =
             pan.scrollLeft - (event.clientX - pan.clientX);
           event.currentTarget.scrollTop =
@@ -811,18 +1105,24 @@ export function CanvasWorkspace({
         onPointerUp={(event) => {
           if (panRef.current?.pointerId === event.pointerId) {
             panRef.current = null;
+            setCanvasInteracting(false);
             event.currentTarget.releasePointerCapture?.(event.pointerId);
           }
         }}
         onPointerCancel={() => {
           panRef.current = null;
+          setCanvasInteracting(false);
         }}
         onWheel={(event) => {
+          if (event.deltaX !== 0 || event.deltaY !== 0) {
+            markCanvasScrolling();
+          }
           if (event.shiftKey && event.deltaX === 0) {
             event.preventDefault();
             event.currentTarget.scrollLeft += event.deltaY;
           }
         }}
+        onScroll={markCanvasScrolling}
       >
         <div
           className="canvas-stage"
@@ -906,14 +1206,20 @@ export function CanvasWorkspace({
                   })
                 }
                 onResize={(size) =>
-                  dispatch({ type: "terminal/resize", nodeId: node.id, size })
+                  dispatch({ type: "node/resize", nodeId: node.id, size })
                 }
+                onManipulationChange={setCanvasInteracting}
                 onNoteChange={(text) =>
                   dispatch({ type: "note/update", nodeId: node.id, text })
                 }
                 onStartTerminal={() =>
                   node.kind === "terminal" && launchTerminal(node, session)
                 }
+                composerOpen={composerNode?.id === node.id}
+                onToggleComposer={() => {
+                  if (node.kind === "terminal") toggleComposer(node);
+                }}
+                onTerminalInput={registerTerminalInput}
                 onStartSession={onStartSession}
                 onRestartSession={onRestartSession}
                 onRenameSession={onRenameSession}
@@ -936,6 +1242,38 @@ export function CanvasWorkspace({
                   writeTerminal,
                   resizeTerminal,
                 }}
+                browserRuntime={browserRuntime}
+                browserActive={state.selectedNodeId === node.id}
+                browserVisible={
+                  state.zoom === 1 &&
+                  !terminalDialogOpen &&
+                  !layersOpen &&
+                  !composerNode &&
+                  !knowledgeOpen &&
+                  !canvasInteracting &&
+                  !canvasScrolling
+                }
+                browserUnavailableReason={
+                  canvasInteracting
+                    ? "The browser is hidden while the canvas item moves."
+                    : canvasScrolling
+                      ? "The browser is hidden while the canvas view moves."
+                    : terminalDialogOpen
+                    ? "The browser is hidden while a dialog covers the canvas."
+                    : layersOpen
+                      ? "The browser is hidden while canvas search is open."
+                    : composerNode
+                      ? "The browser is hidden while Prompt Composer is open."
+                    : knowledgeOpen
+                      ? "The browser is hidden while the knowledge library is open."
+                    : state.zoom !== 1
+                      ? "Use 100% zoom to interact with this page."
+                      : undefined
+                }
+                onBrowserNavigate={(url) => {
+                  setBrowserHandoffStatus(null);
+                  dispatch({ type: "browser/navigate", nodeId: node.id, url });
+                }}
               />
             );
           })}
@@ -953,10 +1291,41 @@ export function CanvasWorkspace({
         />
       ) : null}
 
-      {selectedNode && selectedConnections.length > 0 && !layersOpen ? (
+      {composerNode && !layersOpen && !terminalDialogOpen && !knowledgeOpen ? (
+        <div className="canvas-prompt-composer" data-browser-obstruction="true" data-shortcut-scope="prompt-composer">
+          <PromptComposer
+            nodeId={composerNode.id}
+            title={composerNode.title}
+            value={composerNode.promptDraft ?? ""}
+            onChange={(text) => dispatch({ type: "terminal/draft", nodeId: composerNode.id, text })}
+            onSend={(text) => sendComposerPrompt(composerNode, text)}
+            onTerminalKey={(key) => sendComposerKey(composerNode, key)}
+            onClose={() => setComposerOpen(false)}
+            disabledReason={composerDisabledReason}
+            contextItems={composerContextItems}
+            clearOnSend={false}
+          />
+        </div>
+      ) : null}
+
+      {knowledgeVisited && knowledgeClient ? (
+        <CanvasKnowledgePanel
+          open={knowledgeOpen && !layersOpen && !terminalDialogOpen}
+          client={knowledgeClient}
+          currentProject={project ?? null}
+          projects={projects}
+          targetTitle={selectedNode?.kind === "terminal" ? selectedNode.title : undefined}
+          insertDisabledReason={selectedNode?.kind === "terminal" ? undefined : "Select a terminal to insert content into its draft."}
+          onInsert={insertKnowledge}
+          onClose={() => setKnowledgeOpen(false)}
+        />
+      ) : null}
+
+      {selectedNode && selectedConnections.length > 0 && !layersOpen && !composerNode && !knowledgeOpen ? (
         <section
           className="canvas-connections-panel"
           aria-label={`Connections for ${selectedNode.title}`}
+          data-browser-obstruction="true"
         >
           <header>
             <div>
@@ -966,25 +1335,46 @@ export function CanvasWorkspace({
             <span>{selectedConnections.length}</span>
           </header>
           <ul>
-            {selectedConnections.map(({ connection, otherNode }) => (
-              <li key={connection.id}>
-                <Icon name="link" />
-                <span>{otherNode.title}</span>
-                <button
-                  type="button"
-                  aria-label={`Remove connection to ${otherNode.title}`}
-                  onClick={() =>
-                    dispatch({
-                      type: "connection/delete",
-                      connectionId: connection.id,
-                    })
-                  }
-                >
-                  <Icon name="close" />
-                </button>
-              </li>
-            ))}
+            {selectedConnections.map(({ connection, otherNode }) => {
+              const handoff = getBrowserHandoff(selectedNode, otherNode);
+              return (
+                <li key={connection.id}>
+                  <Icon name="link" />
+                  <span>{otherNode.title}</span>
+                  {handoff ? (
+                    <button
+                      className="canvas-connections-panel__handoff"
+                      type="button"
+                      aria-label={browserHandoffLabel(handoff.target)}
+                      title={browserHandoffLabel(handoff.target)}
+                      onClick={() =>
+                        void handoffBrowserUrl(handoff.browser, handoff.target)
+                      }
+                    >
+                      <Icon name="copy" />
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    aria-label={`Remove connection to ${otherNode.title}`}
+                    onClick={() =>
+                      dispatch({
+                        type: "connection/delete",
+                        connectionId: connection.id,
+                      })
+                    }
+                  >
+                    <Icon name="close" />
+                  </button>
+                </li>
+              );
+            })}
           </ul>
+          {browserHandoffStatus ? (
+            <p className="canvas-connections-panel__status" role="status">
+              {browserHandoffStatus}
+            </p>
+          ) : null}
         </section>
       ) : null}
 
@@ -992,6 +1382,7 @@ export function CanvasWorkspace({
         className="canvas-view-controls"
         role="group"
         aria-label="Canvas view controls"
+        data-browser-obstruction="true"
       >
         <button
           ref={layersTriggerRef}
@@ -1016,6 +1407,7 @@ export function CanvasWorkspace({
         className="canvas-zoom"
         role="group"
         aria-label="Canvas zoom controls"
+        data-browser-obstruction="true"
       >
         <button
           type="button"
@@ -1036,7 +1428,11 @@ export function CanvasWorkspace({
         </button>
       </div>
 
-      <p className="canvas-save-status" role="status">
+      <p
+        className="canvas-save-status"
+        role="status"
+        data-browser-obstruction="true"
+      >
         {persistenceAvailable
           ? "Canvas saved locally"
           : "Canvas persistence unavailable"}
@@ -1076,8 +1472,12 @@ interface CanvasNodeCardProps {
     readonly width: number;
     readonly height: number;
   }) => void;
+  readonly onManipulationChange: (interacting: boolean) => void;
   readonly onNoteChange: (text: string) => void;
   readonly onStartTerminal: () => void;
+  readonly composerOpen: boolean;
+  readonly onToggleComposer: () => void;
+  readonly onTerminalInput: (nodeId: string, handle: LiveTerminalInputHandle | null) => void;
   readonly onStartSession: (sessionId: string) => Promise<Session>;
   readonly onRestartSession: (sessionId: string) => Promise<Session>;
   readonly onRenameSession: (sessionId: string) => void;
@@ -1090,6 +1490,11 @@ interface CanvasNodeCardProps {
   readonly terminalPending: boolean;
   readonly terminalError?: string;
   readonly terminalTransport: LiveTerminalTransport;
+  readonly browserRuntime: BrowserRuntime;
+  readonly browserActive: boolean;
+  readonly browserVisible: boolean;
+  readonly browserUnavailableReason?: string;
+  readonly onBrowserNavigate: (url: string) => void;
 }
 
 function CanvasNodeCard({
@@ -1109,8 +1514,12 @@ function CanvasNodeCard({
   onDelete,
   onMove,
   onResize,
+  onManipulationChange,
   onNoteChange,
   onStartTerminal,
+  composerOpen,
+  onToggleComposer,
+  onTerminalInput,
   onStartSession,
   onRestartSession,
   onRenameSession,
@@ -1123,7 +1532,15 @@ function CanvasNodeCard({
   terminalPending,
   terminalError,
   terminalTransport,
+  browserRuntime,
+  browserActive,
+  browserVisible,
+  browserUnavailableReason,
+  onBrowserNavigate,
 }: CanvasNodeCardProps) {
+  const registerInput = useCallback((handle: LiveTerminalInputHandle | null) => {
+    onTerminalInput(node.id, handle);
+  }, [node.id, onTerminalInput]);
   const dragRef = useRef<{
     readonly pointerId: number;
     readonly clientX: number;
@@ -1154,7 +1571,7 @@ function CanvasNodeCard({
       className={classes}
       style={{
         transform: `translate(${toStagePoint(node).x}px, ${toStagePoint(node).y}px)`,
-        ...(node.kind === "terminal"
+        ...(node.kind !== "note"
           ? { width: `${node.width}px`, height: `${node.height}px` }
           : {}),
       }}
@@ -1183,6 +1600,7 @@ function CanvasNodeCard({
         const movement = keyboardMovement(event.key, step);
         if (movement) {
           event.preventDefault();
+          onManipulationChange(true);
           onSelect();
           onMove(movement);
         } else if (event.key === " " && event.shiftKey) {
@@ -1191,6 +1609,19 @@ function CanvasNodeCard({
         } else if (event.key === "Escape" && connectionSource) {
           event.preventDefault();
           onCancelConnection();
+        }
+      }}
+      onKeyUp={(event) => {
+        if (
+          event.currentTarget === event.target &&
+          keyboardMovement(event.key, 1)
+        ) {
+          onManipulationChange(false);
+        }
+      }}
+      onBlur={(event) => {
+        if (event.currentTarget === event.target) {
+          onManipulationChange(false);
         }
       }}
       onPointerDown={(event) => {
@@ -1241,6 +1672,7 @@ function CanvasNodeCard({
             clientX: event.clientX,
             clientY: event.clientY,
           };
+          onManipulationChange(true);
           event.currentTarget.setPointerCapture?.(event.pointerId);
         }}
         onPointerMove={(event) => {
@@ -1261,11 +1693,13 @@ function CanvasNodeCard({
         onPointerUp={(event) => {
           if (dragRef.current?.pointerId === event.pointerId) {
             dragRef.current = null;
+            onManipulationChange(false);
             event.currentTarget.releasePointerCapture?.(event.pointerId);
           }
         }}
         onPointerCancel={() => {
           dragRef.current = null;
+          onManipulationChange(false);
         }}
       >
         <div className="canvas-node__identity">
@@ -1277,7 +1711,7 @@ function CanvasNodeCard({
             </span>
           ) : (
             <span className="canvas-node__kind-icon" aria-hidden="true">
-              <Icon name="note" />
+              <Icon name={node.kind === "browser" ? "browser" : "note"} />
             </span>
           )}
           <strong>{node.title}</strong>
@@ -1288,6 +1722,18 @@ function CanvasNodeCard({
           ) : null}
         </div>
         <div className="canvas-node__actions">
+          {node.kind === "terminal" ? (
+            <button
+              type="button"
+              aria-label={`Open Prompt Composer for ${node.title}`}
+              title="Prompt Composer (⌘/Ctrl+Shift+P)"
+              aria-expanded={composerOpen}
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggleComposer();
+              }}
+            ><Icon name="pencil" /></button>
+          ) : null}
           {selected ? (
             <span className="canvas-node__selected-label">Selected</span>
           ) : null}
@@ -1337,85 +1783,105 @@ function CanvasNodeCard({
         </div>
       </header>
       {node.kind === "terminal" ? (
-        <>
-          <TerminalNodeBody
-            node={node}
-            agent={agent}
-            session={session}
-            onStart={onStartTerminal}
-            pending={terminalPending}
-            error={terminalError}
-            startDisabledReason={terminalStartDisabledReason(
-              session,
-              worktree,
-              isConnected,
-            )}
-            transport={terminalTransport}
-          />
-          {selected ? (
-            <button
-              className="canvas-node__resize-handle"
-              type="button"
-              aria-label={`Resize ${node.title}`}
-              aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
-              title="Drag to resize. Arrow keys resize; hold Alt for 1 px."
-              onKeyDown={(event) => {
-                const step = event.altKey ? 1 : 16;
-                const size = keyboardResize(
-                  event.key,
-                  {
-                    ...node,
-                    width: storedTerminalSize?.width ?? node.width,
-                    height: storedTerminalSize?.height ?? node.height,
-                  },
-                  step,
-                );
-                if (size) {
-                  event.preventDefault();
-                  onResize(size);
-                }
-              }}
-              onPointerDown={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                resizeRef.current = {
-                  pointerId: event.pointerId,
-                  clientX: event.clientX,
-                  clientY: event.clientY,
-                  width: storedTerminalSize?.width ?? node.width,
-                  height: storedTerminalSize?.height ?? node.height,
-                };
-                event.currentTarget.setPointerCapture?.(event.pointerId);
-              }}
-              onPointerMove={(event) => {
-                const resize = resizeRef.current;
-                if (!resize || resize.pointerId !== event.pointerId) {
-                  return;
-                }
-                onResize({
-                  width:
-                    resize.width + (event.clientX - resize.clientX) / zoom,
-                  height:
-                    resize.height + (event.clientY - resize.clientY) / zoom,
-                });
-              }}
-              onPointerUp={(event) => {
-                if (resizeRef.current?.pointerId === event.pointerId) {
-                  resizeRef.current = null;
-                  event.currentTarget.releasePointerCapture?.(event.pointerId);
-                }
-              }}
-              onPointerCancel={() => {
-                resizeRef.current = null;
-              }}
-            >
-              <span aria-hidden="true" />
-            </button>
-          ) : null}
-        </>
-      ) : (
+        <TerminalNodeBody
+          node={node}
+          agent={agent}
+          session={session}
+          onStart={onStartTerminal}
+          pending={terminalPending}
+          error={terminalError}
+          startDisabledReason={terminalStartDisabledReason(
+            session,
+            worktree,
+            isConnected,
+          )}
+          transport={terminalTransport}
+          inputRef={registerInput}
+        />
+      ) : node.kind === "note" ? (
         <NoteNodeBody node={node} onChange={onNoteChange} />
+      ) : (
+        <BrowserSurface
+          nodeId={node.id}
+          url={node.url}
+          accessibleLabel={`Browser surface for ${node.title}`}
+          active={browserActive}
+          visible={browserVisible}
+          unavailableReason={browserUnavailableReason}
+          runtime={browserRuntime}
+          onActivate={onSelect}
+          onNavigate={onBrowserNavigate}
+          onOpenExternal={(url) => browserRuntime.openExternal(url)}
+        />
       )}
+      {node.kind !== "note" && selected ? (
+        <button
+          className="canvas-node__resize-handle"
+          type="button"
+          aria-label={`Resize ${node.title}`}
+          aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
+          title="Drag to resize. Arrow keys resize; hold Alt for 1 px."
+          onKeyDown={(event) => {
+            const step = event.altKey ? 1 : 16;
+            const size = keyboardResize(
+              event.key,
+              {
+                ...node,
+                width: storedTerminalSize?.width ?? node.width,
+                height: storedTerminalSize?.height ?? node.height,
+              },
+              step,
+            );
+            if (size) {
+              event.preventDefault();
+              onManipulationChange(true);
+              onResize(size);
+            }
+          }}
+          onKeyUp={(event) => {
+            if (keyboardResize(event.key, node, 1)) {
+              onManipulationChange(false);
+            }
+          }}
+          onBlur={() => onManipulationChange(false)}
+          onPointerDown={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            resizeRef.current = {
+              pointerId: event.pointerId,
+              clientX: event.clientX,
+              clientY: event.clientY,
+              width: storedTerminalSize?.width ?? node.width,
+              height: storedTerminalSize?.height ?? node.height,
+            };
+            onManipulationChange(true);
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+          }}
+          onPointerMove={(event) => {
+            const resize = resizeRef.current;
+            if (!resize || resize.pointerId !== event.pointerId) {
+              return;
+            }
+            onResize({
+              width: resize.width + (event.clientX - resize.clientX) / zoom,
+              height: resize.height + (event.clientY - resize.clientY) / zoom,
+            });
+          }}
+          onPointerUp={(event) => {
+            if (resizeRef.current?.pointerId === event.pointerId) {
+              resizeRef.current = null;
+              onManipulationChange(false);
+              event.currentTarget.releasePointerCapture?.(event.pointerId);
+            }
+          }}
+          onPointerCancel={() => {
+            resizeRef.current = null;
+            onManipulationChange(false);
+          }}
+        >
+          <span aria-hidden="true" />
+        </button>
+      ) : null}
     </article>
   );
 }
@@ -1624,6 +2090,7 @@ function CanvasSessionActions({
         <div
           id={`canvas-session-actions-${session.id}`}
           className="canvas-node__session-actions-panel"
+          data-browser-obstruction="true"
           role="group"
           aria-label={`Actions for ${session.name}`}
           aria-busy={pendingAction !== undefined}
@@ -1849,9 +2316,35 @@ function terminalStartDisabledReason(
   return undefined;
 }
 
+interface BrowserHandoff {
+  readonly browser: BrowserCanvasNode;
+  readonly target: NoteCanvasNode | TerminalCanvasNode;
+}
+
+function getBrowserHandoff(
+  selectedNode: CanvasNode,
+  otherNode: CanvasNode,
+): BrowserHandoff | null {
+  if (selectedNode.kind === "browser" && otherNode.kind !== "browser") {
+    return { browser: selectedNode, target: otherNode };
+  }
+  if (otherNode.kind === "browser" && selectedNode.kind !== "browser") {
+    return { browser: otherNode, target: selectedNode };
+  }
+  return null;
+}
+
+function browserHandoffLabel(
+  target: NoteCanvasNode | TerminalCanvasNode,
+): string {
+  return target.kind === "note"
+    ? `Add browser URL to ${target.title}`
+    : `Insert browser URL into ${target.title}`;
+}
+
 function keyboardResize(
   key: string,
-  node: TerminalCanvasNode,
+  node: TerminalCanvasNode | BrowserCanvasNode,
   step: number,
 ): { readonly width: number; readonly height: number } | null {
   switch (key) {
@@ -1877,6 +2370,7 @@ function TerminalNodeBody({
   error,
   startDisabledReason,
   transport,
+  inputRef,
 }: {
   readonly node: TerminalCanvasNode;
   readonly agent?: AgentRecord;
@@ -1886,6 +2380,7 @@ function TerminalNodeBody({
   readonly error?: string;
   readonly startDisabledReason?: string;
   readonly transport: LiveTerminalTransport;
+  readonly inputRef: Ref<LiveTerminalInputHandle>;
 }) {
   const live = session ? isLiveStatus(session.status) : false;
   const startDisabled = pending || startDisabledReason !== undefined;
@@ -1910,7 +2405,7 @@ function TerminalNodeBody({
       </div>
       {session && live ? (
         <div className="canvas-terminal__body canvas-terminal__body--live">
-          <LiveTerminal session={session} {...transport} />
+          <LiveTerminal session={session} inputRef={inputRef} {...transport} />
         </div>
       ) : (
         <div className="canvas-terminal__body">

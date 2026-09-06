@@ -46,6 +46,57 @@ describe("AppShell canvas workflows", () => {
     });
   });
 
+  it("opens the project knowledge library from the command palette and keeps its IPC scope current", async () => {
+    const project = createProject({ lastOpenedAtMs: TEST_TIME + 1 });
+    const otherProject = createProject({ id: "project-other", name: "Other repository" });
+    const client = createMockIpcClient({
+      bootstrap: createBootstrap({ projects: [project, otherProject] }),
+      handlers: { listKnowledge: async () => ({ entries: [], nextCursor: null }) },
+    });
+    const user = await renderApp(client);
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(client.listKnowledge).not.toHaveBeenCalled();
+    const palette = await openCommandPalette(user);
+    await selectPaletteCommand(user, palette, "Open prompts and context");
+
+    const library = await screen.findByRole("region", { name: "Prompts & context" });
+    expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: project.name, level: 1 })).toBeVisible();
+    await waitFor(() => expect(client.listKnowledge).toHaveBeenCalledExactlyOnceWith({ projectId: project.id }));
+    await user.type(within(library).getByLabelText("Title"), "Current project draft");
+    await user.type(within(library).getByLabelText("Content"), "Keep project scope");
+    expect(client.listKnowledge).toHaveBeenCalledTimes(1);
+    await user.click(within(screen.getByRole("navigation", { name: "Workspaces" })).getByRole("button", { name: /^Other repository/ }));
+    if (!screen.queryByRole("region", { name: "Knowledge library" })) {
+      await user.click(screen.getByRole("button", { name: "Open prompts and context" }));
+    }
+
+    await waitFor(() => expect(client.listKnowledge).toHaveBeenLastCalledWith({ projectId: otherProject.id }));
+    expect(screen.getByLabelText("Title")).toHaveValue("");
+    expect(screen.getByLabelText("Scope")).toHaveValue(otherProject.id);
+    expect(client.saveKnowledge).not.toHaveBeenCalled();
+    expect(client.writeTerminal).not.toHaveBeenCalled();
+    expect(client.createSession).not.toHaveBeenCalled();
+    expect(client.startSession).not.toHaveBeenCalled();
+  });
+
+  it("routes the command palette to the global knowledge library without a project", async () => {
+    const client = createMockIpcClient({
+      bootstrap: EMPTY_BOOTSTRAP,
+      handlers: { listKnowledge: async () => ({ entries: [], nextCursor: null }) },
+    });
+    const user = await renderApp(client);
+    const palette = await openCommandPalette(user);
+    expect(client.listKnowledge).not.toHaveBeenCalled();
+    await selectPaletteCommand(user, palette, "Open prompts and context");
+
+    const library = await screen.findByRole("region", { name: "Prompts & context" });
+    await waitFor(() => expect(client.listKnowledge).toHaveBeenCalledExactlyOnceWith({ projectId: null }));
+    expect(within(library).getByText("Global library")).toBeVisible();
+    expect(within(library).getByLabelText("Scope")).toHaveValue("");
+    expect(client.writeTerminal).not.toHaveBeenCalled();
+  });
+
   it("keeps local notes available when first connection fails and retries without losing them", async () => {
     const client = createMockIpcClient({
       initialize: async () => { throw new Error("Local daemon is unavailable"); },
@@ -1021,6 +1072,7 @@ describe("AppShell canvas workflows", () => {
         worktrees: [worktree],
       }),
       handlers: {
+        listWorktrees: async () => [worktree],
         startSession: async () => ({
           ...session,
           status: "running",
@@ -1311,6 +1363,7 @@ describe("AppShell canvas workflows", () => {
         worktrees: [worktree],
       }),
       handlers: {
+        listWorktrees: async () => [],
         stopSession: async () => ({
           ...runningSession,
           status: "exited",

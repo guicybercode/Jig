@@ -1,6 +1,8 @@
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use cli_master_core::wire::{ConfirmationToken, SessionIsolation, WorktreePrepareRemoveResponse};
+use cli_master_core::wire::{
+    ConfirmationToken, RelativeDirectory, SessionIsolation, WorktreePrepareRemoveResponse,
+};
 use cli_master_core::{AgentId, Project, ProjectId, SessionId, WorktreeId};
 use cli_master_git::Git;
 use cli_master_storage::{Storage, StoredAgent};
@@ -15,7 +17,7 @@ use crate::{
 /// Orchestrates recoverable worktree-backed session creation and removal.
 pub struct SessionWorktreeSaga<S> {
     pub(crate) git: Git,
-    storage: Mutex<Storage>,
+    storage: Arc<Mutex<Storage>>,
     pub(crate) spawner: S,
     pub(crate) daemon_instance_id: String,
     pub(crate) destinations: DestinationLocks,
@@ -35,6 +37,25 @@ impl<S: SessionSpawner> SessionWorktreeSaga<S> {
         spawner: S,
         daemon_instance_id: impl Into<String>,
     ) -> Result<Self, SagaError> {
+        Self::new_with_shared_storage(
+            git,
+            Arc::new(Mutex::new(storage)),
+            spawner,
+            daemon_instance_id,
+        )
+    }
+
+    /// Builds a saga sharing the daemon's single metadata owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `daemon_instance_id` is blank.
+    pub fn new_with_shared_storage(
+        git: Git,
+        storage: Arc<Mutex<Storage>>,
+        spawner: S,
+        daemon_instance_id: impl Into<String>,
+    ) -> Result<Self, SagaError> {
         let daemon_instance_id = daemon_instance_id.into();
         if daemon_instance_id.trim().is_empty() {
             return Err(SagaError::new(
@@ -45,7 +66,7 @@ impl<S: SessionSpawner> SessionWorktreeSaga<S> {
         }
         Ok(Self {
             git,
-            storage: Mutex::new(storage),
+            storage,
             spawner,
             daemon_instance_id,
             destinations: DestinationLocks::default(),
@@ -73,23 +94,44 @@ impl<S: SessionSpawner> SessionWorktreeSaga<S> {
         request: &CreateSession,
         faults: &CreateFaults,
     ) -> Result<CreatedSession, SagaError> {
-        if request.name.trim().is_empty() {
-            return Err(SagaError::new(
-                SagaErrorKind::InvalidInput,
-                "session name must not be blank",
-                "Provide a user-facing session name",
-            ));
-        }
-        if request.isolation == SessionIsolation::NewWorktree && !request.managed_root.is_absolute()
-        {
-            return Err(SagaError::new(
-                SagaErrorKind::InvalidInput,
-                "managed worktree root must be an absolute path",
-                "Pass the daemon-owned managed worktree root",
-            )
-            .with_path(&request.managed_root));
-        }
-        crate::create::create(self, request, faults)
+        validate_create(request)?;
+        crate::create::create(self, request, faults, crate::create::Launch::Start)
+    }
+
+    /// Prepares durable session metadata and optional Git isolation without launching a process.
+    ///
+    /// The returned session has `unknown` status and no runtime owner until the
+    /// daemon starts it through `SessionManager`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when directory validation, persistence, or Git preparation fails.
+    pub fn prepare_session(
+        &self,
+        request: &CreateSession,
+        relative_directory: Option<&RelativeDirectory>,
+    ) -> Result<CreatedSession, SagaError> {
+        self.prepare_session_injected(request, relative_directory, &CreateFaults::default())
+    }
+
+    /// Prepares session metadata with deterministic fault hooks for compensation tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same failures as [`Self::prepare_session`] plus injected faults.
+    pub fn prepare_session_injected(
+        &self,
+        request: &CreateSession,
+        relative_directory: Option<&RelativeDirectory>,
+        faults: &CreateFaults,
+    ) -> Result<CreatedSession, SagaError> {
+        validate_create(request)?;
+        crate::create::create(
+            self,
+            request,
+            faults,
+            crate::create::Launch::Prepare(relative_directory),
+        )
     }
 
     /// Inspects whether a managed worktree can be removed and issues a token when safe.
@@ -102,6 +144,18 @@ impl<S: SessionSpawner> SessionWorktreeSaga<S> {
         worktree_id: WorktreeId,
     ) -> Result<WorktreePrepareRemoveResponse, SagaError> {
         crate::remove::prepare_remove(self, worktree_id)
+    }
+
+    /// Invalidates removal confirmation before a daemon-owned session starts again.
+    ///
+    /// The daemon serializes this operation with session launch and removal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the worktree is missing, a mutation is already in
+    /// progress, or the pending state cannot be restored.
+    pub fn cancel_pending_removal(&self, worktree_id: WorktreeId) -> Result<(), SagaError> {
+        crate::remove::cancel_pending_removal(self, worktree_id)
     }
 
     /// Removes a clean unused worktree using a matching confirmation token.
@@ -194,4 +248,23 @@ pub(crate) fn require_agent<S: SessionSpawner>(
         ));
     }
     Ok(agent)
+}
+
+fn validate_create(request: &CreateSession) -> Result<(), SagaError> {
+    if request.name.trim().is_empty() {
+        return Err(SagaError::new(
+            SagaErrorKind::InvalidInput,
+            "session name must not be blank",
+            "Provide a user-facing session name",
+        ));
+    }
+    if request.isolation == SessionIsolation::NewWorktree && !request.managed_root.is_absolute() {
+        return Err(SagaError::new(
+            SagaErrorKind::InvalidInput,
+            "managed worktree root must be an absolute path",
+            "Pass the daemon-owned managed worktree root",
+        )
+        .with_path(&request.managed_root));
+    }
+    Ok(())
 }

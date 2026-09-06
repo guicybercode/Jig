@@ -42,7 +42,7 @@ pub use request::{
     GitTarget, ProjectAddRequest, ProjectRemoveRequest, ProjectRenameRequest, SessionCreateRequest,
     SessionDeleteRequest, SessionIsolation, SessionListRequest, SessionRenameRequest,
     SessionResizeRequest, SessionRestartRequest, SessionStartRequest, SessionStopRequest,
-    SessionSubscribeRequest, SessionUnsubscribeRequest, SessionWriteRequest,
+    SessionSubscribeRequest, SessionUnsubscribeRequest, SessionWriteRequest, WorktreeListRequest,
     WorktreePrepareRemoveRequest, WorktreeRemoveRequest, validate_agent_command,
 };
 pub use response::{
@@ -53,7 +53,7 @@ pub use response::{
     ProjectListResponse, ProjectRemoveResponse, ProjectRenameResponse, SessionCreateResponse,
     SessionDeleteResponse, SessionListResponse, SessionRenameResponse, SessionResizeResponse,
     SessionRestartResponse, SessionStartResponse, SessionStopResponse, SessionSubscribeResponse,
-    SessionUnsubscribeResponse, SessionWriteResponse, StateSnapshotResponse,
+    SessionUnsubscribeResponse, SessionWriteResponse, StateSnapshotResponse, WorktreeListResponse,
     WorktreePrepareRemoveResponse, WorktreeRemovalBlocker, WorktreeRemoveResponse,
 };
 pub use value::{

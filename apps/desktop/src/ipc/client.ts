@@ -3,6 +3,7 @@ import { decodeKnowledgeDiscoverResponse, decodeKnowledgeReadResponse } from "./
 import { decodeOrganizationGetResponse, decodeOrganizationSaveResponse, validateOrganizationGet, validateOrganizationSave } from "./organization-schema";
 import type { OrganizationEntry, OrganizationGetRequest, OrganizationGetResponse, OrganizationSaveRequest } from "./domain";
 import type { KnowledgeEntry, KnowledgeListRequest, KnowledgeListResponse, KnowledgeSaveRequest, KnowledgeDeleteRequest, KnowledgeDiscoverRequest, KnowledgeDiscoverResponse, KnowledgeReadRequest, KnowledgeReadResponse } from "./domain";
+import type { WorktreeListRequest } from "./domain";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openPath } from "@tauri-apps/plugin-opener";
@@ -43,6 +44,7 @@ import type {
   ResponseEnvelope,
   Session,
   SessionIdInput,
+  Worktree,
   WorktreeRemovalPreparation,
 } from "./types";
 
@@ -95,6 +97,7 @@ export interface IpcClient {
   renameSession(input: RenameSessionInput): Promise<Session>;
   deleteSession(input: SessionIdInput): Promise<void>;
   getGitStatus(target: GitTarget): Promise<GitStatus>;
+  listWorktrees(input?: WorktreeListRequest): Promise<readonly Worktree[]>;
   prepareWorktreeRemoval(worktreeId: string): Promise<WorktreeRemovalPreparation>;
   removeWorktree(input: RemoveWorktreeInput): Promise<void>;
   getDiagnostics(): Promise<DiagnosticsSnapshot>;
@@ -309,6 +312,11 @@ class TauriIpcClient implements IpcClient {
 
   async getGitStatus(target: GitTarget): Promise<GitStatus> {
     return decodeGitStatus(await this.request("git.status", { target }));
+  }
+
+  async listWorktrees(input: WorktreeListRequest = {}): Promise<readonly Worktree[]> {
+    const response = requireRecord(await this.request("worktree.list", input), "worktree list");
+    return requireArray(response.worktrees, "worktree list.worktrees").map(decodeWorktree);
   }
 
   async prepareWorktreeRemoval(

@@ -7,7 +7,7 @@ use rusqlite::{Row, params};
 
 use crate::Storage;
 use crate::error::{StorageError, corrupt_data, map_write_error, persisted_validation};
-use crate::models::{StoredWorktree, WorktreeState, validate_timestamp};
+use crate::models::{StoredSession, StoredWorktree, WorktreeState, validate_timestamp};
 use crate::paths::{path_from_sql_value, path_to_sql_value};
 use crate::values::timestamp_from_sql_value;
 
@@ -15,6 +15,49 @@ const WORKTREE_COLUMNS: &str = "id, project_id, session_id, path, branch, state,
     is_dirty, created_at, updated_at";
 
 impl Storage {
+    /// Inserts a session and activates its previously prepared worktree atomically.
+    ///
+    /// Git has already created the working copy. A failed association must leave
+    /// no unassociated session row, while the `creating` worktree remains available
+    /// for compensation or crash recovery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid session metadata, missing or non-creating
+    /// worktrees, cross-project associations, or database failures.
+    pub fn insert_prepared_session_with_worktree(
+        &self,
+        session: &StoredSession,
+        worktree_id: WorktreeId,
+        updated_at_ms: i64,
+    ) -> Result<(), StorageError> {
+        validate_timestamp("worktree updated_at_ms", updated_at_ms)?;
+        self.transaction(|transaction| {
+            crate::sessions::insert_session_on_connection(transaction, session)?;
+            let changed = transaction
+                .execute(
+                    "UPDATE worktrees SET state = 'active', session_id = ?1, updated_at = ?2
+                 WHERE id = ?3 AND project_id = ?4 AND state = 'creating' AND session_id IS NULL",
+                    params![
+                        session.id.to_string(),
+                        updated_at_ms,
+                        worktree_id.to_string(),
+                        session.project_id.to_string(),
+                    ],
+                )
+                .map_err(|error| map_write_error(error, "worktree"))?;
+            if changed == 0 {
+                return Err(StorageError::InvalidInput {
+                    field: "worktree association",
+                    reason:
+                        "worktree must be unassociated, creating, and belong to the session project"
+                            .to_owned(),
+                });
+            }
+            Ok(())
+        })
+    }
+
     /// Inserts worktree metadata without running Git or creating directories.
     ///
     /// # Errors

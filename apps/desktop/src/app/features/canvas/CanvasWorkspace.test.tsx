@@ -1,5 +1,7 @@
-import type { ComponentProps } from "react";
+import { useImperativeHandle, useState } from "react";
+import type { ComponentProps, Ref } from "react";
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -7,17 +9,43 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { IpcError } from "../../../ipc/client";
 import type { Session, Worktree } from "../../../ipc/types";
-import { CANVAS_STORAGE_KEY, parseCanvasDocument } from "./canvas-state";
+import { createMockIpcClient } from "../../../test/mockIpc";
+import type { BrowserRuntime } from "../browser/browser-runtime";
+import type { KnowledgeRecord } from "../knowledge/knowledge-types";
+import type {
+  LiveTerminalInputHandle,
+  LiveTerminalTransport,
+} from "../terminal/LiveTerminal";
+import {
+  CANVAS_STORAGE_KEY,
+  parseCanvasDocument,
+  type BrowserCanvasNode,
+  type CanvasDocument,
+  type NoteCanvasNode,
+  type TerminalCanvasNode,
+} from "./canvas-state";
 import { CanvasWorkspace } from "./CanvasWorkspace";
 
 vi.mock("../terminal/LiveTerminal", () => ({
-  LiveTerminal: ({ session }: { readonly session: Session }) => (
-    <div data-testid={`live-terminal-${session.id}`} />
-  ),
+  LiveTerminal: ({ session, inputRef, writeTerminal }: {
+    readonly session: Session;
+    readonly inputRef?: Ref<LiveTerminalInputHandle>;
+    readonly writeTerminal: LiveTerminalTransport["writeTerminal"];
+  }) => {
+    useImperativeHandle(inputRef, () => ({
+      writeInput: async (encode) => {
+        await writeTerminal(session.id, encode({
+          bracketedPasteMode: true,
+          applicationCursorKeysMode: false,
+        }));
+      },
+    }), [session.id, writeTerminal]);
+    return <div data-testid={`live-terminal-${session.id}`} />;
+  },
 }));
 
 const PROJECT = {
@@ -72,9 +100,477 @@ const MANAGED_WORKTREE: Worktree = {
   updatedAtMs: 3,
 };
 
+const BROWSER_NODE: BrowserCanvasNode = {
+  id: "browser-test",
+  kind: "browser",
+  title: "Browser",
+  url: "https://docs.example.com/guide",
+  x: 160,
+  y: 120,
+  width: 640,
+  height: 420,
+};
+
+const NOTE_NODE: NoteCanvasNode = {
+  id: "note-test",
+  kind: "note",
+  title: "Notes",
+  text: "Review the integration",
+  x: 840,
+  y: 120,
+};
+
+const LIVE_SESSION: Session = {
+  id: "0198f000-0000-7000-8000-000000000004",
+  projectId: PROJECT.id,
+  name: "Terminal 1",
+  agentId: SHELL_AGENT.id,
+  cwd: PROJECT.path,
+  pid: 123,
+  ptyId: "pty-browser-handoff",
+  status: "running",
+  createdAtMs: 2,
+  updatedAtMs: 2,
+};
+
+const TERMINAL_NODE: TerminalCanvasNode = {
+  id: "terminal-test",
+  kind: "terminal",
+  title: "Terminal 1",
+  sessionId: LIVE_SESSION.id,
+  preset: "shell",
+  x: 840,
+  y: 120,
+  width: 432,
+  height: 256,
+};
+
 describe("CanvasWorkspace", () => {
   beforeEach(() => {
     localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  describe("Knowledge library", () => {
+    it.each([true, false])("loads saved content only after an explicit open (connected: %s)", async (isConnected) => {
+      const user = userEvent.setup();
+      const knowledgeClient = createMockIpcClient({
+        handlers: { listKnowledge: async () => ({ entries: [], nextCursor: null }) },
+      });
+      renderProjectCanvas({ knowledgeClient, isConnected });
+      await user.click(screen.getByRole("button", { name: "Add note" }));
+      expect(knowledgeClient.listKnowledge).not.toHaveBeenCalled();
+      expect(screen.queryByRole("region", { name: "Knowledge library" })).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Open prompts and context" }));
+      expect(screen.getByRole("region", { name: "Knowledge library" })).toBeVisible();
+      await waitFor(() => expect(knowledgeClient.listKnowledge).toHaveBeenCalledExactlyOnceWith({ projectId: PROJECT.id }));
+      expect(knowledgeClient.saveKnowledge).not.toHaveBeenCalled();
+    });
+
+    it("saves project context through the owned client and reloads the saved record", async () => {
+      const user = userEvent.setup();
+      const saved = knowledgeEntry({ kind: "context", projectId: PROJECT.id, title: "Architecture", body: "Keep Linux and macOS support.\n" });
+      const knowledgeClient = createMockIpcClient();
+      knowledgeClient.listKnowledge.mockResolvedValueOnce({ entries: [], nextCursor: null });
+      knowledgeClient.listKnowledge.mockResolvedValue({ entries: [saved], nextCursor: null });
+      knowledgeClient.saveKnowledge.mockResolvedValue(saved);
+      const view = renderProjectCanvas({ knowledgeClient });
+      await user.click(screen.getByRole("button", { name: "Open prompts and context" }));
+      const library = screen.getByRole("region", { name: "Prompts & context" });
+      await user.selectOptions(within(library).getByLabelText("Type"), "context");
+      await user.type(within(library).getByLabelText("Title"), "Architecture");
+      await user.type(within(library).getByLabelText("Content"), "Keep Linux and macOS support.{Enter}");
+      await user.click(within(library).getByRole("button", { name: "Save locally" }));
+      expect(knowledgeClient.saveKnowledge).toHaveBeenCalledExactlyOnceWith({
+        kind: "context", projectId: PROJECT.id, title: saved.title, body: saved.body,
+      });
+      expect(await within(library).findByText("Saved locally.")).toBeVisible();
+      view.unmount();
+
+      renderProjectCanvas({ knowledgeClient });
+      await user.click(screen.getByRole("button", { name: "Open prompts and context" }));
+      const reloaded = screen.getByRole("region", { name: "Prompts & context" });
+      await user.click(await within(reloaded).findByRole("button", { name: saved.title }));
+      expect(within(reloaded).getByLabelText("Content")).toHaveValue(saved.body);
+      expect(within(reloaded).getByLabelText("Scope")).toHaveValue(PROJECT.id);
+      expect(view.props.writeTerminal).not.toHaveBeenCalled();
+      expect(view.props.onStartSession).not.toHaveBeenCalled();
+    });
+
+    it("keeps unsaved library edits across hide/reopen and ignores canvas deletion shortcuts inside its editor", async () => {
+      const user = userEvent.setup();
+      const knowledgeClient = createMockIpcClient({ handlers: { listKnowledge: async () => ({ entries: [], nextCursor: null }) } });
+      seedCanvasDocument([TERMINAL_NODE]);
+      renderProjectCanvas({ knowledgeClient, sessions: [LIVE_SESSION] });
+      const terminal = screen.getByRole("article", { name: "Terminal 1, terminal canvas item" });
+      await user.click(terminal);
+      const trigger = screen.getByRole("button", { name: "Open prompts and context" });
+      await user.click(trigger);
+      const library = screen.getByRole("region", { name: "Prompts & context" });
+      await user.type(within(library).getByLabelText("Title"), "Unfinished context");
+      const content = within(library).getByLabelText("Content");
+      await user.type(content, "Keep this draft");
+      fireEvent.keyDown(content, { key: "Delete", ctrlKey: true });
+      fireEvent.keyDown(content, { key: "Backspace", metaKey: true });
+      expect(terminal).toBeInTheDocument();
+      expect(readCanvasDocument().nodes).toHaveLength(1);
+      await user.click(screen.getByRole("button", { name: "Close knowledge library" }));
+      expect(library).not.toBeVisible();
+      await user.click(trigger);
+
+      expect(within(screen.getByRole("region", { name: "Prompts & context" })).getByLabelText("Title")).toHaveValue("Unfinished context");
+      expect(content).toHaveValue("Keep this draft");
+      expect(knowledgeClient.listKnowledge).toHaveBeenCalledTimes(1);
+      expect(knowledgeClient.saveKnowledge).not.toHaveBeenCalled();
+      expect(knowledgeClient.deleteKnowledge).not.toHaveBeenCalled();
+    });
+
+    it("inserts the edited snapshot only into the current offline terminal draft without delivering input", async () => {
+      const user = userEvent.setup();
+      const original = knowledgeEntry();
+      const knowledgeClient = createMockIpcClient({ handlers: { listKnowledge: async () => ({ entries: [original], nextCursor: null }) } });
+      const firstNode = { ...TERMINAL_NODE, promptDraft: "First draft", promptDraftRevision: 1 };
+      const secondNode = { ...TERMINAL_NODE, id: "terminal-second", title: "Terminal 2", sessionId: undefined, promptDraft: "Second draft", promptDraftRevision: 1 };
+      seedCanvasDocument([firstNode, secondNode, NOTE_NODE]);
+      const { props } = renderProjectCanvas({ knowledgeClient, isConnected: false });
+      await user.click(screen.getByRole("article", { name: "Terminal 1, terminal canvas item" }));
+      await user.click(screen.getByRole("button", { name: "Open prompts and context" }));
+      const library = screen.getByRole("region", { name: "Prompts & context" });
+      await user.click(await within(library).findByRole("button", { name: original.title }));
+      await user.clear(within(library).getByLabelText("Content"));
+      await user.type(within(library).getByLabelText("Content"), "Unsaved instructions{Enter}Keep exact whitespace.  ");
+      await user.click(screen.getByRole("article", { name: "Notes, note canvas item" }));
+      expect(within(library).getByRole("button", { name: "Insert into draft" })).toBeDisabled();
+      await user.click(screen.getByRole("article", { name: "Terminal 2, terminal canvas item" }));
+      await user.click(within(library).getByRole("button", { name: "Insert into draft" }));
+
+      expect(library).not.toBeVisible();
+      const editor = screen.getByRole("textbox", { name: "Prompt for Terminal 2" });
+      expect(editor).toHaveFocus();
+      const draft = (editor as HTMLTextAreaElement).value;
+      expect(draft).toContain("Second draft\n\nKnowledge snapshot: Review changes\n");
+      expect(draft).toContain("Unsaved instructions\nKeep exact whitespace.  \n");
+      expect(draft).not.toContain(original.body);
+      expect(readPromptDraft(firstNode.id)).toBe("First draft");
+      expect(readPromptDraft(secondNode.id)).toBe(draft);
+      expect(props.writeTerminal).not.toHaveBeenCalled();
+      expect(props.onCreateSession).not.toHaveBeenCalled();
+      expect(props.onStartSession).not.toHaveBeenCalled();
+      expect(knowledgeClient.saveKnowledge).not.toHaveBeenCalled();
+    });
+
+    it("keeps new library drafts and listing requests scoped to the selected project", async () => {
+      const user = userEvent.setup();
+      const knowledgeClient = createMockIpcClient({ handlers: { listKnowledge: async () => ({ entries: [], nextCursor: null }) } });
+      const props = createProjectCanvasProps({ knowledgeClient, projects: [PROJECT, OTHER_PROJECT] });
+      function ProjectSwitcher() {
+        const [project, setProject] = useState<typeof PROJECT | typeof OTHER_PROJECT>(PROJECT);
+        return <>
+          <button type="button" onClick={() => setProject(PROJECT)}>Use Jig</button>
+          <button type="button" onClick={() => setProject(OTHER_PROJECT)}>Use other project</button>
+          <CanvasWorkspace {...props} project={project} />
+        </>;
+      }
+      render(<ProjectSwitcher />);
+      await user.click(screen.getByRole("button", { name: "Open prompts and context" }));
+      await user.type(screen.getByLabelText("Title"), "Jig draft");
+      await user.type(screen.getByLabelText("Content"), "Jig context");
+      await user.click(screen.getByRole("button", { name: "Use other project" }));
+      await ensureKnowledgeLibraryOpen(user);
+      await waitFor(() => expect(knowledgeClient.listKnowledge).toHaveBeenLastCalledWith({ projectId: OTHER_PROJECT.id }));
+      expect(screen.getByLabelText("Title")).toHaveValue("");
+      expect(screen.getByLabelText("Content")).toHaveValue("");
+      expect(screen.getByLabelText("Scope")).toHaveValue(OTHER_PROJECT.id);
+      await user.type(screen.getByLabelText("Title"), "Other draft");
+      await user.type(screen.getByLabelText("Content"), "Other context");
+      await user.click(screen.getByRole("button", { name: "Use Jig" }));
+      await ensureKnowledgeLibraryOpen(user);
+
+      expect(screen.getByLabelText("Title")).toHaveValue("Jig draft");
+      expect(screen.getByLabelText("Content")).toHaveValue("Jig context");
+      expect(screen.getByLabelText("Scope")).toHaveValue(PROJECT.id);
+      await waitFor(() => expect(knowledgeClient.listKnowledge).toHaveBeenLastCalledWith({ projectId: PROJECT.id }));
+      expect(knowledgeClient.saveKnowledge).not.toHaveBeenCalled();
+      expect(props.writeTerminal).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Prompt Composer", () => {
+    it("delivers a multiline draft through the attached terminal transport", async () => {
+      const user = userEvent.setup();
+      const writeTerminal = vi.fn<LiveTerminalTransport["writeTerminal"]>().mockResolvedValue(undefined);
+      seedCanvasDocument([TERMINAL_NODE]);
+      const { props } = renderProjectCanvas({ sessions: [LIVE_SESSION], writeTerminal });
+      const trigger = screen.getByRole("button", { name: "Open Prompt Composer for Terminal 1" });
+      await user.click(trigger);
+      expect(trigger).toHaveAttribute("aria-expanded", "true");
+      const composer = screen.getByRole("region", { name: "Prompt Composer" });
+      const editor = within(composer).getByRole("textbox", { name: "Prompt for Terminal 1" });
+      expect(editor).toHaveFocus();
+      await user.type(editor, "  Review Linux{Shift>}{Enter}{/Shift}and macOS  ");
+      await user.click(within(composer).getByRole("button", { name: "Send prompt" }));
+
+      expect(writeTerminal).toHaveBeenCalledExactlyOnceWith(
+        LIVE_SESSION.id,
+        new TextEncoder().encode("\x1b[200~  Review Linux\rand macOS  \x1b[201~\r"),
+      );
+      expect(editor).toHaveValue("");
+      expect(readPromptDraft(TERMINAL_NODE.id)).toBe("");
+      expect(props.onCreateSession).not.toHaveBeenCalled();
+      expect(props.onStartSession).not.toHaveBeenCalled();
+    });
+
+    it.each(["disconnected", "stopped", "unattached"] as const)(
+      "allows drafting but never starts or writes a %s terminal",
+      async (availability) => {
+        const user = userEvent.setup();
+        seedCanvasDocument([{
+          ...TERMINAL_NODE,
+          sessionId: availability === "unattached" ? undefined : LIVE_SESSION.id,
+        }]);
+        const { props } = renderProjectCanvas({
+          isConnected: availability !== "disconnected",
+          sessions: availability === "unattached" ? [] : [{
+            ...LIVE_SESSION,
+            status: availability === "stopped" ? "exited" : "running",
+          }],
+        });
+        await user.click(screen.getByRole("button", { name: "Open Prompt Composer for Terminal 1" }));
+        const editor = screen.getByRole("textbox", { name: "Prompt for Terminal 1" });
+        await user.keyboard("{Enter}{ArrowUp}");
+        await user.type(editor, "Continue when ready{Enter}");
+
+        expect(editor).toHaveValue("Continue when ready");
+        expect(screen.getByRole("button", { name: "Send prompt" })).toBeDisabled();
+        expect(readPromptDraft(TERMINAL_NODE.id)).toBe("Continue when ready");
+        expect(props.writeTerminal).not.toHaveBeenCalled();
+        expect(props.onCreateSession).not.toHaveBeenCalled();
+        expect(props.onStartSession).not.toHaveBeenCalled();
+      },
+    );
+
+    it("restores the same terminal's offline draft after workspace reload", async () => {
+      const user = userEvent.setup();
+      seedCanvasDocument([TERMINAL_NODE]);
+      const first = renderProjectCanvas({ isConnected: false });
+      await user.click(screen.getByRole("button", { name: "Open Prompt Composer for Terminal 1" }));
+      await user.type(screen.getByRole("textbox", { name: "Prompt for Terminal 1" }), "Revisar a implantação");
+      await waitFor(() => expect(readPromptDraft(TERMINAL_NODE.id)).toBe("Revisar a implantação"));
+      first.unmount();
+
+      const second = renderProjectCanvas({ isConnected: false });
+      await user.click(screen.getByRole("button", { name: "Open Prompt Composer for Terminal 1" }));
+      expect(screen.getByRole("textbox", { name: "Prompt for Terminal 1" })).toHaveValue("Revisar a implantação");
+      expect(first.props.writeTerminal).not.toHaveBeenCalled();
+      expect(second.props.writeTerminal).not.toHaveBeenCalled();
+      expect(second.props.onStartSession).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])(
+      "keeps pending delivery isolated across close/reopen (revised draft: %s)",
+      async (reviseDraft) => {
+        const user = userEvent.setup();
+        const delivery = deferredPromptDelivery();
+        const writeTerminal = vi.fn<LiveTerminalTransport["writeTerminal"]>().mockReturnValue(delivery.promise);
+        seedCanvasDocument([TERMINAL_NODE]);
+        renderProjectCanvas({ sessions: [LIVE_SESSION], writeTerminal });
+        const trigger = screen.getByRole("button", { name: "Open Prompt Composer for Terminal 1" });
+        await user.click(trigger);
+        await user.type(screen.getByRole("textbox", { name: "Prompt for Terminal 1" }), "Repeat{Enter}");
+        await user.click(screen.getByRole("button", { name: "Close Prompt Composer" }));
+        await user.click(trigger);
+        const editor = screen.getByRole("textbox", { name: "Prompt for Terminal 1" });
+        expect(editor).toHaveValue("Repeat");
+        await user.keyboard("{Enter}");
+        expect(writeTerminal).toHaveBeenCalledTimes(1);
+        if (reviseDraft) {
+          await user.clear(editor);
+          await user.type(editor, "Repeat");
+        }
+        await user.click(screen.getByRole("button", { name: "Close Prompt Composer" }));
+        await act(async () => delivery.complete());
+        expect(screen.queryByRole("region", { name: "Prompt Composer" })).not.toBeInTheDocument();
+        await user.click(trigger);
+
+        expect(screen.getByRole("textbox", { name: "Prompt for Terminal 1" })).toHaveValue(reviseDraft ? "Repeat" : "");
+        expect(readPromptDraft(TERMINAL_NODE.id)).toBe(reviseDraft ? "Repeat" : "");
+        expect(writeTerminal).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it("follows the primary terminal without letting the previous delivery erase its draft", async () => {
+      const user = userEvent.setup();
+      const delivery = deferredPromptDelivery();
+      const secondSession = { ...LIVE_SESSION, id: "0198f000-0000-7000-8000-000000000011", name: "Terminal 2" };
+      const secondNode = { ...TERMINAL_NODE, id: "terminal-second", title: "Terminal 2", sessionId: secondSession.id };
+      const writeTerminal = vi.fn<LiveTerminalTransport["writeTerminal"]>()
+        .mockReturnValueOnce(delivery.promise).mockResolvedValue(undefined);
+      seedCanvasDocument([TERMINAL_NODE, secondNode, NOTE_NODE]);
+      renderProjectCanvas({ sessions: [LIVE_SESSION, secondSession], writeTerminal });
+      await user.click(screen.getByRole("button", { name: "Open Prompt Composer for Terminal 1" }));
+      await user.type(screen.getByRole("textbox", { name: "Prompt for Terminal 1" }), "First request{Enter}");
+      await user.click(screen.getByRole("article", { name: "Terminal 2, terminal canvas item" }));
+      const secondEditor = screen.getByRole("textbox", { name: "Prompt for Terminal 2" });
+      await user.type(secondEditor, "Second request");
+      await act(async () => delivery.complete());
+      expect(secondEditor).toHaveValue("Second request");
+      expect(readPromptDraft(TERMINAL_NODE.id)).toBe("");
+      await user.keyboard("{Enter}");
+
+      expect(writeTerminal).toHaveBeenNthCalledWith(1, LIVE_SESSION.id, new TextEncoder().encode("\x1b[200~First request\x1b[201~\r"));
+      expect(writeTerminal).toHaveBeenNthCalledWith(2, secondSession.id, new TextEncoder().encode("\x1b[200~Second request\x1b[201~\r"));
+      await user.click(screen.getByRole("article", { name: "Notes, note canvas item" }));
+      expect(screen.queryByRole("region", { name: "Prompt Composer" })).not.toBeInTheDocument();
+    });
+
+    it("hides the composer on project changes and completes only the original project's draft", async () => {
+      const user = userEvent.setup();
+      const delivery = deferredPromptDelivery();
+      const otherSession = {
+        ...LIVE_SESSION,
+        id: "0198f000-0000-7000-8000-000000000011",
+        projectId: OTHER_PROJECT.id,
+        name: "Other terminal",
+        cwd: OTHER_PROJECT.path,
+      };
+      const otherNode = {
+        ...TERMINAL_NODE, id: "terminal-other", title: "Other terminal",
+        projectId: OTHER_PROJECT.id, sessionId: otherSession.id,
+      };
+      const writeTerminal = vi.fn<LiveTerminalTransport["writeTerminal"]>().mockReturnValue(delivery.promise);
+      seedCanvasDocument([{ ...TERMINAL_NODE, projectId: PROJECT.id }, otherNode]);
+      const props = createProjectCanvasProps({
+        projects: [PROJECT, OTHER_PROJECT], sessions: [LIVE_SESSION, otherSession], writeTerminal,
+      });
+      function ProjectSwitcher() {
+        const [project, setProject] = useState<typeof PROJECT | typeof OTHER_PROJECT>(PROJECT);
+        return <>
+          <button type="button" onClick={() => setProject(OTHER_PROJECT)}>Switch project</button>
+          <CanvasWorkspace {...props} project={project} />
+        </>;
+      }
+      render(<ProjectSwitcher />);
+      await user.click(screen.getByRole("button", { name: "Open Prompt Composer for Terminal 1" }));
+      await user.type(screen.getByRole("textbox", { name: "Prompt for Terminal 1" }), "For Jig{Enter}");
+      await user.click(screen.getByRole("button", { name: "Switch project" }));
+      expect(screen.queryByRole("region", { name: "Prompt Composer" })).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Open Prompt Composer for Other terminal" }));
+      const editor = screen.getByRole("textbox", { name: "Prompt for Other terminal" });
+      await user.type(editor, "Private draft");
+      await act(async () => delivery.complete());
+
+      expect(editor).toHaveValue("Private draft");
+      expect(readPromptDraft(otherNode.id)).toBe("Private draft");
+      expect(readPromptDraft(TERMINAL_NODE.id)).toBe("");
+      expect(writeTerminal).toHaveBeenCalledExactlyOnceWith(LIVE_SESSION.id, new TextEncoder().encode("\x1b[200~For Jig\x1b[201~\r"));
+    });
+
+    it.each(["ctrlKey", "metaKey"] as const)("guards the %s shortcut and Enter against repeat and IME confirmation", async (modifier) => {
+      const user = userEvent.setup();
+      const writeTerminal = vi.fn<LiveTerminalTransport["writeTerminal"]>().mockResolvedValue(undefined);
+      seedCanvasDocument([TERMINAL_NODE]);
+      renderProjectCanvas({ sessions: [LIVE_SESSION], writeTerminal });
+      const terminal = screen.getByRole("article", { name: "Terminal 1, terminal canvas item" });
+      await user.click(terminal);
+      const shortcut = { key: "P", shiftKey: true, [modifier]: true };
+      fireEvent.keyDown(terminal, { ...shortcut, repeat: true });
+      fireEvent.keyDown(terminal, { ...shortcut, isComposing: true });
+      expect(screen.queryByRole("region", { name: "Prompt Composer" })).not.toBeInTheDocument();
+      fireEvent.keyDown(terminal, shortcut);
+      const editor = screen.getByRole("textbox", { name: "Prompt for Terminal 1" });
+      await user.type(editor, "Intentional request");
+      fireEvent.compositionStart(editor);
+      fireEvent.keyDown(editor, shortcut);
+      expect(editor).toBeVisible();
+      fireEvent.compositionEnd(editor);
+      fireEvent.keyDown(editor, { key: "Enter", repeat: true });
+      fireEvent.keyDown(editor, { key: "Enter", isComposing: true });
+      fireEvent.keyDown(editor, { key: "Enter", keyCode: 229 });
+      expect(writeTerminal).not.toHaveBeenCalled();
+      expect(editor).toHaveValue("Intentional request");
+      await user.keyboard("{Enter}");
+      expect(writeTerminal).toHaveBeenCalledExactlyOnceWith(LIVE_SESSION.id, new TextEncoder().encode("\x1b[200~Intentional request\x1b[201~\r"));
+      fireEvent.keyDown(editor, shortcut);
+      expect(screen.queryByRole("region", { name: "Prompt Composer" })).not.toBeInTheDocument();
+      const toolbarTrigger = screen.getByRole("button", { name: "Toggle Prompt Composer" });
+      await user.click(toolbarTrigger);
+      expect(screen.getByRole("textbox", { name: "Prompt for Terminal 1" })).toHaveValue("");
+      await user.keyboard("{Escape}");
+      expect(toolbarTrigger).toHaveFocus();
+      fireEvent.keyDown(toolbarTrigger, shortcut);
+      expect(screen.getByRole("textbox", { name: "Prompt for Terminal 1" })).toHaveFocus();
+    });
+
+    it("forwards intentional empty-editor keys as terminal input", async () => {
+      const user = userEvent.setup();
+      const writeTerminal = vi.fn<LiveTerminalTransport["writeTerminal"]>().mockResolvedValue(undefined);
+      seedCanvasDocument([TERMINAL_NODE]);
+      renderProjectCanvas({ sessions: [LIVE_SESSION], writeTerminal });
+      await user.click(screen.getByRole("button", { name: "Open Prompt Composer for Terminal 1" }));
+      for (const key of ["Enter", "Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]) {
+        await user.keyboard(`{${key}}`);
+      }
+      expect(writeTerminal.mock.calls.map(([sessionId, bytes]) => [sessionId, new TextDecoder().decode(bytes)])).toEqual(
+        ["\r", "\t", "\x1b[A", "\x1b[B", "\x1b[D", "\x1b[C"].map((text) => [LIVE_SESSION.id, text]),
+      );
+      expect(screen.getByRole("textbox", { name: "Prompt for Terminal 1" })).toHaveValue("");
+    });
+
+    it("inserts only connected context snapshots and sends them only on explicit submission", async () => {
+      const user = userEvent.setup();
+      const writeTerminal = vi.fn<LiveTerminalTransport["writeTerminal"]>().mockResolvedValue(undefined);
+      seedCanvasDocument([
+        TERMINAL_NODE, NOTE_NODE, { ...BROWSER_NODE, url: "docs.example.com/guide" },
+        { ...NOTE_NODE, id: "unconnected-note", title: "Unconnected", text: "Not selected as context" },
+      ], [
+        { id: "terminal-note", sourceNodeId: TERMINAL_NODE.id, targetNodeId: NOTE_NODE.id },
+        { id: "browser-terminal", sourceNodeId: BROWSER_NODE.id, targetNodeId: TERMINAL_NODE.id },
+      ]);
+      const { props } = renderProjectCanvas({ sessions: [LIVE_SESSION], writeTerminal });
+      await user.click(screen.getByRole("button", { name: "Open Prompt Composer for Terminal 1" }));
+      const composer = screen.getByRole("region", { name: "Prompt Composer" });
+      await user.click(within(composer).getByText(/Insert context/));
+      expect(within(composer).queryByRole("button", { name: "Insert context from Unconnected" })).not.toBeInTheDocument();
+      await user.click(within(composer).getByRole("button", { name: "Insert context from Notes" }));
+      await user.click(within(composer).getByRole("button", { name: "Insert context from Browser URL" }));
+      const editor = within(composer).getByRole("textbox", { name: "Prompt for Terminal 1" });
+      const draft = (editor as HTMLTextAreaElement).value;
+      expect(draft).toContain("Context snapshot: Notes\nReview the integration\n");
+      expect(draft).toContain("Context snapshot: Browser URL\nhttps://docs.example.com/guide\n");
+      fireEvent.change(within(screen.getByRole("article", { name: "Notes, note canvas item" })).getByRole("textbox"), {
+        target: { value: "Changed after insertion" },
+      });
+      expect(editor).toHaveValue(draft);
+      expect(writeTerminal).not.toHaveBeenCalled();
+      expect(props.onCreateSession).not.toHaveBeenCalled();
+      expect(props.onStartSession).not.toHaveBeenCalled();
+      await user.click(within(composer).getByRole("button", { name: "Send prompt" }));
+      expect(writeTerminal).toHaveBeenCalledExactlyOnceWith(LIVE_SESSION.id, new TextEncoder().encode(`\x1b[200~${draft.replace(/\n/g, "\r")}\x1b[201~\r`));
+    });
+
+    it("preserves a rejected transport write for an explicit retry", async () => {
+      const user = userEvent.setup();
+      const writeTerminal = vi.fn<LiveTerminalTransport["writeTerminal"]>()
+        .mockRejectedValueOnce(new Error("Socket disconnected")).mockResolvedValue(undefined);
+      seedCanvasDocument([TERMINAL_NODE]);
+      renderProjectCanvas({ sessions: [LIVE_SESSION], writeTerminal });
+      await user.click(screen.getByRole("button", { name: "Open Prompt Composer for Terminal 1" }));
+      const editor = screen.getByRole("textbox", { name: "Prompt for Terminal 1" });
+      await user.type(editor, "Keep for retry{Enter}");
+      expect(screen.getByRole("alert")).toHaveTextContent("Could not send the prompt");
+      expect(editor).toHaveValue("Keep for retry");
+      expect(readPromptDraft(TERMINAL_NODE.id)).toBe("Keep for retry");
+      await user.click(screen.getByRole("button", { name: "Try again" }));
+      expect(writeTerminal).toHaveBeenCalledTimes(2);
+      expect(writeTerminal).toHaveBeenLastCalledWith(LIVE_SESSION.id, new TextEncoder().encode("\x1b[200~Keep for retry\x1b[201~\r"));
+      expect(editor).toHaveValue("");
+    });
   });
 
   it("renders the first-launch terminal and note composition", () => {
@@ -239,6 +735,468 @@ describe("CanvasWorkspace", () => {
         expect.objectContaining({ title: "Codex", preset: "codex" }),
       );
     });
+  });
+
+  it("prepares an isolated checkout before explicitly starting its returned session", async () => {
+    const user = userEvent.setup();
+    const session: Session = {
+      id: "isolated-session", projectId: PROJECT.id, agentId: SHELL_AGENT.id, name: "Shell",
+      cwd: "/managed/worktrees/review/tools", worktreeId: "isolated-worktree",
+      worktreePath: "/managed/worktrees/review", status: "unknown", createdAtMs: 1, updatedAtMs: 1,
+    };
+    let resolveCreate!: (value: Session) => void;
+    const prepared = new Promise<Session>((resolve) => { resolveCreate = resolve; });
+    const { props } = renderProjectCanvas({
+      onCreateSession: vi.fn(() => prepared),
+      onStartSession: vi.fn(async () => ({ ...session, status: "running" as const })),
+    });
+    await user.click(screen.getByRole("button", { name: "Add terminal card" }));
+    const dialog = screen.getByRole("dialog", { name: "New Terminal" });
+    await user.selectOptions(within(dialog).getByRole("combobox", { name: "Working copy" }), "new_worktree");
+    await user.clear(within(dialog).getByLabelText("Working directory"));
+    await user.type(within(dialog).getByLabelText("Working directory"), `${PROJECT.path}/tools`);
+    await user.click(within(dialog).getByRole("button", { name: "Create terminal" }));
+    await waitFor(() => expect(props.onCreateSession).toHaveBeenCalledExactlyOnceWith({
+      projectId: PROJECT.id, name: "Shell", agentId: SHELL_AGENT.id,
+      isolation: "new_worktree", relativeDirectory: "tools",
+    }));
+    expect(props.onStartSession).not.toHaveBeenCalled();
+    await act(async () => { resolveCreate(session); await prepared; });
+    await waitFor(() => expect(props.onStartSession).toHaveBeenCalledExactlyOnceWith(session.id));
+    const saved = parseCanvasDocument(localStorage.getItem(CANVAS_STORAGE_KEY));
+    expect(saved.nodes).toContainEqual(expect.objectContaining({
+      isolation: "new_worktree", sessionId: session.id, projectId: PROJECT.id,
+    }));
+  });
+
+  it("adds an integrated browser card to the persisted canvas", async () => {
+    const user = userEvent.setup();
+    const { container } = renderCanvas();
+
+    await user.click(screen.getByRole("button", { name: "Add browser" }));
+
+    const browser = screen.getByRole("article", {
+      name: "Browser, browser canvas item",
+    });
+    expect(
+      within(browser).getByRole("region", {
+        name: "Browser surface for Browser",
+      }),
+    ).toBeVisible();
+    expect(within(browser).getByRole("textbox", { name: "Address" })).toHaveValue(
+      "",
+    );
+    expect(container.querySelector("iframe")).not.toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(readCanvasDocument().nodes).toContainEqual(
+        expect.objectContaining({
+          kind: "browser",
+          title: "Browser",
+          url: "",
+          width: 640,
+          height: 420,
+        }),
+      );
+    });
+  });
+
+  it("persists a normalized address entered in the browser chrome", async () => {
+    const user = userEvent.setup();
+    renderCanvas();
+    await user.click(screen.getByRole("button", { name: "Add browser" }));
+
+    const browser = screen.getByRole("article", {
+      name: "Browser, browser canvas item",
+    });
+    const address = within(browser).getByRole("textbox", { name: "Address" });
+    await user.type(address, "docs.example.com/guides?mode=compact{Enter}");
+
+    expect(address).toHaveValue(
+      "https://docs.example.com/guides?mode=compact",
+    );
+    await waitFor(() => {
+      const persistedBrowser = readCanvasDocument().nodes.find(
+        (node) => node.kind === "browser",
+      );
+      expect(persistedBrowser).toEqual(
+        expect.objectContaining({
+          kind: "browser",
+          url: "https://docs.example.com/guides?mode=compact",
+        }),
+      );
+    });
+  });
+
+  it("keeps address-field arrow keys out of canvas panning", () => {
+    seedCanvasDocument([BROWSER_NODE]);
+    const { container } = renderCanvas();
+    const viewport = container.querySelector<HTMLElement>(".canvas-viewport");
+    expect(viewport).not.toBeNull();
+    viewport!.scrollLeft = 2_000;
+    viewport!.scrollTop = 1_500;
+
+    const address = screen.getByRole("textbox", { name: "Address" });
+    address.focus();
+    fireEvent.keyDown(address, { key: "ArrowRight" });
+    fireEvent.keyDown(address, { key: "ArrowDown" });
+
+    expect(viewport!.scrollLeft).toBe(2_000);
+    expect(viewport!.scrollTop).toBe(1_500);
+  });
+
+  it("connects a browser to a note and appends its URL as plain text", async () => {
+    const user = userEvent.setup();
+    seedCanvasDocument([BROWSER_NODE, NOTE_NODE]);
+    renderCanvas();
+
+    const browser = screen.getByRole("article", {
+      name: "Browser, browser canvas item",
+    });
+    const note = screen.getByRole("article", {
+      name: "Notes, note canvas item",
+    });
+    await user.click(
+      within(browser).getByRole("button", {
+        name: "Start connection from Browser",
+      }),
+    );
+    await user.click(
+      within(note).getByRole("button", { name: "Connect to Notes" }),
+    );
+
+    const inspector = screen.getByRole("region", {
+      name: "Connections for Notes",
+    });
+    await user.click(
+      within(inspector).getByRole("button", {
+        name: "Add browser URL to Notes",
+      }),
+    );
+
+    expect(within(note).getByRole("textbox", { name: "Notes content" })).toHaveValue(
+      "Review the integration\n\nhttps://docs.example.com/guide",
+    );
+    await waitFor(() => {
+      const document = readCanvasDocument();
+      expect(document.connections).toContainEqual(
+        expect.objectContaining({
+          sourceNodeId: "browser-test",
+          targetNodeId: "note-test",
+        }),
+      );
+      expect(document.nodes.find((node) => node.id === NOTE_NODE.id)).toEqual(
+        expect.objectContaining({
+          text: "Review the integration\n\nhttps://docs.example.com/guide",
+        }),
+      );
+    });
+  });
+
+  it("inserts a POSIX-quoted browser URL into a live terminal without submitting it", async () => {
+    const user = userEvent.setup();
+    stubMatchMedia();
+    const browserUrl =
+      "https://example.test/it's/$(touch-pwned)?q=a;b|c&next=`id`";
+    const writeTerminal = vi.fn<LiveTerminalTransport["writeTerminal"]>(
+      async () => undefined,
+    );
+    seedCanvasDocument([{ ...BROWSER_NODE, url: browserUrl }, TERMINAL_NODE]);
+    renderProjectCanvas({
+      sessions: [LIVE_SESSION],
+      writeTerminal,
+      subscribeTerminal: vi.fn(async () => vi.fn()),
+    });
+
+    const browser = screen.getByRole("article", {
+      name: "Browser, browser canvas item",
+    });
+    const terminal = screen.getByRole("article", {
+      name: "Terminal 1, terminal canvas item",
+    });
+    await user.click(
+      within(browser).getByRole("button", {
+        name: "Start connection from Browser",
+      }),
+    );
+    await user.click(
+      within(terminal).getByRole("button", {
+        name: "Connect to Terminal 1",
+      }),
+    );
+
+    const inspector = screen.getByRole("region", {
+      name: "Connections for Terminal 1",
+    });
+    await user.click(
+      within(inspector).getByRole("button", {
+        name: "Insert browser URL into Terminal 1",
+      }),
+    );
+
+    await waitFor(() => expect(writeTerminal).toHaveBeenCalledOnce());
+    const [sessionId, bytes] = writeTerminal.mock.calls[0] ?? [];
+    const payload = new TextDecoder().decode(bytes);
+    expect(sessionId).toBe(LIVE_SESSION.id);
+    expect(payload).toBe(
+      "'https://example.test/it'\\''s/$(touch-pwned)?q=a;b|c&next=`id`'",
+    );
+    expect(payload).not.toMatch(/[\r\n]/);
+    expect(within(inspector).getByRole("status")).toHaveTextContent(
+      "Inserted a shell-safe URL into Terminal 1. Review it before pressing Enter.",
+    );
+  });
+
+  it("hides an active native browser surface while its card is manipulated", async () => {
+    const user = userEvent.setup();
+    stubVisibleBrowserGeometry();
+    seedCanvasDocument([BROWSER_NODE]);
+    renderCanvas({ browserRuntime: createAvailableBrowserRuntime() });
+
+    const browser = screen.getByRole("article", {
+      name: "Browser, browser canvas item",
+    });
+    await user.click(browser);
+    const webPage = within(browser).getByRole("region", { name: "Web page" });
+    await waitFor(() => {
+      expect(browser).toHaveAttribute("data-selected", "true");
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "true");
+    });
+
+    const header = browser.querySelector<HTMLElement>(".canvas-node__header");
+    expect(header).not.toBeNull();
+    fireEvent.pointerDown(header!, {
+      pointerId: 41,
+      clientX: 100,
+      clientY: 100,
+    });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "false"),
+    );
+    expect(
+      within(browser).getByText(
+        "The browser is hidden while the canvas item moves.",
+      ),
+    ).toBeVisible();
+    fireEvent.pointerUp(header!, { pointerId: 41 });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "true"),
+    );
+
+    const resizeHandle = within(browser).getByRole("button", {
+      name: "Resize Browser",
+    });
+    fireEvent.pointerDown(resizeHandle, {
+      pointerId: 42,
+      clientX: 100,
+      clientY: 100,
+    });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "false"),
+    );
+    fireEvent.pointerCancel(resizeHandle, { pointerId: 42 });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "true"),
+    );
+
+    browser.focus();
+    fireEvent.keyDown(browser, { key: "ArrowRight" });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "false"),
+    );
+    fireEvent.keyUp(browser, { key: "ArrowRight" });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "true"),
+    );
+
+    resizeHandle.focus();
+    fireEvent.keyDown(resizeHandle, { key: "ArrowDown" });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "false"),
+    );
+    fireEvent.keyUp(resizeHandle, { key: "ArrowDown" });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "true"),
+    );
+  });
+
+  it("hides the active browser until keyboard, wheel, and scroll movement settles", async () => {
+    const user = userEvent.setup();
+    const runtime = createAvailableBrowserRuntime();
+    stubVisibleBrowserGeometry();
+    seedCanvasDocument([BROWSER_NODE]);
+    const { container } = renderCanvas({ browserRuntime: runtime });
+
+    const browser = screen.getByRole("article", {
+      name: "Browser, browser canvas item",
+    });
+    await user.click(browser);
+    const webPage = within(browser).getByRole("region", { name: "Web page" });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "true"),
+    );
+    await waitFor(() =>
+      expect(runtime.update).toHaveBeenCalledWith(
+        expect.objectContaining({ visible: true }),
+      ),
+    );
+    const viewport = container.querySelector<HTMLElement>(".canvas-viewport");
+    expect(viewport).not.toBeNull();
+
+    vi.useFakeTimers();
+    vi.mocked(runtime.update).mockClear();
+    viewport!.focus();
+    fireEvent.keyDown(viewport!, { key: "ArrowRight" });
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "false");
+    expect(runtime.update).toHaveBeenCalledWith(
+      expect.objectContaining({ visible: false }),
+    );
+
+    act(() => vi.advanceTimersByTime(100));
+    fireEvent.wheel(viewport!, { deltaY: 40 });
+    act(() => vi.advanceTimersByTime(100));
+    fireEvent.scroll(viewport!);
+    act(() => vi.advanceTimersByTime(159));
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "false");
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "true");
+    act(() => vi.advanceTimersByTime(20));
+    expect(runtime.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({ visible: true }),
+    );
+  });
+
+  it("hides the active browser while smooth focus and fit scrolling settles", async () => {
+    const user = userEvent.setup();
+    const runtime = createAvailableBrowserRuntime();
+    stubVisibleBrowserGeometry();
+    seedCanvasDocument([BROWSER_NODE]);
+    const { container } = renderCanvas({ browserRuntime: runtime });
+
+    const browser = screen.getByRole("article", {
+      name: "Browser, browser canvas item",
+    });
+    await user.click(browser);
+    const webPage = within(browser).getByRole("region", { name: "Web page" });
+    await waitFor(() =>
+      expect(webPage).toHaveAttribute("data-native-browser-visible", "true"),
+    );
+    const viewport = container.querySelector<HTMLElement>(".canvas-viewport");
+    expect(viewport).not.toBeNull();
+    const scrollTo = vi.fn();
+    Object.defineProperties(viewport!, {
+      clientWidth: { configurable: true, value: 1_000 },
+      clientHeight: { configurable: true, value: 700 },
+      scrollTo: { configurable: true, value: scrollTo },
+    });
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole("button", { name: "Show canvas items" }));
+    const panel = screen.getByRole("region", { name: "Canvas items" });
+    fireEvent.click(within(panel).getByRole("button", { name: /Browser/ }));
+    expect(scrollTo).toHaveBeenLastCalledWith(
+      expect.objectContaining({ behavior: "smooth" }),
+    );
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "false");
+    act(() => vi.advanceTimersByTime(160));
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Fit canvas to items" }));
+    expect(scrollTo).toHaveBeenLastCalledWith(
+      expect.objectContaining({ behavior: "smooth" }),
+    );
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "false");
+    act(() => vi.advanceTimersByTime(160));
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "true");
+  });
+
+  it("keeps only the primary browser active during group selection and movement", async () => {
+    const user = userEvent.setup();
+    const runtime = createAvailableBrowserRuntime();
+    stubVisibleBrowserGeometry();
+    seedCanvasDocument([
+      BROWSER_NODE,
+      { ...BROWSER_NODE, id: "browser-second", title: "Preview", x: 840 },
+    ]);
+    renderCanvas({ browserRuntime: runtime });
+    const browser = screen.getByRole("article", { name: "Browser, browser canvas item" });
+    const preview = screen.getByRole("article", { name: "Preview, browser canvas item" });
+    const firstPage = within(browser).getByRole("region", { name: "Web page" });
+    const secondPage = within(preview).getByRole("region", { name: "Web page" });
+
+    await user.click(browser);
+    await waitFor(() => expect(firstPage).toHaveAttribute("data-native-browser-visible", "true"));
+    await user.keyboard("{Shift>}");
+    await user.click(preview);
+    await user.keyboard("{/Shift}");
+
+    expect(browser).toHaveAttribute("data-selected", "true");
+    expect(preview).toHaveAttribute("data-selected", "true");
+    await waitFor(() => {
+      expect(firstPage).toHaveAttribute("data-native-browser-visible", "false");
+      expect(secondPage).toHaveAttribute("data-native-browser-visible", "true");
+      expect(runtime.close).toHaveBeenCalledWith({ nodeId: BROWSER_NODE.id });
+    });
+    expect(runtime.open).toHaveBeenCalledTimes(2);
+
+    const header = within(preview).getByLabelText("Move Preview");
+    fireEvent.pointerDown(header, { pointerId: 51, button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(header, { pointerId: 51, clientX: 124, clientY: 116 });
+    expect(secondPage).toHaveAttribute("data-native-browser-visible", "false");
+    expect(readNodePosition(BROWSER_NODE.id)).toEqual({ x: 184, y: 136 });
+    expect(readNodePosition("browser-second")).toEqual({ x: 864, y: 136 });
+    fireEvent.pointerUp(header, { pointerId: 51 });
+    await waitFor(() => expect(secondPage).toHaveAttribute("data-native-browser-visible", "true"));
+
+    await user.click(screen.getByRole("button", { name: "Duplicate selected canvas items" }));
+    expect(screen.getAllByRole("article", { name: /browser canvas item/ })).toHaveLength(4);
+    await waitFor(() => expect(runtime.open).toHaveBeenCalledTimes(3));
+    expect(runtime.close).toHaveBeenCalledWith({ nodeId: "browser-second" });
+    expect(document.querySelectorAll('[data-native-browser-visible="true"]')).toHaveLength(1);
+  });
+
+  it("scopes browsers and URL search to the selected project and hides the surface while searching", async () => {
+    const user = userEvent.setup();
+    const runtime = createAvailableBrowserRuntime();
+    stubVisibleBrowserGeometry();
+    seedCanvasDocument([
+      { ...BROWSER_NODE, projectId: PROJECT.id },
+      { ...BROWSER_NODE, id: "other-browser", title: "Private preview", projectId: OTHER_PROJECT.id, url: "https://other.example.com/private" },
+    ]);
+    const { props, rerender } = renderProjectCanvas({
+      projects: [PROJECT, OTHER_PROJECT],
+      browserRuntime: runtime,
+    });
+    const browser = screen.getByRole("article", { name: "Browser, browser canvas item" });
+    const webPage = within(browser).getByRole("region", { name: "Web page" });
+    expect(screen.queryByRole("article", { name: /Private preview/ })).not.toBeInTheDocument();
+    expect(screen.getByText(/1 browsers/)).toBeVisible();
+    await user.click(browser);
+    await waitFor(() => expect(webPage).toHaveAttribute("data-native-browser-visible", "true"));
+
+    await user.click(screen.getByRole("button", { name: "Show canvas items" }));
+    expect(webPage).toHaveAttribute("data-native-browser-visible", "false");
+    expect(screen.getByRole("region", { name: "Canvas items" })).toHaveAttribute("data-browser-obstruction", "true");
+    const search = screen.getByRole("searchbox", { name: "Search canvas items" });
+    await user.type(search, "docs.example.com guide");
+    expect(screen.getByRole("button", { name: /Browser https:\/\/docs.example.com/ })).toBeVisible();
+    await user.clear(search);
+    await user.type(search, "other.example.com");
+    expect(screen.getByText(/No matching items/)).toBeVisible();
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("button", { name: "Show canvas items" })).toHaveFocus();
+    await waitFor(() => expect(webPage).toHaveAttribute("data-native-browser-visible", "true"));
+
+    await user.click(screen.getByRole("button", { name: "Add browser" }));
+    const added = readCanvasDocument().nodes.find((node) => node.kind === "browser" && node.url === "");
+    expect(added).toEqual(expect.objectContaining({ projectId: PROJECT.id }));
+    rerender(<CanvasWorkspace {...props} project={OTHER_PROJECT} />);
+    expect(screen.getAllByRole("article", { name: /browser canvas item/ })).toHaveLength(1);
+    expect(screen.getByRole("article", { name: "Private preview, browser canvas item" })).toBeVisible();
+    expect(screen.getByText(/1 browsers/)).toBeVisible();
+    expect(runtime.close).toHaveBeenCalledWith({ nodeId: BROWSER_NODE.id });
+    expect(runtime.open).not.toHaveBeenCalledWith(expect.objectContaining({ nodeId: "other-browser" }));
   });
 
   it("moves a selected node with keyboard and pointer alternatives", async () => {
@@ -1423,7 +2381,14 @@ function renderCanvas(
 function renderProjectCanvas(
   overrides: Partial<ComponentProps<typeof CanvasWorkspace>> = {},
 ) {
-  const props: ComponentProps<typeof CanvasWorkspace> = {
+  const props = createProjectCanvasProps(overrides);
+  return { ...render(<CanvasWorkspace {...props} />), props };
+}
+
+function createProjectCanvasProps(
+  overrides: Partial<ComponentProps<typeof CanvasWorkspace>> = {},
+): ComponentProps<typeof CanvasWorkspace> {
+  return {
     isConnected: true,
     projects: [PROJECT],
     project: PROJECT,
@@ -1447,11 +2412,38 @@ function renderProjectCanvas(
     resizeTerminal: vi.fn(),
     ...overrides,
   };
-  return { ...render(<CanvasWorkspace {...props} />), props };
 }
 
-function readCanvasDocument() {
-  return parseCanvasDocument(localStorage.getItem(CANVAS_STORAGE_KEY));
+function readCanvasDocument(): CanvasDocument {
+  const document = parseCanvasDocument(localStorage.getItem(CANVAS_STORAGE_KEY));
+  if (!document) throw new Error("Expected a persisted canvas document.");
+  return document;
+}
+
+function readPromptDraft(nodeId: string): string {
+  const node = readCanvasDocument().nodes.find((candidate) => candidate.id === nodeId);
+  if (node?.kind !== "terminal") throw new Error(`Expected terminal ${nodeId}.`);
+  return node.promptDraft ?? "";
+}
+
+function knowledgeEntry(overrides: Partial<KnowledgeRecord> = {}): KnowledgeRecord {
+  return {
+    id: "knowledge-review", kind: "prompt", projectId: null,
+    title: "Review changes", body: "Review the diff.\n", revision: 3,
+    createdAtMs: 1, updatedAtMs: 2, ...overrides,
+  };
+}
+
+async function ensureKnowledgeLibraryOpen(user: ReturnType<typeof userEvent.setup>) {
+  if (!screen.queryByRole("region", { name: "Knowledge library" })) {
+    await user.click(screen.getByRole("button", { name: "Open prompts and context" }));
+  }
+}
+
+function deferredPromptDelivery() {
+  let complete: () => void = () => {};
+  const promise = new Promise<void>((resolve) => { complete = resolve; });
+  return { promise, complete };
 }
 
 function connectionEndpointX(container: HTMLElement): number {
@@ -1461,6 +2453,65 @@ function connectionEndpointX(container: HTMLElement): number {
     throw new Error("Expected a rendered canvas connection path.");
   }
   return Number(coordinates[coordinates.length - 2]);
+}
+
+function seedCanvasDocument(
+  nodes: CanvasDocument["nodes"],
+  connections: CanvasDocument["connections"] = [],
+) {
+  const document: CanvasDocument = {
+    version: 2,
+    nodes,
+    connections,
+    zoom: 1,
+    hiddenSessionIds: [],
+  };
+  localStorage.setItem(CANVAS_STORAGE_KEY, JSON.stringify(document));
+}
+
+function createAvailableBrowserRuntime(): BrowserRuntime {
+  return {
+    isAvailable: () => true,
+    open: vi.fn(async () => undefined),
+    navigate: vi.fn(async () => undefined),
+    update: vi.fn(async () => undefined),
+    reload: vi.fn(async () => undefined),
+    goBack: vi.fn(async () => undefined),
+    goForward: vi.fn(async () => undefined),
+    focus: vi.fn(async () => undefined),
+    close: vi.fn(async () => undefined),
+    openExternal: vi.fn(async () => undefined),
+  };
+}
+
+function stubMatchMedia() {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn(() => ({
+      matches: false,
+      media: "(prefers-reduced-motion: reduce)",
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(() => false),
+    })),
+  );
+}
+
+function stubVisibleBrowserGeometry() {
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+    function getBoundingClientRect(this: HTMLElement) {
+      if (this.hasAttribute("data-browser-surface-node-id")) {
+        return new DOMRect(100, 100, 640, 360);
+      }
+      if (this.hasAttribute("data-browser-viewport")) {
+        return new DOMRect(0, 0, 1_024, 768);
+      }
+      return new DOMRect();
+    },
+  );
 }
 
 function readNodePosition(nodeId: string) {

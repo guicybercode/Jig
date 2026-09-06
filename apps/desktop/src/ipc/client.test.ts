@@ -57,6 +57,22 @@ describe("production IPC wire contract", () => {
     transport.openPath.mockReset();
   });
 
+  it("lists registered worktrees through the generic wire and validates the result", async () => {
+    const worktree = {
+      id: "0198f000-0000-7000-8000-000000000006", projectId: PROJECT.id,
+      sessionId: SESSION.id, path: "/repos/worktrees/review", branch: "agent/review",
+      state: "active", isDirty: false, createdAtMs: 1, updatedAtMs: 2,
+    };
+    installWireResponder({ "worktree.list": { worktrees: [worktree] } });
+    const client = createTauriIpcClient();
+    expect(await client.listWorktrees({ projectId: PROJECT.id })).toEqual([worktree]);
+    expect(capturedRequests()[0]).toMatchObject({ method: "worktree.list", payload: { projectId: PROJECT.id } });
+    await client.listWorktrees();
+    expect(capturedRequests()[1]).toMatchObject({ method: "worktree.list", payload: {} });
+    installWireResponder({ "worktree.list": { worktrees: [{ ...worktree, isDirty: "false" }] } });
+    await expect(client.listWorktrees()).rejects.toThrow();
+  });
+
   it("bootstraps AgentRecord and joins the separate detection response", async () => {
     installWireResponder({
       "system.hello": {

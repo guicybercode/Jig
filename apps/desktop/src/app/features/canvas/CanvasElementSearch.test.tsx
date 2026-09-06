@@ -70,4 +70,25 @@ describe("CanvasElementSearch", () => {
     await user.type(input, "private-value");
     expect(screen.queryByRole("button", { name: /Build/ })).not.toBeInTheDocument();
   });
+
+  it("searches browser addresses without indexing sensitive query values or fragments", async () => {
+    const user = userEvent.setup();
+    const onFocusNode = vi.fn();
+    const browser: CanvasNode = {
+      id: "browser", kind: "browser", title: "Documentation",
+      url: "https://docs.example.com/guide?mode=compact&token=private-value#private-fragment",
+      x: 0, y: 0, width: 640, height: 420,
+    };
+    render(<CanvasElementSearch nodes={[browser]} agents={[]} sessions={new Map()} onFocusNode={onFocusNode} onClose={vi.fn()} />);
+    const input = screen.getByRole("searchbox");
+    await user.type(input, "browser docs.example.com compact");
+    expect(screen.getByRole("button", { name: "Documentation https://docs.example.com/guide?mode=compact" })).toBeVisible();
+    await user.keyboard("{Enter}");
+    expect(onFocusNode).toHaveBeenCalledWith(browser);
+    for (const secret of ["private-value", "private-fragment"]) {
+      await user.clear(input);
+      await user.type(input, secret);
+      expect(screen.getByText(/No matching items/)).toBeVisible();
+    }
+  });
 });

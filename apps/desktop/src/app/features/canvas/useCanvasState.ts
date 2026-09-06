@@ -7,6 +7,7 @@ import {
   canvasReducer,
   createInitialCanvasState,
   parseCanvasDocument,
+  toCanvasDocument,
 } from "./canvas-state";
 import type { CanvasAction, CanvasState } from "./canvas-state";
 
@@ -31,7 +32,7 @@ export function useCanvasState(): CanvasStateController {
   );
   const [persistenceAvailable, setPersistenceAvailable] = useState(storage !== null);
   const { nodes, connections, zoom, hiddenSessionIds } = state;
-  const document = useMemo(() => ({
+  const document = useMemo(() => toCanvasDocument({
     version: CANVAS_DOCUMENT_VERSION,
     nodes,
     connections,

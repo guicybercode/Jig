@@ -8,8 +8,13 @@ use super::*;
 fn registry(directory: &Path) -> SessionRegistry {
     let storage = Storage::open_migrated(directory.join("sessions.sqlite3"))
         .expect("fixture storage should open");
-    SessionRegistry::new(storage, DaemonInstanceId::new())
-        .expect("session registry should initialize")
+    SessionRegistry::new(
+        storage,
+        DaemonInstanceId::new(),
+        directory.join("worktrees"),
+        None,
+    )
+    .expect("session registry should initialize")
 }
 
 #[test]

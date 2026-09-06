@@ -21,6 +21,12 @@ export type TerminalInput =
   | { readonly kind: "text"; readonly data: string }
   | { readonly kind: "binary"; readonly data: string };
 
+/** Current terminal modes that change how composed input must be encoded. */
+export interface TerminalInputModes {
+  readonly bracketedPasteMode: boolean;
+  readonly applicationCursorKeysMode: boolean;
+}
+
 /** Latest callbacks and mutable presentation options supplied by React. */
 export interface TerminalRuntimeBindings {
   readonly accessibleLabel: string;
@@ -48,6 +54,7 @@ export interface TerminalRuntime {
   reset(cursor?: number): void;
   focus(): void;
   getCursor(): number;
+  getInputModes(): TerminalInputModes;
   setAccessibleLabel(label: string): void;
   setReadOnly(readOnly: boolean): void;
   setScreenReaderMode(enabled: boolean): void;
@@ -244,6 +251,13 @@ export function createTerminalRuntime({
     reset,
     focus: () => requireTerminal().focus(),
     getCursor: outputWriter.getCursor,
+    getInputModes() {
+      const modes = requireTerminal().modes;
+      return {
+        bracketedPasteMode: modes.bracketedPasteMode,
+        applicationCursorKeysMode: modes.applicationCursorKeysMode,
+      };
+    },
     setAccessibleLabel,
     setReadOnly,
     setScreenReaderMode,

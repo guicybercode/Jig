@@ -1,5 +1,5 @@
 use std::{
-    fmt,
+    fmt, io,
     path::{Path, PathBuf},
     process::Command,
     time::Duration,
@@ -93,7 +93,7 @@ pub enum LaunchTestStatus {
     },
     /// The version probe did not exit before the timeout.
     Timeout,
-    /// The process could not be started.
+    /// The version probe could not complete because of an I/O failure.
     Failed {
         /// Safe explanation that does not include captured output.
         message: String,
@@ -196,16 +196,30 @@ fn probe_resolved_executable(executable: &Path, options: ProbeOptions) -> Execut
                 warning,
             }
         }
-        Err(_) => ExecutableTestReport {
+        Err(error) => ExecutableTestReport {
             installed: true,
             resolved_path: Some(executable.to_path_buf()),
             version: None,
             launch_test: LaunchTestStatus::Failed {
-                message: "the executable could not be started for a version probe".to_owned(),
+                message: safe_probe_failure(&error),
             },
-            warning: Some("The file is executable but could not be spawned.".to_owned()),
+            warning: Some(
+                "The file is executable but its version probe could not complete.".to_owned(),
+            ),
         },
     }
+}
+
+fn safe_probe_failure(error: &io::Error) -> String {
+    // An I/O error can originate at spawn, reader creation, or output collection.
+    // Retain only OS classification; Display/source may contain private text.
+    let os_error = error
+        .raw_os_error()
+        .map_or_else(|| "none".to_owned(), |code| code.to_string());
+    format!(
+        "version probe could not complete (kind: {:?}, os error: {os_error})",
+        error.kind()
+    )
 }
 
 fn first_version_line(bytes: &[u8]) -> Option<String> {
@@ -219,4 +233,29 @@ fn first_version_line(bytes: &[u8]) -> Option<String> {
         preview.push('…');
     }
     Some(preview)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn probe_failure_diagnostics_preserve_classification_without_error_text() {
+        let error = io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "/private/agent --secret-argument TOKEN=private-value stdout-private",
+        );
+        let message = safe_probe_failure(&error);
+        assert_eq!(
+            message,
+            "version probe could not complete (kind: PermissionDenied, os error: none)"
+        );
+
+        let errno = nix::errno::Errno::ENOENT as i32;
+        let message = safe_probe_failure(&io::Error::from_raw_os_error(errno));
+        assert_eq!(
+            message,
+            format!("version probe could not complete (kind: NotFound, os error: {errno})")
+        );
+    }
 }

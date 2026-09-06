@@ -55,6 +55,8 @@ pub const GIT_STATUS: &str = "git.status";
 /// Read a bounded textual diff for a registered project, session, or worktree.
 pub const GIT_DIFF: &str = "git.diff";
 
+/// List managed worktrees, optionally constrained to a project.
+pub const WORKTREE_LIST: &str = "worktree.list";
 /// Inspect whether a managed worktree can be safely removed.
 pub const WORKTREE_PREPARE_REMOVE: &str = "worktree.prepare_remove";
 /// Remove a managed worktree after token-bound state confirmation.
@@ -106,6 +108,7 @@ pub const ALL: &[&str] = &[
     SESSION_UNSUBSCRIBE,
     GIT_STATUS,
     GIT_DIFF,
+    WORKTREE_LIST,
     WORKTREE_PREPARE_REMOVE,
     WORKTREE_REMOVE,
     DIAGNOSTICS_GET,
