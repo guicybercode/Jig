@@ -13,6 +13,14 @@ import {
 } from "./canvas-state";
 
 describe("canvas state", () => {
+  it("persists the Gemini quick-start preset with its native executable", () => {
+    const node = createTerminalCanvasNode({ x: 0, y: 0 }, { preset: "gemini" }, "gemini");
+    const state = createInitialCanvasState({ version: 1, nodes: [node], connections: [], zoom: 1 });
+    expect(parseCanvasDocument(serializeCanvasDocument(state)).nodes[0]).toMatchObject({
+      preset: "gemini", title: "Gemini", executable: "gemini",
+    });
+  });
+
   it("toggles multi-selection, filters unknown IDs, and keeps selection transient", () => {
     const initial = createInitialCanvasState();
     const first = canvasReducer(initial, { type: "node/select", nodeId: "note-first" });
