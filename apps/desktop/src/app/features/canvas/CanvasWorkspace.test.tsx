@@ -12,6 +12,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { IpcError } from "../../../ipc/client";
+import type { KnowledgeSourceEntry } from "../../../ipc/domain";
 import type { Session, Worktree } from "../../../ipc/types";
 import { createMockIpcClient } from "../../../test/mockIpc";
 import type { BrowserRuntime } from "../browser/browser-runtime";
@@ -157,6 +158,96 @@ describe("CanvasWorkspace", () => {
   });
 
   describe("Knowledge library", () => {
+    it.each(["Source content", "Discovery issue details"])(
+      "keeps canvas actions out of the focusable %s inspector surface",
+      async (surfaceName) => {
+        const user = userEvent.setup();
+        const entry: KnowledgeSourceEntry = {
+          entryId: "rule-shortcuts", kind: "rule", provider: "codex", scope: "project",
+          sourcePath: "/workspace/jig/AGENTS.md", name: "AGENTS.md", scopeDirectory: ".",
+          precedenceHint: "Native loading depends on the CLI.", viaSymlink: false, availability: "available",
+        };
+        const knowledgeClient = createMockIpcClient({ handlers: {
+          listKnowledge: async () => ({ entries: [], nextCursor: null }),
+          discoverKnowledge: async () => ({
+            scanId: "scan-shortcuts", entries: [entry], truncated: false,
+            issues: [{ code: "nested_scope_unsupported", sourcePath: "/workspace/jig/nested", message: "Nested project scopes are not included." }],
+          }),
+          readKnowledge: async () => ({ entry, content: "Read these instructions without changing the canvas." }),
+        } });
+        seedCanvasDocument([TERMINAL_NODE, NOTE_NODE]);
+        const { props } = renderProjectCanvas({ knowledgeClient, sessions: [LIVE_SESSION] });
+        const terminal = screen.getByRole("article", { name: "Terminal 1, terminal canvas item" });
+        const note = screen.getByRole("article", { name: "Notes, note canvas item" });
+        await user.click(terminal);
+        await user.click(screen.getByRole("button", { name: "Open prompts and context" }));
+        await user.click(screen.getByRole("button", { name: "Rules & skills" }));
+        await user.click(await screen.findByRole("button", { name: entry.name }));
+        await screen.findByLabelText("Source content");
+        const surface = screen.getByLabelText(surfaceName);
+        act(() => surface.focus());
+        expect(surface).toHaveFocus();
+        await user.keyboard("{Backspace}{Delete}{Control>}a{/Control}{Control>}{Shift>}p{/Shift}{/Control}");
+
+        expect(terminal).toBeInTheDocument();
+        expect(terminal).toHaveAttribute("data-selected", "true");
+        expect(note).toBeInTheDocument();
+        expect(note).not.toHaveAttribute("data-selected", "true");
+        expect(readCanvasDocument().nodes.map((node) => node.id)).toEqual([TERMINAL_NODE.id, NOTE_NODE.id]);
+        expect(screen.getByRole("region", { name: "Knowledge library" })).toBeVisible();
+        expect(screen.getByRole("region", { name: "Rules & skills" })).toBeVisible();
+        expect(screen.queryByRole("region", { name: "Prompt Composer" })).not.toBeInTheDocument();
+        expect(surface).toHaveFocus();
+        expect(props.writeTerminal).not.toHaveBeenCalled();
+        expect(props.onStartSession).not.toHaveBeenCalled();
+        expect(props.onStopSession).not.toHaveBeenCalled();
+        expect(knowledgeClient.saveKnowledge).not.toHaveBeenCalled();
+      },
+    );
+
+    it("preserves saved-content drafts while source inspection is opened, hidden and reopened", async () => {
+      const user = userEvent.setup();
+      const entry: KnowledgeSourceEntry = {
+        entryId: "rule-one", kind: "rule", provider: "codex", scope: "project",
+        sourcePath: "/workspace/jig/AGENTS.md", name: "AGENTS.md", scopeDirectory: ".",
+        precedenceHint: "Native loading depends on the CLI.", viaSymlink: false, availability: "available",
+      };
+      const knowledgeClient = createMockIpcClient({ handlers: {
+        listKnowledge: async () => ({ entries: [], nextCursor: null }),
+        discoverKnowledge: async () => ({ scanId: "canvas-scan", entries: [entry], truncated: false, issues: [] }),
+      } });
+      const { props, rerender } = renderProjectCanvas({ knowledgeClient, knowledgeConnectionKey: "connected:daemon-a" });
+      const trigger = screen.getByRole("button", { name: "Open prompts and context" });
+      await user.click(trigger);
+      const library = screen.getByRole("region", { name: "Prompts & context" });
+      await user.type(within(library).getByLabelText("Title"), "Unfinished review");
+      await user.type(within(library).getByLabelText("Content"), "Keep my unsaved instructions");
+      expect(knowledgeClient.discoverKnowledge).not.toHaveBeenCalled();
+      await user.click(screen.getByRole("button", { name: "Rules & skills" }));
+      await screen.findByRole("button", { name: entry.name });
+      expect(knowledgeClient.discoverKnowledge).toHaveBeenCalledExactlyOnceWith({ projectId: PROJECT.id });
+      expect(library).toBeInTheDocument();
+      expect(library).not.toBeVisible();
+      await user.click(screen.getByRole("button", { name: "Close knowledge library" }));
+      expect(screen.queryByRole("region", { name: "Rules & skills" })).not.toBeInTheDocument();
+      rerender(<CanvasWorkspace {...props} knowledgeConnectionKey="connected:daemon-b" />);
+      await user.click(screen.getByRole("button", { name: "Add note" }));
+      expect(knowledgeClient.discoverKnowledge).toHaveBeenCalledTimes(1);
+      await user.click(trigger);
+      await screen.findByRole("button", { name: entry.name });
+      expect(knowledgeClient.discoverKnowledge).toHaveBeenCalledTimes(2);
+      await user.click(screen.getByRole("button", { name: "Saved prompts & context" }));
+
+      expect(library).toBeVisible();
+      expect(within(library).getByLabelText("Title")).toHaveValue("Unfinished review");
+      expect(within(library).getByLabelText("Content")).toHaveValue("Keep my unsaved instructions");
+      expect(knowledgeClient.listKnowledge).toHaveBeenCalledTimes(1);
+      expect(knowledgeClient.readKnowledge).not.toHaveBeenCalled();
+      expect(knowledgeClient.saveKnowledge).not.toHaveBeenCalled();
+      expect(props.writeTerminal).not.toHaveBeenCalled();
+      expect(props.onStartSession).not.toHaveBeenCalled();
+    });
+
     it.each([true, false])("loads saved content only after an explicit open (connected: %s)", async (isConnected) => {
       const user = userEvent.setup();
       const knowledgeClient = createMockIpcClient({

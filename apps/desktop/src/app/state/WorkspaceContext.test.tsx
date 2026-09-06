@@ -156,6 +156,33 @@ describe("WorkspaceProvider terminal event isolation", () => {
 });
 
 describe("WorkspaceProvider refreshed worktrees and knowledge", () => {
+  it("selects a new session after committed navigation without allowing an older creation to steal focus", async () => {
+    const first = createSession();
+    const secondProject = { ...createProject(), id: "project-two", name: "Second project" };
+    const second = { ...first, id: "session-two", projectId: secondProject.id };
+    const pendingFirst = deferred<Session>();
+    const bootstrap = createBootstrap(first);
+    const client = createMockIpcClient({
+      bootstrap: { ...bootstrap, snapshot: { ...bootstrap.snapshot, projects: [createProject(), secondProject] } },
+      handlers: { createSession: async () => second },
+    });
+    client.createSession.mockReturnValueOnce(pendingFirst.promise);
+    const onRender = await renderMetadata(client);
+    let pending: Promise<Session>;
+    await act(async () => {
+      pending = latestContext(onRender).createSession({ projectId: first.projectId, agentId: first.agentId, name: "Older creation", isolation: "current" });
+    });
+    act(() => latestContext(onRender).selectProject(secondProject.id));
+    await act(async () => {
+      await latestContext(onRender).createSession({ projectId: second.projectId, agentId: second.agentId, name: "Current creation", isolation: "current" });
+    });
+    expect(latestContext(onRender).selectedSessionId).toBe(second.id);
+    await act(async () => { pendingFirst.resolve(first); await pending; });
+    expect(latestContext(onRender).selectedProjectId).toBe(secondProject.id);
+    expect(latestContext(onRender).selectedSessionId).toBe(second.id);
+    expect(client.startSession).not.toHaveBeenCalled();
+  });
+
   it("refreshes an isolated creation without starting it or awaiting a metadata event", async () => {
     const session = { ...createSession(), worktreeId: "worktree-one", status: "unknown" as const };
     const client = createMockIpcClient({

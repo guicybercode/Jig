@@ -252,6 +252,29 @@ test("uses the local knowledge editor as an explicit draft source while offline"
   await expect(editor).toHaveValue(expected);
 });
 
+test("opens the compact source inspector without losing unsaved library text while offline", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.getByRole("button", { name: "Open prompts and context", exact: true }).click();
+  const library = page.getByRole("region", { name: "Knowledge library", exact: true });
+  await library.getByRole("textbox", { name: "Title", exact: true }).fill("Keep this local draft");
+  await library.getByRole("textbox", { name: "Content", exact: true }).fill("Do not send or overwrite this text.");
+  await library.getByRole("button", { name: "Rules & skills", exact: true }).click();
+  const inspector = library.getByRole("region", { name: "Rules & skills", exact: true });
+  await expect(inspector).toBeVisible();
+  await expect(inspector.getByRole("alert")).toHaveText(/The local daemon could not be reached/);
+  await expect(inspector.getByText(/Native CLI loading remains unverified/)).toBeVisible();
+  await expect(library).toBeInViewport({ ratio: 1 });
+  expect(await library.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("canvas-source-inspector-compact.png") });
+  await library.getByRole("button", { name: "Close knowledge library", exact: true }).click();
+  await page.getByRole("button", { name: "Open prompts and context", exact: true }).click();
+  await expect(inspector.getByRole("searchbox")).toBeFocused();
+  await library.getByRole("button", { name: "Saved prompts & context", exact: true }).click();
+  await expect(library.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Keep this local draft");
+  await expect(library.getByRole("textbox", { name: "Content", exact: true })).toHaveValue("Do not send or overwrite this text.");
+  await expect(page.getByRole("article")).toHaveCount(3);
+});
+
 /** Resolves a canvas card through its user-facing accessible name. */
 function canvasCard(page: Page, title: string, kind: "terminal" | "note") {
   return page.getByRole("article", { name: `${title}, ${kind} canvas item`, exact: true });

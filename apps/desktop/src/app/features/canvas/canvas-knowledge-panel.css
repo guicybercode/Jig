@@ -39,6 +39,35 @@
   overflow-wrap: anywhere;
 }
 
+.canvas-knowledge-panel__sections {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--canvas-border);
+}
+
+.canvas-knowledge-panel__sections button {
+  min-height: var(--control-height);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--canvas-control-border);
+  border-radius: var(--radius);
+  color: var(--canvas-text);
+  background: var(--canvas-card);
+  font-size: 0.8125rem;
+}
+
+.canvas-knowledge-panel__sections button[aria-pressed="true"] {
+  border-color: var(--canvas-focus);
+  background: var(--color-surface-hover);
+  font-weight: 600;
+}
+
+.canvas-knowledge-panel__sections button:focus-visible {
+  outline: 3px solid var(--canvas-focus);
+  outline-offset: 2px;
+}
+
 .canvas-knowledge-panel__target button {
   display: grid;
   place-items: center;

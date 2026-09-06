@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useReducer,
   useRef,
@@ -124,7 +125,7 @@ export interface WorkspaceOperations {
 
 /** Stable state and actions consumed by project/session UI features. */
 export interface WorkspaceContextValue extends WorkspaceOperations {
-  readonly knowledgeClient: Pick<IpcClient, "listKnowledge" | "saveKnowledge" | "deleteKnowledge">;
+  readonly knowledgeClient: Pick<IpcClient, "listKnowledge" | "saveKnowledge" | "deleteKnowledge" | "discoverKnowledge" | "readKnowledge">;
   refreshWorktrees(): Promise<readonly Worktree[]>;
   readonly platform: AppPlatform;
   readonly connection: DaemonConnection;
@@ -294,7 +295,9 @@ export function WorkspaceProvider({
   const requestGenerationRef = useRef(0);
   const worktreeRefreshSequenceRef = useRef(0);
   const navigationRevisionRef = useRef(state.navigationRevision);
-  navigationRevisionRef.current = state.navigationRevision;
+  useLayoutEffect(() => {
+    navigationRevisionRef.current = state.navigationRevision;
+  }, [state.navigationRevision]);
 
   useEffect(() => {
     requestGenerationRef.current += 1;
@@ -598,6 +601,8 @@ export function WorkspaceProvider({
     listKnowledge: (input) => execute(() => client.listKnowledge(input), undefined, true, false),
     saveKnowledge: (input) => execute(() => client.saveKnowledge(input), undefined, true, false),
     deleteKnowledge: (input) => execute(() => client.deleteKnowledge(input), undefined, true, false),
+    discoverKnowledge: (input) => execute(() => client.discoverKnowledge(input), undefined, true, false),
+    readKnowledge: (input) => execute(() => client.readKnowledge(input), undefined, true, false),
   }), [client, execute]);
 
   const createSession = useCallback(
