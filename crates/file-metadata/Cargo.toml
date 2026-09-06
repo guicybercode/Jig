@@ -1,6 +1,8 @@
 [package]
 name = "cli-master-file-metadata"
 version.workspace = true
+license.workspace = true
+repository.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 

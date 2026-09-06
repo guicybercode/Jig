@@ -2,6 +2,11 @@
   "name": "cli-master",
   "version": "0.2.0",
   "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/guicybercode/Jig.git"
+  },
   "packageManager": "pnpm@11.9.0",
   "scripts": {
     "build": "pnpm --filter @cli-master/desktop build",
@@ -19,6 +24,7 @@
     "lint": "pnpm --filter @cli-master/desktop lint",
     "tauri": "pnpm --filter @cli-master/desktop tauri",
     "tauri:build": "bash scripts/stage-sidecar.sh && pnpm tauri build",
+    "package": "bash scripts/package.sh",
     "test": "pnpm test:frontend && cargo test --workspace --locked"
   }
 }

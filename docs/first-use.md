@@ -15,11 +15,12 @@ only in Homebrew (`/opt/homebrew/bin`), the daemon may miss it until that
 directory is on the desktop process `PATH`. `--preflight` reports the Git
 it actually found.
 
-## 2. Run preflight
+## 2. Optionally run preflight
 
-```bash
-cli-masterd --preflight
-```
+The desktop locates its bundled daemon automatically. For command-line
+diagnostics, use the full daemon path for your installation from
+[install.md](install.md#the-daemon-does-not-connect); installing the application
+does not put `cli-masterd` on your shell's `PATH`.
 
 You want `"ok": true` and `"git": { "available": true }`. Codex, Claude,
 Gemini, and OpenCode are listed as optional. Missing ones do not fail

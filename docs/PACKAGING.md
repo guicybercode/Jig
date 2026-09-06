@@ -18,6 +18,11 @@ pnpm package                           # build, smoke the bundle, checksums
 `pnpm package` writes `dist/artifacts/` plus `SHA256SUMS`. It does not
 create a GitHub Release.
 
+Every application bundle includes the project's MIT license at
+`licenses/Jig-LICENSE.txt` in its resources. The bundle smoke test compares
+this file with the repository's `LICENSE`; it fails if the file is missing
+or different. Third-party dependencies retain their own licenses.
+
 `cargo clippy --workspace` and `cargo test --workspace` need
 `apps/desktop/src-tauri/binaries/cli-masterd-<triple>` to exist. Quality CI
 stages a real debug sidecar. A debug compile can also write a stub if the
@@ -63,6 +68,13 @@ Retention is 14 days.
 
 The workflow has `contents: read` only. It cannot publish a Release and it
 does not receive signing secrets.
+
+Download artifacts from the exact candidate commit, verify each platform's
+`SHA256SUMS`, then combine the installable files and generate a single checksum
+manifest for the release. Do not overwrite one platform's manifest with the
+other before verifying it. A draft release is a staging area, not evidence of
+manual acceptance; follow [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) before
+publishing it.
 
 ## Signing and notarization (not in this repository)
 

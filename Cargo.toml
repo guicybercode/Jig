@@ -17,6 +17,8 @@ resolver = "2"
 edition = "2024"
 rust-version = "1.85"
 version = "0.2.0"
+license = "MIT"
+repository = "https://github.com/guicybercode/Jig"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

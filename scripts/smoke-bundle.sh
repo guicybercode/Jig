@@ -17,6 +17,7 @@ find_first() {
 }
 
 daemon=""
+license=""
 work="$(mktemp -d "${TMPDIR:-/tmp}/cli-master-smoke.XXXXXX")"
 cleanup() {
   rm -rf "$work"
@@ -38,6 +39,7 @@ case "$(uname -s)" in
       "$appimage" --appimage-extract >/dev/null
     )
     daemon="$(find "$work/squashfs-root" -type f -name 'cli-masterd' -print | sort | head -n 1)"
+    license="$(find "$work/squashfs-root" -type f -name 'Jig-LICENSE.txt' -print | sort | head -n 1)"
     desktop="$(find "$work/squashfs-root" -type f \( -name 'cli-master-desktop' -o -name 'CLI Master' \) -print | sort | head -n 1)"
     if [[ -z "$desktop" ]]; then
       echo "desktop binary missing from AppImage" >&2
@@ -54,6 +56,7 @@ case "$(uname -s)" in
     fi
     echo "smoke app: $app"
     daemon="$app/Contents/MacOS/cli-masterd"
+    license="$app/Contents/Resources/licenses/Jig-LICENSE.txt"
     desktop="$(find "$app/Contents/MacOS" -maxdepth 1 -type f ! -name 'cli-masterd' -print | sort | head -n 1)"
     if [[ -z "$desktop" ]]; then
       echo "desktop binary missing from $app" >&2
@@ -71,6 +74,12 @@ case "$(uname -s)" in
     exit 1
     ;;
 esac
+
+if [[ -z "$license" || ! -f "$license" ]] || ! cmp -s "$root/LICENSE" "$license"; then
+  echo "bundled Jig license is missing or differs from LICENSE" >&2
+  exit 1
+fi
+echo "bundled MIT license verified"
 
 if [[ -z "$daemon" || ! -f "$daemon" ]]; then
   echo "cli-masterd missing from bundle" >&2

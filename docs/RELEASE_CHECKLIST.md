@@ -54,10 +54,14 @@ GUI acceptance below.
 
 ## Artifacts
 
+- [ ] `LICENSE` declares MIT and Cargo, npm, and Tauri metadata agree.
+- [ ] Bundle smoke tests verified `licenses/Jig-LICENSE.txt` matches `LICENSE`.
 - [ ] AppImage attached for Linux.
 - [ ] `.dmg` and/or `.app.zip` attached for macOS.
 - [ ] `SHA256SUMS` sits next to those files.
 - [ ] Checksums were regenerated after the last rebuild.
+- [ ] The release tag points to the exact commit that produced both platform
+      artifacts; per-platform checksums were verified before combining them.
 
 ## Manual package acceptance
 
@@ -99,6 +103,11 @@ hostile-page boundary during development before repeating it in each package.
 
 ## Documentation
 
+- [ ] [SECURITY.md](../SECURITY.md) is current and private vulnerability
+      reporting is enabled in repository settings.
+- [ ] [CONTRIBUTING.md](../CONTRIBUTING.md) and
+      [distribution.md](distribution.md) match the documented commands and
+      actual distribution channels.
 - [ ] [CHANGELOG.md](../CHANGELOG.md) matches what testers will see.
 - [ ] [install.md](install.md), [first-use.md](first-use.md),
       [backup-and-recovery.md](backup-and-recovery.md),
