@@ -50,6 +50,7 @@ export interface MockIpcClient extends IpcClient {
     IpcClient["prepareWorktreeRemoval"]
   >;
   readonly removeWorktree: Mock<IpcClient["removeWorktree"]>;
+  readonly listWorktrees: Mock<IpcClient["listWorktrees"]>;
   readonly getDiagnostics: Mock<IpcClient["getDiagnostics"]>;
   readonly openPath: Mock<IpcClient["openPath"]>;
   emit(event: string, payload?: unknown, sequence?: number): void;
@@ -149,6 +150,7 @@ export function createMockIpcClient(
       handlers.prepareWorktreeRemoval ??
         (() => rejectUnhandled("prepareWorktreeRemoval")),
     ),
+    listWorktrees: vi.fn<IpcClient["listWorktrees"]>(handlers.listWorktrees ?? (() => rejectUnhandled("listWorktrees"))),
     removeWorktree: vi.fn<IpcClient["removeWorktree"]>(
       handlers.removeWorktree ?? (() => rejectUnhandled("removeWorktree")),
     ),

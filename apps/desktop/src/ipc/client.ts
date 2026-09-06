@@ -1,5 +1,5 @@
 import { decodeKnowledgeEntry, decodeKnowledgePage } from "./knowledge-schema";
-import type { KnowledgeEntry, KnowledgeListRequest, KnowledgeListResponse, KnowledgeSaveRequest, KnowledgeDeleteRequest } from "./domain";
+import type { KnowledgeEntry, KnowledgeListRequest, KnowledgeListResponse, KnowledgeSaveRequest, KnowledgeDeleteRequest, WorktreeListRequest } from "./domain";
 import type {
   FileListRequest,
   FileListResponse,
@@ -49,6 +49,7 @@ import type {
   ResponseEnvelope,
   Session,
   SessionIdInput,
+  Worktree,
   WorktreeRemovalPreparation,
 } from "./types";
 
@@ -100,6 +101,7 @@ export interface IpcClient {
   renameSession(input: RenameSessionInput): Promise<Session>;
   deleteSession(input: SessionIdInput): Promise<void>;
   getGitStatus(target: GitTarget): Promise<GitStatus>;
+  listWorktrees(input?: WorktreeListRequest): Promise<readonly Worktree[]>;
   prepareWorktreeRemoval(worktreeId: string): Promise<WorktreeRemovalPreparation>;
   removeWorktree(input: RemoveWorktreeInput): Promise<void>;
   getDiagnostics(): Promise<DiagnosticsSnapshot>;
@@ -304,6 +306,11 @@ class TauriIpcClient implements IpcClient {
 
   async getGitStatus(target: GitTarget): Promise<GitStatus> {
     return decodeGitStatus(await this.request("git.status", { target }));
+  }
+
+  async listWorktrees(input: WorktreeListRequest = {}): Promise<readonly Worktree[]> {
+    const response = requireRecord(await this.request("worktree.list", input), "worktree list");
+    return requireArray(response.worktrees, "worktree list.worktrees").map(decodeWorktree);
   }
 
   async prepareWorktreeRemoval(

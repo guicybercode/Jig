@@ -1021,6 +1021,7 @@ describe("AppShell canvas workflows", () => {
         worktrees: [worktree],
       }),
       handlers: {
+        listWorktrees: async () => [worktree],
         startSession: async () => ({
           ...session,
           status: "running",
@@ -1303,6 +1304,7 @@ describe("AppShell canvas workflows", () => {
       sessionId: stoppedSession.id,
       path: stoppedSession.worktreePath,
     });
+    let registeredWorktrees = [worktree];
     const client = createMockIpcClient({
       bootstrap: createBootstrap({
         projects: [project],
@@ -1311,6 +1313,7 @@ describe("AppShell canvas workflows", () => {
         worktrees: [worktree],
       }),
       handlers: {
+        listWorktrees: async () => registeredWorktrees,
         stopSession: async () => ({
           ...runningSession,
           status: "exited",
@@ -1323,7 +1326,9 @@ describe("AppShell canvas workflows", () => {
           worktreeId: worktree.id,
           expiresAtMs: TEST_TIME + 60_000,
         }),
-        removeWorktree: async () => undefined,
+        removeWorktree: async () => {
+          registeredWorktrees = [];
+        },
       },
     });
     const user = await renderApp(client);

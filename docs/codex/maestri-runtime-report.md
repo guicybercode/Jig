@@ -155,3 +155,18 @@ workspace/floor e canvas durável com revisão e importação explícita do
 localStorage pela S1. Organização pin/archive/workflow pertence à S3, com
 migração 0005 reservada, antes da próxima migração S2. A matriz mantém presets,
 continuidade, comunicação, rotinas e ambientes remotos como trabalho restante.
+
+## Reconciliação com S1 após arquivos
+
+A branch incorpora S1 até `dd84a49`, incluindo biblioteca/compositor de prompts,
+refresh de worktrees e o tratamento de prazo de probe em `645047b`. Preserva-se
+o diagnóstico saneado da S1 e o timeout explícito após esgotar o prazo; as
+regressões reais de ETXTBSY da S2 permanecem no Linux. Dois testes AppShell
+agora fornecem respostas explícitas de listWorktrees, inclusive a lista vazia
+após remoção, em acordo com o novo refresh da S1.
+
+Após resolver os conflitos, passaram 97 testes core, 68 daemon e 63 agents;
+Clippy dos quatro pacotes sem warnings. O check frontend completo passou:
+278 testes, typecheck e build Vite. Essa execução não substitui o smoke nativo
+nem a nova CI Linux/macOS. O serviço de arquivos e os controles S1 coexistem;
+o editor de arquivos ainda precisa ser montado pela S1.

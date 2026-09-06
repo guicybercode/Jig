@@ -8,6 +8,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import type { Ref } from "react";
 
 import type {
   AgentRecord,
@@ -32,6 +33,7 @@ import {
   createTerminalCanvasNode,
   duplicateCanvasSelection,
   getCanvasNodeSize,
+  normalizeBrowserUrl,
   type BrowserCanvasNode,
   type CanvasTerminalConfiguration,
   type CanvasNode,
@@ -51,11 +53,16 @@ import {
   toStagePoint,
 } from "./canvas-geometry";
 import { NewCanvasTerminalDialog } from "./NewCanvasTerminalDialog";
+import { PromptComposer } from "./PromptComposer";
+import type { PromptContextItem, PromptTerminalKey } from "./PromptComposer";
+import { encodePromptInput, encodePromptTerminalKey, getPromptInputError } from "./prompt-input";
 import { useCanvasState } from "./useCanvasState";
 import {
   LiveTerminal,
+  type LiveTerminalInputHandle,
   type LiveTerminalTransport,
 } from "../terminal/LiveTerminal";
+import type { TerminalInputModes } from "../terminal/terminal-runtime";
 import { errorData, isLiveStatus } from "../../utils";
 
 export interface CanvasSessionFocusRequest {
@@ -128,6 +135,9 @@ export function CanvasWorkspace({
   const handledFocusRequestRef = useRef<CanvasSessionFocusRequest | null>(null);
   const focusSelectionRef = useRef(false);
   const layersTriggerRef = useRef<HTMLButtonElement>(null);
+  const terminalInputsRef = useRef(new Map<string, LiveTerminalInputHandle>());
+  const pendingComposerInputRef = useRef(new Set<string>());
+  const canvasComposingRef = useRef(false);
   const panRef = useRef<{
     readonly pointerId: number;
     readonly clientX: number;
@@ -139,6 +149,10 @@ export function CanvasWorkspace({
     null,
   );
   const [layersOpen, setLayersOpen] = useState(false);
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [pendingComposerNodes, setPendingComposerNodes] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [terminalDialogOpen, setTerminalDialogOpen] = useState(false);
   const [pendingTerminals, setPendingTerminals] = useState<ReadonlySet<string>>(
     () => new Set(),
@@ -219,6 +233,25 @@ export function CanvasWorkspace({
   const selectedNode = visibleNodes.find(
     (node) => node.id === state.selectedNodeId,
   );
+  const composerNode = composerOpen && selectedNode?.kind === "terminal"
+    ? selectedNode
+    : undefined;
+  const composerSession = composerNode?.sessionId
+    ? terminalSessions.get(composerNode.sessionId)
+    : undefined;
+  const composerDisabledReason = composerNode
+    ? !isConnected
+      ? "Reconnect to the daemon to send input. You can keep drafting."
+      : !composerSession
+        ? "Attach a running session to send input. You can keep drafting."
+        : !isLiveStatus(composerSession.status)
+          ? "This terminal is stopped. Start it to send input."
+          : pendingComposerNodes.has(composerNode.id)
+            ? "Input is being delivered to this terminal. You can keep drafting."
+            : composerNode.promptDraft?.trim()
+              ? getPromptInputError(composerNode.promptDraft)
+              : undefined
+    : undefined;
   const selectedNodeIds = state.selectedNodeIds.filter((id) =>
     visibleNodeIds.has(id),
   );
@@ -234,6 +267,22 @@ export function CanvasWorkspace({
         return otherNode ? [{ connection, otherNode }] : [];
       })
     : [];
+  const composerContextItems: readonly PromptContextItem[] = composerNode
+    ? selectedConnections.flatMap(({ otherNode }) => {
+        if (otherNode.kind === "note") {
+          return [{ id: otherNode.id, title: otherNode.title, text: otherNode.text }];
+        }
+        if (otherNode.kind === "browser") {
+          const url = normalizeBrowserUrl(otherNode.url);
+          return url ? [{ id: otherNode.id, title: `${otherNode.title} URL`, text: url }] : [];
+        }
+        return [];
+      })
+    : [];
+  const registerTerminalInput = useCallback((nodeId: string, handle: LiveTerminalInputHandle | null) => {
+    if (handle) terminalInputsRef.current.set(nodeId, handle);
+    else terminalInputsRef.current.delete(nodeId);
+  }, []);
   const sessionCanvasTopologyKey = useMemo(
     () =>
       JSON.stringify({
@@ -560,6 +609,44 @@ export function CanvasWorkspace({
     }
   }
 
+  async function deliverComposerInput(
+    node: TerminalCanvasNode,
+    encode: (modes: TerminalInputModes) => Uint8Array,
+  ) {
+    const session = terminalSessions.get(node.sessionId ?? "");
+    const input = terminalInputsRef.current.get(node.id);
+    if (!isConnected || !session || !isLiveStatus(session.status) || !input) {
+      throw new Error("This terminal is not available for input.");
+    }
+    if (pendingComposerInputRef.current.has(node.id)) {
+      throw new Error("Input is already being delivered to this terminal.");
+    }
+    pendingComposerInputRef.current.add(node.id);
+    setPendingComposerNodes(new Set(pendingComposerInputRef.current));
+    try {
+      await input.writeInput(encode);
+    } finally {
+      pendingComposerInputRef.current.delete(node.id);
+      setPendingComposerNodes(new Set(pendingComposerInputRef.current));
+    }
+  }
+
+  async function sendComposerPrompt(node: TerminalCanvasNode, text: string) {
+    const revision = node.promptDraftRevision ?? 0;
+    await deliverComposerInput(node, (modes) => encodePromptInput(text, modes));
+    dispatch({ type: "terminal/draft_sent", nodeId: node.id, text, revision });
+  }
+
+  function sendComposerKey(node: TerminalCanvasNode, key: PromptTerminalKey) {
+    return deliverComposerInput(node, (modes) => encodePromptTerminalKey(key, modes));
+  }
+
+  function toggleComposer(node: TerminalCanvasNode) {
+    selectNode(node);
+    setLayersOpen(false);
+    setComposerOpen((open) => !(open && selectedNode?.id === node.id));
+  }
+
   function setZoom(zoom: number) {
     markCanvasScrolling();
     dispatch({ type: "zoom/set", zoom: Number(zoom.toFixed(2)) });
@@ -702,6 +789,28 @@ export function CanvasWorkspace({
       className="canvas-workspace"
       tabIndex={-1}
       aria-labelledby="canvas-workspace-title"
+      onCompositionStartCapture={() => { canvasComposingRef.current = true; }}
+      onCompositionEndCapture={() => { canvasComposingRef.current = false; }}
+      onKeyDownCapture={(event) => {
+        if (
+          event.defaultPrevented || event.repeat || canvasComposingRef.current || event.nativeEvent.isComposing
+          || event.nativeEvent.keyCode === 229 || !event.shiftKey || event.altKey
+          || event.metaKey === event.ctrlKey || event.key.toLowerCase() !== "p"
+        ) return;
+        const target = event.target instanceof Element ? event.target : null;
+        const targetId = target?.closest("[data-canvas-node-id]")?.getAttribute("data-canvas-node-id");
+        const targetNode = visibleNodes.find((node) => node.id === targetId);
+        if (targetNode && targetNode.kind !== "terminal") return;
+        const terminal = targetNode?.kind === "terminal" ? targetNode : selectedNode;
+        if (terminal?.kind !== "terminal") return;
+        if (
+          target?.closest("input, textarea, select, [contenteditable]:not([contenteditable='false']), [role='textbox'], [role='dialog']")
+          && !target?.closest("[data-terminal-root], .prompt-composer")
+        ) return;
+        event.preventDefault();
+        event.stopPropagation();
+        toggleComposer(terminal);
+      }}
       onKeyDown={(event) => {
         if (event.defaultPrevented || isCanvasEditingTarget(event.target)) {
           return;
@@ -774,6 +883,18 @@ export function CanvasWorkspace({
         >
           <Icon name="browser" />
         </button>
+        <button
+          className="canvas-tool"
+          type="button"
+          aria-label="Toggle Prompt Composer"
+          title="Prompt Composer (⌘/Ctrl+Shift+P)"
+          aria-keyshortcuts="Control+Shift+P Meta+Shift+P"
+          aria-expanded={Boolean(composerNode)}
+          disabled={selectedNode?.kind !== "terminal"}
+          onClick={() => {
+            if (selectedNode?.kind === "terminal") toggleComposer(selectedNode);
+          }}
+        ><Icon name="pencil" /></button>
         <button
           className={
             visibleConnectionSourceId
@@ -1047,6 +1168,11 @@ export function CanvasWorkspace({
                 onStartTerminal={() =>
                   node.kind === "terminal" && launchTerminal(node, session)
                 }
+                composerOpen={composerNode?.id === node.id}
+                onToggleComposer={() => {
+                  if (node.kind === "terminal") toggleComposer(node);
+                }}
+                onTerminalInput={registerTerminalInput}
                 onStartSession={onStartSession}
                 onRestartSession={onRestartSession}
                 onRenameSession={onRenameSession}
@@ -1075,6 +1201,7 @@ export function CanvasWorkspace({
                   state.zoom === 1 &&
                   !terminalDialogOpen &&
                   !layersOpen &&
+                  !composerNode &&
                   !canvasInteracting &&
                   !canvasScrolling
                 }
@@ -1087,6 +1214,8 @@ export function CanvasWorkspace({
                     ? "The browser is hidden while a dialog covers the canvas."
                     : layersOpen
                       ? "The browser is hidden while canvas search is open."
+                    : composerNode
+                      ? "The browser is hidden while Prompt Composer is open."
                     : state.zoom !== 1
                       ? "Use 100% zoom to interact with this page."
                       : undefined
@@ -1112,7 +1241,24 @@ export function CanvasWorkspace({
         />
       ) : null}
 
-      {selectedNode && selectedConnections.length > 0 && !layersOpen ? (
+      {composerNode && !layersOpen && !terminalDialogOpen ? (
+        <div className="canvas-prompt-composer" data-browser-obstruction="true" data-shortcut-scope="prompt-composer">
+          <PromptComposer
+            nodeId={composerNode.id}
+            title={composerNode.title}
+            value={composerNode.promptDraft ?? ""}
+            onChange={(text) => dispatch({ type: "terminal/draft", nodeId: composerNode.id, text })}
+            onSend={(text) => sendComposerPrompt(composerNode, text)}
+            onTerminalKey={(key) => sendComposerKey(composerNode, key)}
+            onClose={() => setComposerOpen(false)}
+            disabledReason={composerDisabledReason}
+            contextItems={composerContextItems}
+            clearOnSend={false}
+          />
+        </div>
+      ) : null}
+
+      {selectedNode && selectedConnections.length > 0 && !layersOpen && !composerNode ? (
         <section
           className="canvas-connections-panel"
           aria-label={`Connections for ${selectedNode.title}`}
@@ -1266,6 +1412,9 @@ interface CanvasNodeCardProps {
   readonly onManipulationChange: (interacting: boolean) => void;
   readonly onNoteChange: (text: string) => void;
   readonly onStartTerminal: () => void;
+  readonly composerOpen: boolean;
+  readonly onToggleComposer: () => void;
+  readonly onTerminalInput: (nodeId: string, handle: LiveTerminalInputHandle | null) => void;
   readonly onStartSession: (sessionId: string) => Promise<Session>;
   readonly onRestartSession: (sessionId: string) => Promise<Session>;
   readonly onRenameSession: (sessionId: string) => void;
@@ -1305,6 +1454,9 @@ function CanvasNodeCard({
   onManipulationChange,
   onNoteChange,
   onStartTerminal,
+  composerOpen,
+  onToggleComposer,
+  onTerminalInput,
   onStartSession,
   onRestartSession,
   onRenameSession,
@@ -1323,6 +1475,9 @@ function CanvasNodeCard({
   browserUnavailableReason,
   onBrowserNavigate,
 }: CanvasNodeCardProps) {
+  const registerInput = useCallback((handle: LiveTerminalInputHandle | null) => {
+    onTerminalInput(node.id, handle);
+  }, [node.id, onTerminalInput]);
   const dragRef = useRef<{
     readonly pointerId: number;
     readonly clientX: number;
@@ -1504,6 +1659,18 @@ function CanvasNodeCard({
           ) : null}
         </div>
         <div className="canvas-node__actions">
+          {node.kind === "terminal" ? (
+            <button
+              type="button"
+              aria-label={`Open Prompt Composer for ${node.title}`}
+              title="Prompt Composer (⌘/Ctrl+Shift+P)"
+              aria-expanded={composerOpen}
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggleComposer();
+              }}
+            ><Icon name="pencil" /></button>
+          ) : null}
           {selected ? (
             <span className="canvas-node__selected-label">Selected</span>
           ) : null}
@@ -1566,6 +1733,7 @@ function CanvasNodeCard({
             isConnected,
           )}
           transport={terminalTransport}
+          inputRef={registerInput}
         />
       ) : node.kind === "note" ? (
         <NoteNodeBody node={node} onChange={onNoteChange} />
@@ -2139,6 +2307,7 @@ function TerminalNodeBody({
   error,
   startDisabledReason,
   transport,
+  inputRef,
 }: {
   readonly node: TerminalCanvasNode;
   readonly agent?: AgentRecord;
@@ -2148,6 +2317,7 @@ function TerminalNodeBody({
   readonly error?: string;
   readonly startDisabledReason?: string;
   readonly transport: LiveTerminalTransport;
+  readonly inputRef: Ref<LiveTerminalInputHandle>;
 }) {
   const live = session ? isLiveStatus(session.status) : false;
   const startDisabled = pending || startDisabledReason !== undefined;
@@ -2172,7 +2342,7 @@ function TerminalNodeBody({
       </div>
       {session && live ? (
         <div className="canvas-terminal__body canvas-terminal__body--live">
-          <LiveTerminal session={session} {...transport} />
+          <LiveTerminal session={session} inputRef={inputRef} {...transport} />
         </div>
       ) : (
         <div className="canvas-terminal__body">

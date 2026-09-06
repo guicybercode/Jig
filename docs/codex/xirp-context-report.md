@@ -71,7 +71,12 @@ had limited free disk space.
 - `cargo fmt --all -- --check`: passed.
 - IPC TypeScript tests and typecheck passed. Full frontend run with Node 25
   needs `NODE_OPTIONS=--no-experimental-webstorage` to use jsdom storage;
-  CI uses Node 24. Isolated UI behavior tests are being finalized separately.
+  CI uses Node 24. Full frontend check passed: 121 tests, TypeScript and Vite build.
+- KnowledgePanel: 12 behavior tests, targeted ESLint and Chromium inspection at
+  1100px/375px passed. Native labels/focus and no horizontal overflow checked.
+  [Desktop capture](artifacts/xirp/knowledge-desktop.png) and
+  [narrow editor](artifacts/xirp/knowledge-narrow-editor.png) use an isolated
+  mock-client preview, not a claim of integrated Tauri behavior.
 
 Direct typed serde duplicate-field validation is not a promise that duplicate
 keys are rejected after the daemon's intermediate JSON Value decode.
@@ -80,8 +85,8 @@ Linux CI, actual Tauri/canvas consumption and full parity remain unverified.
 ## Commits / next integration
 
 - `569449f`: source inventory and integration proposal; pushed.
-- Backend first vertical increment follows this report in the current commit.
-- Isolated `KnowledgePanel` follows as its own UI increment. Props:
+- `2f3b7c8`: persisted knowledge contract/SQLite/daemon/typed IPC; pushed.
+- Isolated `KnowledgePanel` is implemented as the next UI commit. Props:
   `{client,currentProject,onInsert,insertDisabledReason}`; insertion receives
   `{sourceId,kind,title,body}` and must append to an editable composer draft.
   Keep panel mounted if unsaved editor drafts must survive closing its surface.

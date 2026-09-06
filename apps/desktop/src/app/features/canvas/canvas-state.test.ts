@@ -16,6 +16,59 @@ import {
 } from "./canvas-state";
 
 describe("canvas state", () => {
+  it("persists each terminal's draft without changing its session or other cards", () => {
+    const initial = createInitialCanvasState();
+    const drafted = canvasReducer(initial, {
+      type: "terminal/draft", nodeId: "terminal-primary", text: "Review this\nthen explain.",
+    });
+    const saved = parseCanvasDocument(serializeCanvasDocument(drafted));
+    expect(saved.nodes.find((node) => node.id === "terminal-primary")).toMatchObject({
+      promptDraft: "Review this\nthen explain.", promptDraftRevision: 1,
+    });
+    expect(drafted.nodes.find((node) => node.id === "terminal-secondary")).toBe(initial.nodes.find((node) => node.id === "terminal-secondary"));
+    expect(canvasReducer(drafted, {
+      type: "terminal/draft", nodeId: "terminal-primary", text: "Review this\nthen explain.",
+    })).toBe(drafted);
+    expect(canvasReducer(drafted, {
+      type: "terminal/draft", nodeId: "note-first", text: "wrong target",
+    })).toBe(drafted);
+  });
+
+  it("clears only an acknowledged draft revision, including edit-away-and-back races", () => {
+    const drafted = canvasReducer(createInitialCanvasState(), {
+      type: "terminal/draft", nodeId: "terminal-primary", text: "A",
+    });
+    const acknowledgment = {
+      type: "terminal/draft_sent", nodeId: "terminal-primary", text: "A", revision: 1,
+    } as const;
+    const cleared = canvasReducer(drafted, acknowledgment);
+    expect(cleared.nodes.find((node) => node.id === "terminal-primary")).toMatchObject({
+      promptDraft: "", promptDraftRevision: 2,
+    });
+    expect(canvasReducer(cleared, acknowledgment)).toBe(cleared);
+    const edited = canvasReducer(drafted, {
+      type: "terminal/draft", nodeId: "terminal-primary", text: "B",
+    });
+    const editedBack = canvasReducer(edited, {
+      type: "terminal/draft", nodeId: "terminal-primary", text: "A",
+    });
+    expect(canvasReducer(editedBack, acknowledgment)).toBe(editedBack);
+    expect(canvasReducer(edited, acknowledgment)).toBe(edited);
+    const removed = canvasReducer(drafted, { type: "node/delete", nodeId: "terminal-primary" });
+    expect(canvasReducer(removed, acknowledgment)).toBe(removed);
+  });
+
+  it("migrates absent or malformed draft metadata without treating it as input", () => {
+    const document = createInitialCanvasDocument();
+    const parsed = parseCanvasDocument(JSON.stringify({
+      ...document, version: 1,
+      nodes: document.nodes.map((node) => ({ ...node, promptDraft: 123, promptDraftRevision: -1 })),
+    }));
+    expect(parsed.nodes.find((node) => node.id === "terminal-primary")).toMatchObject({
+      promptDraft: undefined, promptDraftRevision: undefined,
+    });
+  });
+
   it("persists the Gemini quick-start preset with its native executable", () => {
     const node = createTerminalCanvasNode({ x: 0, y: 0 }, { preset: "gemini" }, "gemini");
     const state = createInitialCanvasState({ version: 2, nodes: [node], connections: [], zoom: 1 });

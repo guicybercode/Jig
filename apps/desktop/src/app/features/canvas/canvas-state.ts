@@ -27,6 +27,9 @@ export interface TerminalCanvasNode extends CanvasNodeBase {
   readonly sessionId?: string;
   /** Reference the persisted agent definition without copying its environment. */
   readonly agentId?: string;
+  /** User-authored composer text, never PTY output or an auto-send instruction. */
+  readonly promptDraft?: string;
+  readonly promptDraftRevision?: number;
   readonly preset: TerminalPreset;
   readonly executable?: string;
   readonly workingDirectory?: string;
@@ -102,6 +105,17 @@ export type CanvasAction =
       readonly type: "note/update";
       readonly nodeId: string;
       readonly text: string;
+    }
+  | {
+      readonly type: "terminal/draft";
+      readonly nodeId: string;
+      readonly text: string;
+    }
+  | {
+      readonly type: "terminal/draft_sent";
+      readonly nodeId: string;
+      readonly text: string;
+      readonly revision: number;
     }
   | {
       readonly type: "terminal/configure";
@@ -291,6 +305,16 @@ export function canvasReducer(
         node.kind === "note"
           ? { ...node, text: action.text.slice(0, MAX_NOTE_LENGTH) }
           : node,
+      );
+    case "terminal/draft":
+      return updateNode(state, action.nodeId, (node) =>
+        node.kind === "terminal" ? updatePromptDraft(node, action.text) : node,
+      );
+    case "terminal/draft_sent":
+      return updateNode(state, action.nodeId, (node) =>
+        node.kind === "terminal" && (node.promptDraft ?? "") === action.text
+          && (node.promptDraftRevision ?? 0) === action.revision
+          ? updatePromptDraft(node, "") : node,
       );
     case "terminal/configure":
       return updateNode(state, action.nodeId, (node) =>
@@ -765,13 +789,14 @@ function updateNode(
   nodeId: string,
   update: (node: CanvasNode) => CanvasNode,
 ): CanvasState {
-  if (!state.nodes.some((node) => node.id === nodeId)) {
-    return state;
-  }
+  const current = state.nodes.find((node) => node.id === nodeId);
+  if (!current) return state;
+  const updated = update(current);
+  if (updated === current) return state;
   return {
     ...state,
     nodes: state.nodes.map((node) =>
-      node.id === nodeId ? update(node) : node,
+      node === current ? updated : node,
     ),
   };
 }
@@ -897,6 +922,23 @@ function parseNode(value: unknown): CanvasNode | null {
       typeof value.sessionId === "string" ? value.sessionId : undefined,
     agentId:
       typeof value.agentId === "string" ? value.agentId : undefined,
+    promptDraft: typeof value.promptDraft === "string" ? value.promptDraft : undefined,
+    promptDraftRevision: typeof value.promptDraft === "string"
+      ? normalizePromptDraftRevision(value.promptDraftRevision) : undefined,
+  };
+}
+
+function normalizePromptDraftRevision(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value)
+    && value >= 0 && value < Number.MAX_SAFE_INTEGER ? value : 0;
+}
+
+function updatePromptDraft(node: TerminalCanvasNode, text: string): TerminalCanvasNode {
+  if ((node.promptDraft ?? "") === text) return node;
+  return {
+    ...node,
+    promptDraft: text,
+    promptDraftRevision: normalizePromptDraftRevision(node.promptDraftRevision) + 1,
   };
 }
 

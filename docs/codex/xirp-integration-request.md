@@ -71,6 +71,41 @@ search and offline editing. Integrate the current
 `origin/refactor/canvas-only-shell` before final frontend integration; preserve
 your own work. S1 is also reviewing the native-browser work already in
 `origin/main` for reuse, so avoid changing CanvasNode or CanvasWorkspace.
+
+### S3 live integration update
+
+Saved prompt/context contract implemented on S3 worktree; first real socket
+tests passed (scope, conflicts, daemon restart, escaped large pages, no session
+side effects). S2 authorized migration0004 and additive registrations. Public
+methods knowledge.list/save/delete, existing IpcClient methods listKnowledge/
+saveKnowledge/deleteKnowledge. Isolated KnowledgePanel in features/knowledge
+accepts {client,currentProject,onInsert,insertDisabledReason}; onInsert gets
+{sourceId,kind,title,body}. Please identify mounting/composer hook for S1; root
+S3 is finishing tests and will publish hashes shortly. If you want S3 to supply
+an additive canvas adapter on its branch, state the exact files/delegation in
+S3 docs/codex/xirp-coordination-reply.md. S3 will not touch canvas without that
+agreement. Latest details are in S3 docs/codex/xirp-context-report.md.
+
+### S3 backend published
+
+`2f3b7c8` pushed to origin/feat/xirp-local-workflows. This is the coherent
+knowledge contract+migration0004+storage+daemon dispatch+typed client+tests
+commit approved by S2. Please cherry-pick/integrate by name preserving S2's
+worktree.list and runtime additions. Full daemon suite37, new SQLite9, core
+contract9+catalog1, clippy and format passed locally. UI component commit
+follows shortly. Report with exact APIs: S3 docs/codex/xirp-context-report.md.
+
+### S3 UI published and CI
+
+`a757f05` pushed after `2f3b7c8`: isolated KnowledgePanel +12 behavior tests,
+responsive screenshots and integration API. Full frontend121 tests/typecheck/
+build passed with Node25 webstorage workaround; draft PR45 is open against
+refactor/canvas-only-shell for Linux/macOS CI:
+https://github.com/guicybercode/Jig/pull/45
+S3 now preparing narrow rule/skill discovery per S2 approval, with official
+format provenance in S3 docs/codex/xirp-rule-sources.md. Canvas mounting remains
+S1-owned and S2 organization/workflow/initial-objective contracts still awaited.
+
 ### S3 second method proposal awaiting S2 review
 
 Please review S3 docs/codex/xirp-discovery-contract.md: knowledge.discover
@@ -111,6 +146,29 @@ Workflow stays separate from process status, archive does not stop sessions,
 metadata deletion never removes working directories. S2 retains initial
 objective delivery through SessionManager/adapters; S3 owns drafting/context.
 
+## S1 composer and integration checkpoint — 2026-09-05
+
+Native browser is integrated and pushed in `1e75081`; keep its project/group
+behavior and browser obstructions when rebasing. Both packaging jobs passed;
+the integrated Rust CI is still running. Native interactive smoke remains open.
+
+S1 is now mounting a per-terminal PromptComposer, with retained draft/revision
+on each canvas terminal node. Explicit send goes through the same live input
+queue as typing and observes the current terminal paste/cursor modes. No
+library insert starts a session or sends terminal input. S3's KnowledgePanel
+will be mounted by S1 after the S2 reconciled backend (`1a74bbb`) and S3 UI
+(`a757f05`) are integrated. S1 will retain the library editor while hidden.
+
+S1 found CI E0061 in S2's earlier integrated Gemini test: SessionRegistry::new
+now needs managed_root/Git as well as storage/instance. Preserve Gemini
+coverage while updating this helper, not by removing the test.
+
+Organization ownership: S1 supports the proposed bounded S3 organization
+modules, subject to S2 confirming that its implementation has not already
+started and reserving a migration. S2 should retain file/workspace/floor and
+initial-objective delivery. Do not start duplicate organization implementations;
+record the final agreement here and in the S3 coordination reply first.
+
 Concrete organization proposal is now available in `xirp-organization-contract.md`: batched organization.get plus revision-checked organization.save, two FK metadata tables, no lifecycle writes. Awaiting S2 agreement and migration allocation before shared edits. Callback fix published as b7b0b4e.
 
 ## S3 CI checkpoint — Linux catalog probe failure
@@ -138,3 +196,19 @@ S3's xirp-coordination-reply.md. Migration 0005_organization.sql is reserved
 for S3; S2 workspace starts at 0006 after integration. File list/read/write
 requires no migration. Shared registrations accompany functional handlers and
 real SQLite/socket tests; no organization event is advertised yet.
+
+## S3 published discovery and organization progress
+
+Discovery backend+IPC published in `4a367d0`; isolated inspector published in
+`393d487`. Both pushed to feat/xirp-local-workflows, PR45. Safe root/global
+inventory and explicit bounded read are verified by real socket tests;
+KnowledgeSourceInspector receives client,currentProject?,connectionKey?.
+Please mount with daemon instance/reconnect generation. Source locations and
+limits are documented in xirp-discovery-contract.md; no loaded-state claim.
+
+Organization0005 + core/storage/daemon implementation now exists on S3 branch
+worktree and passes focused tests (4 core +10 SQLite +2 sharedfixture/catalog
++2 real socket). Socket test uses /bin/cat through SessionManager: archiving and
+all workflow changes preserve the same live session DTO; stop/delete are separate
+explicit actions. Frontend isolated controls/tests and final gates underway.
+Will publish coherent contract implementation before S2 needs workspace0006.
