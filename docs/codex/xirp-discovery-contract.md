@@ -20,8 +20,11 @@ Methods:
   specific safe errors; refresh obtains a new scan.
 
 Inventory limits: four scans cached for five minutes, 512 candidates, 10,000
-visited filesystem entries, depth 16. The selected project is inventoried before
-globals. Entry JSON is capped at 448 KiB; at most 32 issues use up to 32 KiB. Read limit: 64 KiB; JSON envelope remains
+enumerated filesystem entries, depth 16. Sources at the selected project root
+are inventoried first, then global/admin sources, then project descendants.
+This keeps a large descendant tree from starving known global roots; all phases
+share the same bounds. Fixed allowlisted metadata probes add bounded work per
+visited project directory; the entry budget is not a literal syscall count. Entry JSON is capped at 448 KiB; at most 32 issues use up to 32 KiB. Read limit: 64 KiB; JSON envelope remains
 under 1 MiB even for worst-case escaping. Truncation/issues must remain visible.
 No content enters logs, Debug, error details, SQLite or telemetry.
 
@@ -44,11 +47,27 @@ A fresh scan follows the new target. Source replacement/content edits conflict;
 daemon restart, cache eviction and five-minute expiry invalidate scans.
 Removing the registered project invalidates reads from its scan.
 
-This increment inventories root configuration locations and recursively grouped
-rules/skills within those locations. It does not walk every project subfolder,
-evaluate session-cwd ancestors, import rules, parse activation conditions, read
-native overrides, or enumerate bundled/plugin sources. These limits are visible
-as inventory issues and remain open parity work, not claims of native loading.
+The project inventory includes supported configuration locations in nested
+project directories. `scopeDirectory` is relative to the registered project:
+`.` identifies its root and `packages/api` identifies a nested configuration
+owner. Grouped rules and skills retain their owning directory's scope. Paths
+are display metadata; reads still require the existing opaque capabilities.
+
+General project traversal opens children relative to pinned directory
+descriptors and never follows ordinary directory symlinks. Exact directory
+names `.git`, `node_modules`, `vendor`, `.venv` and `venv` are pruned, as are
+`.agents`, `.claude`, `.cursor` and `.codex`. Allowlisted rules/skills in the
+first three already have dedicated walkers; `.codex` is not a documented
+project-scoped source location. Explicit global CODEX_HOME sources still work. Pruning does not exclude an explicitly registered project
+root with one of those names. Build directories with other names and nested
+repositories remain inside the bounded inventory; `.gitignore` is not parsed.
+The pruning policy and scan limitations are visible as issues.
+
+The depth limit includes the project-relative path and provider configuration
+directories; entering a rule/skill root does not restart that budget. Sources
+above the registered project, effective session-cwd ancestry, imports,
+activation conditions, native overrides and bundled/plugin sources remain
+unevaluated. Inventory does not prove which CLI loaded a source.
 
 No native credential/config files, support scripts, imports, or transcript
 files are read. Editing waits for S2's common file contract. Root will publish
@@ -59,5 +78,5 @@ composition change and existing generic transport.
 S1: isolated `KnowledgeSourceInspector` receives client, optional currentProject
 and optional connectionKey (daemon instance or reconnect generation), with
 refresh/list/preview. Pass the connection key to invalidate scans on reconnect. Keep it inside the canvas surface.
-The current library also needs a host-controlled editable composer draft;
-S1's existing terminal-card draft is configuration, not prompt text.
+S1 has mounted the saved library and an editable prompt composer in `1150de6`;
+source inspection is a separate read-only panel and never inserts or sends text.

@@ -221,3 +221,39 @@ backend suite or native/Linux acceptance. No test assertion was weakened.
 Canvas library insertion now has real host consumption as an explicit editable
 text snapshot; it does not implicitly send/start or retain a live source link.
 Discovery inspector and organization mounting/filtering remain S1 follow-ups.
+
+## Cross-platform reconciliation evidence
+
+At published `41f679c`, [CI Linux/macOS](https://github.com/guicybercode/Jig/actions/runs/34005300527)
+and [Packaging Linux/macOS](https://github.com/guicybercode/Jig/actions/runs/34005300530)
+passed. Both CI jobs ran frontend checks, Chromium E2E, formatting, Clippy,
+workspace Rust tests and documentation. This covers the already published
+knowledge/discovery/organization implementation and the reconciled composer.
+It does not cover subsequent uncommitted nested discovery, native interactive
+acceptance, or prove the independently reproduced process-cache race absent.
+S1's inspector mounting is separately published in `9329d01`; its merge into
+this branch follows the isolated nested scanner increment.
+
+## Nested project source discovery
+
+The existing scanner now inventories supported rule/skill locations in the
+registered project's descendants. Root sources precede globals/admin sources,
+which precede nested traversal. Relative scope identifies each configuration
+owner, including names containing spaces. Ordinary directory links are skipped;
+known skill links retain the existing captured-target semantics. Exact provider,
+VCS and dependency pruning is visible, and all phases share response, entry,
+node and cumulative directory-depth limits. No IPC fields, methods, migration,
+Git operation or file-service adapter changed.
+
+Validation on macOS: all **31 knowledge daemon tests** pass, including **9 new
+scanner regressions and 1 new real-socket regression**. Tests cover nested
+formats/provider identity, exact pruning, root/global priority, cumulative
+depth, shared enumeration limits, pinned-directory replacement races and old
+capability rejection after replacing a nested parent. Existing safe-reader and
+scan-expiry tests remain green. All-target daemon Clippy, formatting and diff
+checks pass. Independent review found no remaining concrete defect.
+
+Sources above the registered project and effective session-cwd ancestry remain
+unevaluated. Native activation, editing and bundled/plugin sources remain open
+as described in the discovery contract. Earlier cross-platform results at
+`41f679c` are not evidence for this new scanner increment; its CI follows push.

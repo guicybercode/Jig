@@ -126,7 +126,7 @@ pub struct KnowledgeSourceEntry {
     pub source_path: String,
     /// Filesystem name, not parsed or executed frontmatter.
     pub name: String,
-    /// Relative project scope ("." here), or empty for global/admin sources.
+    /// Relative project scope ("." or a nested path), or empty for global/admin sources.
     pub scope_directory: String,
     /// Static documented precedence caveat; never an effective/active assertion.
     pub precedence_hint: String,
