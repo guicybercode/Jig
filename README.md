@@ -1,109 +1,147 @@
 # Jig
 
-Terminals on a canvas.
+Terminals on a canvas. A local-first desktop workspace for coding-agent CLIs.
 
-![Jig](docs/brand/social-preview.png)
+[Releases](https://github.com/guicybercode/Jig/releases) ·
+[Installation guide](docs/install.md) · [Contributing](CONTRIBUTING.md) ·
+[Security](SECURITY.md) · [MIT license](LICENSE)
 
-## Install and run
+![Jig — terminals on a canvas](docs/brand/social-preview.png)
 
-Jig is a local-first desktop app for Linux and macOS. Windows is out of scope for Beta v0.2.
+## What is Jig?
+
+Jig brings real terminals, project folders, Git worktrees, notes, and browser
+cards into one canvas. Run Codex, Claude Code, Gemini CLI, OpenCode, a shell,
+or your own executable, and keep related work together.
+
+Jig is not a coding agent or a vendor proxy. No Jig account is required. Agent
+CLIs are installed separately and keep their own authentication and network
+connections. Git worktrees separate working copies; they are not a security
+sandbox for the programs you launch.
+
+The source tree targets **Beta v0.2.0** for Linux and macOS. Read the
+[known limitations](docs/KNOWN_ISSUES.md) before using it for important work.
+
+## Download and install
+
+Use [GitHub Releases](https://github.com/guicybercode/Jig/releases) for published
+builds. The [Packaging workflow](https://github.com/guicybercode/Jig/actions/workflows/packaging.yml)
+provides temporary candidate artifacts; an Actions build is not a published
+release. The version in this source tree may be newer than the latest release.
+
+| Platform | Architecture | Package format |
+| --- | --- | --- |
+| Linux | x86_64 | AppImage |
+| macOS 12+ | Apple Silicon (aarch64) | DMG or zipped `.app` |
+| Windows | — | Not supported in this Beta |
+
+See [package availability](docs/distribution.md) for distribution channels and
+Linux repository status. Do not assume a similarly named package is this Jig.
+
+Download the artifact for your platform and its checksum file, verify it,
+then follow the [installation guide](docs/install.md). Builds are **unsigned
+and not notarized**; macOS may block the first launch. Git must be installed
+and available on `PATH`. Node.js and Rust are needed only for source builds.
+
+## Run from source
 
 ### Prerequisites
 
-- Node.js 22 or newer
-- Corepack and pnpm 11
-- Rust 1.85 or newer
-- Git on PATH
-- Tauri 2 dependencies (WebKitGTK 4.1 on Linux, Xcode Command Line Tools on macOS)
+- **Node.js 24**, matching CI, and **pnpm 11.9.0**, pinned in `package.json`.
+- **Rust stable** and Cargo. CI uses current stable Rust, not a separate
+  minimum-version job for the workspace's declared Rust 1.85 baseline.
+- **Git** on `PATH`.
+- **macOS:** Xcode Command Line Tools (`xcode-select --install`).
+- **Linux:** Tauri native dependencies, including WebKitGTK 4.1. See the
+  [Ubuntu setup commands](docs/install.md#linux-build-dependencies) or the
+  [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your distribution.
 
-### Development
+If pnpm is not installed, install the pinned version through your Node.js
+installation:
 
 ```bash
-# Enable package manager and install dependencies
-corepack enable
-pnpm install --frozen-lockfile
+npm install --global pnpm@11.9.0
+```
 
-# Run the desktop app
+If you already manage pnpm with Corepack, `corepack enable` lets it use the
+repository's `packageManager` pin. See the
+[pnpm installation guide](https://pnpm.io/installation) for alternatives.
+
+### Start the desktop application
+
+```bash
+git clone https://github.com/guicybercode/Jig.git
+cd Jig
+pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
 
-### Build from source
+The first run compiles the Rust application and daemon, which can take several
+minutes. A native **Jig** window should open and connect to the local daemon.
+You do not need to start the daemon separately.
+
+`pnpm dev` starts only the Vite frontend at `http://localhost:1420`. A normal
+browser does not provide the native desktop bridge or live daemon sessions.
+Use `pnpm tauri dev` to run the actual app.
+
+### Start your first terminal
+
+1. Click the sidebar **+** (**Add workspace project**), choose a local Git
+   repository with **Choose a project folder**, then click **Add Project**.
+2. Select that project and click **Add terminal card** in the canvas toolbar.
+3. Choose **Shell** to try Jig without an agent account, or choose an agent CLI
+   you have already installed and authenticated. Check the working directory.
+4. Choose **Use project working copy**, or **Create an isolated Git worktree**
+   for a separate branch and checkout. The latter requires a repository with
+   at least one commit.
+5. Click **Create terminal**. With the daemon connected, the terminal starts
+   on the canvas. If the card is still a draft, click **Start terminal**.
+
+Closing the window or removing a canvas card does **not** stop its session.
+Use the terminal's session actions and **Stop process** to stop the running
+program. If startup fails, check **Diagnostics** and the
+[troubleshooting guide](docs/install.md#troubleshooting).
+
+### Build installable packages
+
+From the repository root, on the platform you want to package:
 
 ```bash
-# Stage daemon and build platform bundle (AppImage on Linux, .app and .dmg on macOS)
 pnpm package
 ```
 
-Builds are unsigned. macOS notarization is not configured. See [docs/install.md](docs/install.md) for platform-specific installation and verification steps.
+This builds and stages `cli-masterd`, builds the desktop bundle, smoke-tests
+the bundled daemon, and writes packages plus `SHA256SUMS` to `dist/artifacts/`.
+It does not sign, notarize, or publish a release. `pnpm build` builds only the
+frontend; it does not produce an installable desktop app. Python 3 is required
+by the packaging scripts. See [packaging](docs/PACKAGING.md) for details.
 
-## What it is
+## Development and architecture
 
-Jig hosts coding-agent CLIs in real terminals with projects and Git worktrees. It coordinates OpenAI Codex, Claude Code, Gemini CLI, OpenCode, and custom executables in isolated PTY sessions.
+The React + xterm.js interface talks through a Tauri 2 bridge to a per-user
+Unix-socket daemon. The daemon owns PTYs, process lifecycle, Git operations,
+and SQLite metadata. Closing the UI leaves the daemon running; restarting
+the daemon cannot restore lost PTY handles.
 
-**Current status:** Beta v0.2 connects project management, isolated worktrees, agent discovery, live PTY sessions, and the terminal canvas through the packaged desktop and daemon. The stable IPC protocol is defined in `crates/core/src/wire`. See [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) for current limitations and [ARCHITECTURE.md](ARCHITECTURE.md) for accepted design decisions.
+| Location | Responsibility |
+| --- | --- |
+| `apps/desktop/` | React interface, typed IPC client, Tauri bridge, frontend tests |
+| `crates/` | Rust domain, storage, Git, PTY, daemon, and runtime acceptance tests |
+| `crates/core/src/wire/` | Authoritative versioned IPC contract |
+| `protocol/catalog.json` | IPC catalog mirror |
+| `docs/` | Architecture decisions, installation, packaging, and recovery |
 
-This is a local-first application. No cloud account, telemetry, or vendor proxy is required. Each agent CLI keeps its own authentication.
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) for the complete development gate,
+[ARCHITECTURE.md](ARCHITECTURE.md) for system boundaries, and
+[AGENTS.md](AGENTS.md) for repository rules.
 
-### How it works
+## Community, security, and license
 
-```text
-React + xterm.js
-       │ typed Tauri commands and events
-       ▼
-Tauri 2 desktop bridge
-       │ versioned local IPC
-       ▼
-jig daemon
-       ├── PTY session manager ── Codex / Claude / Gemini / OpenCode
-       ├── Git and worktree service
-       └── SQLite metadata storage
-```
+Bug reports, documentation fixes, and focused pull requests are welcome.
+Use [GitHub Issues](https://github.com/guicybercode/Jig/issues) for ordinary
+bugs and feature proposals. Follow [SECURITY.md](SECURITY.md) to report a
+vulnerability privately; do not include tokens or private terminal output
+in public reports.
 
-The separate daemon owns live PTYs and SQLite. Closing the desktop window does not stop active sessions. Read [ARCHITECTURE.md](ARCHITECTURE.md) for protocol, schema, lifecycle, and safety decisions.
-
-## Supported platforms
-
-- **Linux:** First-class. AppImage is the initial package format.
-- **macOS:** First-class on Apple Silicon and supported modern releases. `.app` and `.dmg` artifacts.
-- **Windows:** Out of scope for Beta v0.2.
-
-## Validate changes
-
-Run the repository gate before committing:
-
-```bash
-pnpm check
-pnpm check:versions
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-pnpm --filter @cli-master/desktop test:e2e
-```
-
-`pnpm check` type-checks and builds the frontend, then checks every Rust crate. `pnpm check:versions` ensures Cargo, npm, Tauri, and the protocol catalog agree.
-
-Runtime acceptance for sessions, worktree isolation, and daemon recovery lives in `crates/e2e`. Platform-specific PTY tests run in Linux and macOS CI jobs.
-
-## Repository layout
-
-```text
-apps/desktop/               React, TypeScript, Vite, Tauri bridge, Playwright
-crates/                     Rust domain, storage, Git, PTY, daemon, e2e
-crates/fake-agent           Interactive coding-agent stand-in for Beta tests
-crates/e2e                  Acceptance tests against production crates
-docs/                       Install, packaging, and recovery guides
-docs/brand/                 Jig brand assets
-ARCHITECTURE.md             Accepted architecture and protocol design
-AGENTS.md                   Crate ownership and IPC rules
-protocol/catalog.json       Frozen v1 method names
-```
-
-## Safety principles
-
-- Commands use an executable plus an argument array, not interpolated shell strings
-- Removing a project never removes its repository directory
-- Worktrees with uncommitted changes are never silently deleted
-- Stopping a process and deleting session metadata are separate actions
-- Full environments, tokens, and terminal contents are excluded from logs
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a change.
+Jig is open source under the [MIT License](LICENSE). Dependencies and agent
+CLIs retain their own licenses.

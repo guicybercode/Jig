@@ -14,8 +14,23 @@ packaged desktop and daemon.
 - Added native repository selection, agent settings, diagnostics, session
   recovery, bounded terminal replay, and safe worktree removal.
 - Rebranded the desktop experience as Jig and refreshed its app identity.
+- Added a local prompts/context library, explicit rule and skill discovery,
+  and a composer that sends only to the selected live terminal.
+- Added revision-checked local file IPC and organization metadata contracts;
+  file editor and organization canvas integration remain separate work.
+- Made process snapshots monotonic to prevent older concurrent scans from
+  replacing newer session process observations.
 - Expanded Linux and macOS acceptance coverage and hardened process, path,
   confirmation, and error handling.
+
+### Open-source project
+
+- Added the MIT license to the repository, package metadata, and application
+  bundle resources.
+- Added a security policy with private vulnerability reporting, updated the
+  contribution guide, and clarified installation and development commands.
+- Added the missing `pnpm package` command and documented distribution status
+  without implying unverified package-manager availability.
 
 ### Distribution
 
