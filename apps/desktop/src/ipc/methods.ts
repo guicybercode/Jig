@@ -1,0 +1,34 @@
+/** Mirror of cli_master_core::wire::method; protocol/catalog.json is checked in tests. */
+export const IPC_METHODS = [
+  "system.hello",
+  "state.snapshot",
+  "project.add",
+  "project.list",
+  "project.rename",
+  "project.remove",
+  "agent.list",
+  "agent.detect",
+  "agent.set_enabled",
+  "agent.custom.create",
+  "agent.custom.update",
+  "agent.custom.remove",
+  "session.create",
+  "session.list",
+  "session.rename",
+  "session.start",
+  "session.restart",
+  "session.stop",
+  "session.delete",
+  "session.write",
+  "session.resize",
+  "session.subscribe",
+  "session.unsubscribe",
+  "git.status",
+  "git.diff",
+  "worktree.list",
+  "worktree.prepare_remove",
+  "worktree.remove",
+  "diagnostics.get"
+] as const;
+
+export type IpcMethod = (typeof IPC_METHODS)[number];

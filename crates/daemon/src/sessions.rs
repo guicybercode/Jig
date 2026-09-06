@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cli_master_core::wire::{
@@ -14,11 +14,15 @@ use cli_master_core::wire::{
 use cli_master_core::{
     AgentId, AgentSource, ApiError, DaemonInstanceId, Project, Session, SessionId, SessionStatus,
 };
+use cli_master_git::Git;
 use cli_master_session::{
-    SessionError, SessionManager, SessionSnapshot, SessionSubscription, TerminalSize,
+    SessionError, SessionManager, SessionSnapshot, SessionSubscription, SessionWorktreeSaga,
+    TerminalSize,
 };
 use cli_master_storage::{SessionRuntimeUpdate, Storage, StorageError, StoredAgent, StoredSession};
 use uuid::Uuid;
+
+mod worktrees;
 
 const INITIAL_COLUMNS: u16 = 100;
 const INITIAL_ROWS: u16 = 30;
@@ -32,17 +36,44 @@ pub(super) struct SessionRegistry {
     storage: Arc<Mutex<Storage>>,
     manager: SessionManager,
     daemon_instance_id: DaemonInstanceId,
+    worktree_saga: Option<SessionWorktreeSaga<SessionManager>>,
+    git: Option<Git>,
+    managed_root: PathBuf,
+    /// Serializes start/delete/removal so Git cannot remove a directory during spawn.
+    lifecycle: Mutex<()>,
+    session_operations: Mutex<BTreeMap<SessionId, Weak<Mutex<()>>>>,
 }
 
 impl SessionRegistry {
     pub(super) fn new(
         storage: Storage,
         daemon_instance_id: DaemonInstanceId,
+        managed_root: PathBuf,
+        git: Option<Git>,
     ) -> Result<Self, ApiError> {
+        let storage = Arc::new(Mutex::new(storage));
+        let manager = SessionManager::default();
+        let worktree_saga = git
+            .clone()
+            .map(|git| {
+                SessionWorktreeSaga::new_with_shared_storage(
+                    git,
+                    Arc::clone(&storage),
+                    manager.clone(),
+                    daemon_instance_id.to_string(),
+                )
+            })
+            .transpose()
+            .map_err(worktrees::saga_error)?;
         let registry = Self {
-            storage: Arc::new(Mutex::new(storage)),
-            manager: SessionManager::default(),
+            storage,
+            manager,
             daemon_instance_id,
+            worktree_saga,
+            git,
+            managed_root,
+            lifecycle: Mutex::new(()),
+            session_operations: Mutex::new(BTreeMap::new()),
         };
         registry.seed_builtin_agents()?;
         let now = unix_timestamp_ms()?;
@@ -50,6 +81,9 @@ impl SessionRegistry {
             .storage()?
             .recover_stale_sessions_for_daemon(&daemon_instance_id.to_string(), now)
             .map_err(storage_error)?;
+        if let Some(saga) = &registry.worktree_saga {
+            saga.recover().map_err(worktrees::saga_error)?;
+        }
         Ok(registry)
     }
 
@@ -115,10 +149,8 @@ impl SessionRegistry {
     }
 
     pub(super) fn sessions(&self) -> Result<Vec<Session>, ApiError> {
-        self.storage()?
-            .list_sessions()
-            .map_err(storage_error)
-            .map(|sessions| sessions.into_iter().map(stored_session).collect())
+        self.list_sessions(SessionListRequest { project_id: None })
+            .map(|response| response.sessions)
     }
 
     pub(super) fn list_sessions(
@@ -132,18 +164,18 @@ impl SessionRegistry {
         }
         .map_err(storage_error)?
         .into_iter()
-        .map(stored_session)
-        .collect();
+        .map(|session| worktrees::session_with_worktree(&storage, session))
+        .collect::<Result<Vec<_>, _>>()?;
         Ok(SessionListResponse { sessions })
     }
 
     pub(super) fn create(&self, request: SessionCreateRequest) -> Result<Session, ApiError> {
-        if request.isolation != SessionIsolation::Current {
-            return Err(ApiError::new(
-                "worktree_sessions_unavailable",
-                "Isolated worktree sessions are not available in this canvas yet.",
-            )
-            .with_action("Choose the current project directory and try again."));
+        let _lifecycle = self.lifecycle()?;
+        if let Some(saga) = &self.worktree_saga {
+            return self.prepare_with_saga(saga, request);
+        }
+        if request.isolation == SessionIsolation::NewWorktree {
+            return Err(worktrees::git_unavailable());
         }
         let storage = self.storage()?;
         let project = storage
@@ -192,10 +224,16 @@ impl SessionRegistry {
     }
 
     pub(super) fn start(&self, request: SessionStartRequest) -> Result<Session, ApiError> {
+        let operation = self.session_operation(request.session_id)?;
+        let _session = operation.lock().map_err(|_| session_state_unavailable())?;
+        let _lifecycle = self.lifecycle()?;
         self.start_id(request.session_id)
     }
 
     pub(super) fn restart(&self, request: SessionRestartRequest) -> Result<Session, ApiError> {
+        let operation = self.session_operation(request.session_id)?;
+        let _session = operation.lock().map_err(|_| session_state_unavailable())?;
+        let _lifecycle = self.lifecycle()?;
         if let Ok(snapshot) = self.manager.snapshot(request.session_id) {
             if is_live(snapshot.status) {
                 self.manager
@@ -210,6 +248,9 @@ impl SessionRegistry {
     }
 
     pub(super) fn stop(&self, request: SessionStopRequest) -> Result<Session, ApiError> {
+        // Stopping only reduces worktree use. Do not queue it behind a slow checkout.
+        let operation = self.session_operation(request.session_id)?;
+        let _session = operation.lock().map_err(|_| session_state_unavailable())?;
         let snapshot = self
             .manager
             .stop(request.session_id)
@@ -219,6 +260,9 @@ impl SessionRegistry {
     }
 
     pub(super) fn delete(&self, request: SessionDeleteRequest) -> Result<EmptyResponse, ApiError> {
+        let operation = self.session_operation(request.session_id)?;
+        let _session = operation.lock().map_err(|_| session_state_unavailable())?;
+        let _lifecycle = self.lifecycle()?;
         if let Ok(snapshot) = self.manager.snapshot(request.session_id) {
             if is_live(snapshot.status) {
                 return Err(ApiError::new(
@@ -227,9 +271,16 @@ impl SessionRegistry {
                 )
                 .with_action("Stop the session, then try deleting it again."));
             }
+            // A process may have exited while no client was subscribed to its events.
+            self.persist_snapshot(&snapshot)?;
             self.manager
                 .remove(request.session_id)
                 .map_err(session_error)?;
+        }
+        if let Some(saga) = &self.worktree_saga {
+            saga.delete_session(request.session_id)
+                .map_err(worktrees::saga_error)?;
+            return Ok(EmptyResponse::default());
         }
         self.storage()?
             .remove_session_metadata(request.session_id)
@@ -311,7 +362,7 @@ impl SessionRegistry {
             .ok_or_else(|| not_found("session", session_id))?;
         if let Ok(snapshot) = self.manager.snapshot(session_id) {
             if is_live(snapshot.status) {
-                return Ok(stored_session(stored));
+                return worktrees::session_with_worktree(&storage, stored);
             }
             self.manager.remove(session_id).map_err(session_error)?;
         }
@@ -319,8 +370,19 @@ impl SessionRegistry {
             .get_agent(stored.agent_id)
             .map_err(storage_error)?
             .ok_or_else(|| not_found("agent", stored.agent_id))?;
+        if !agent.enabled {
+            return Err(ApiError::new(
+                "agent_disabled",
+                "The selected terminal command is disabled.",
+            ));
+        }
         let command = agent.command_for_cwd(&stored.cwd).map_err(storage_error)?;
         drop(storage);
+        let worktree_id = self.validate_start_directory(&stored)?;
+        if let (Some(saga), Some(worktree_id)) = (&self.worktree_saga, worktree_id) {
+            saga.cancel_pending_removal(worktree_id)
+                .map_err(worktrees::saga_error)?;
+        }
         let size = TerminalSize::new(INITIAL_ROWS, INITIAL_COLUMNS).map_err(session_error)?;
         let handle = self
             .manager
@@ -328,7 +390,11 @@ impl SessionRegistry {
             .map_err(session_error)?;
         let snapshot = self.manager.snapshot(session_id).map_err(session_error)?;
         debug_assert_eq!(handle.id, session_id);
-        self.persist_snapshot(&snapshot)?;
+        if let Err(error) = self.persist_snapshot(&snapshot) {
+            cli_master_session::SessionSpawner::rollback(&self.manager, session_id)
+                .map_err(worktrees::saga_error)?;
+            return Err(error);
+        }
         self.get(session_id)
     }
 
@@ -378,6 +444,34 @@ impl SessionRegistry {
             .with_action("Restart Jig and try again.")
         })
     }
+
+    fn lifecycle(&self) -> Result<MutexGuard<'_, ()>, ApiError> {
+        self.lifecycle
+            .lock()
+            .map_err(|_| session_state_unavailable())
+    }
+
+    fn session_operation(&self, session_id: SessionId) -> Result<Arc<Mutex<()>>, ApiError> {
+        let mut operations = self
+            .session_operations
+            .lock()
+            .map_err(|_| session_state_unavailable())?;
+        operations.retain(|_, operation| operation.strong_count() > 0);
+        if let Some(operation) = operations.get(&session_id).and_then(Weak::upgrade) {
+            return Ok(operation);
+        }
+        let operation = Arc::new(Mutex::new(()));
+        operations.insert(session_id, Arc::downgrade(&operation));
+        Ok(operation)
+    }
+}
+
+fn session_state_unavailable() -> ApiError {
+    ApiError::new(
+        "session_state_unavailable",
+        "Session operations are unavailable.",
+    )
+    .with_action("Restart the daemon and try again.")
 }
 
 fn agent_record(agent: StoredAgent) -> Result<AgentRecord, ApiError> {
@@ -421,18 +515,18 @@ fn stored_session(session: StoredSession) -> Session {
 }
 
 fn load_session(storage: &Storage, session_id: SessionId) -> Result<Session, ApiError> {
-    storage
+    let session = storage
         .get_session(session_id)
         .map_err(storage_error)?
-        .map(stored_session)
-        .ok_or_else(|| not_found("session", session_id))
+        .ok_or_else(|| not_found("session", session_id))?;
+    worktrees::session_with_worktree(storage, session)
 }
 
 fn session_directory(
     project: &Project,
     relative_directory: Option<&cli_master_core::wire::RelativeDirectory>,
 ) -> Result<PathBuf, ApiError> {
-    let root = project.repository_root.as_ref().unwrap_or(&project.path);
+    let root = &project.path;
     let directory =
         relative_directory.map_or_else(|| root.clone(), |relative| root.join(relative.as_str()));
     if !directory.is_dir() {
@@ -442,14 +536,27 @@ fn session_directory(
         )
         .with_action("Choose an existing directory inside the project."));
     }
-    directory.canonicalize().map_err(|error| {
+    let canonical = directory.canonicalize().map_err(|error| {
         ApiError::new(
             "session_directory_unavailable",
             "The terminal working directory could not be opened.",
         )
         .with_action("Check the directory permissions and try again.")
         .with_detail("reason", error.to_string())
-    })
+    })?;
+    let root = root.canonicalize().map_err(|_| {
+        ApiError::new(
+            "session_directory_unavailable",
+            "The project directory could not be opened.",
+        )
+    })?;
+    if !canonical.starts_with(&root) {
+        return Err(ApiError::new(
+            "session_invalid_input",
+            "The terminal directory escapes the project.",
+        ));
+    }
+    Ok(canonical)
 }
 
 fn resolve_executable(executable: &str) -> Option<PathBuf> {

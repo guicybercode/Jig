@@ -17,7 +17,8 @@ use cli_master_core::{
         SessionOutputEvent, SessionOutputGapEvent, SessionRenameRequest,
         SessionReplayCompleteEvent, SessionResizeRequest, SessionRestartRequest,
         SessionStartRequest, SessionStatusChangedEvent, SessionStopRequest,
-        SessionSubscribeRequest, SessionWriteRequest, event_name, method,
+        SessionSubscribeRequest, SessionWriteRequest, WorktreeListRequest,
+        WorktreePrepareRemoveRequest, WorktreeRemoveRequest, event_name, method,
     },
 };
 use cli_master_git::Git;
@@ -59,13 +60,13 @@ pub struct HelloResponse {
 pub struct StateSnapshot {
     /// Applied `SQLite` schema migration version.
     pub schema_version: u32,
-    /// Registered projects. Empty until project persistence is wired in.
+    /// Registered projects.
     pub projects: Vec<Project>,
-    /// Available agent definitions. Empty until registry persistence is wired in.
+    /// Available agent definitions.
     pub agents: Vec<AgentRecord>,
-    /// Known sessions. Empty until the session manager is wired in.
+    /// Known sessions, including managed worktree associations.
     pub sessions: Vec<Session>,
-    /// Managed worktrees. Empty until Git orchestration is wired in.
+    /// Durable managed worktrees, including recoverable partial operations.
     pub worktrees: Vec<Worktree>,
 }
 
@@ -146,6 +147,8 @@ impl Daemon {
             sessions: SessionRegistry::new(
                 session_storage,
                 DaemonInstanceId::from_uuid(instance_id),
+                config.data_directory().join("worktrees"),
+                git.clone(),
             )
             .map_err(|error| {
                 DaemonError::initialization(
@@ -525,7 +528,10 @@ fn validate_peer(_stream: &UnixStream) -> Result<(), io::Error> {
     clippy::too_many_lines,
     reason = "the versioned IPC method table is intentionally kept in one auditable dispatcher"
 )]
-async fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> ResponseEnvelope<Value> {
+async fn dispatch(
+    request: RequestEnvelope<Value>,
+    state: &Arc<ServerState>,
+) -> ResponseEnvelope<Value> {
     if request.kind != EnvelopeKind::Request {
         return ResponseEnvelope::failure(
             request.request_id,
@@ -560,7 +566,7 @@ async fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> Respo
                 projects,
                 agents,
                 sessions,
-                worktrees: Vec::new(),
+                worktrees: state.sessions.worktrees()?,
             })
         }),
         method::PROJECT_ADD => decode_payload(request.payload)
@@ -582,27 +588,34 @@ async fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> Respo
                 state.sessions.create_custom_agent(payload)
             })
             .and_then(encode_response),
-        method::SESSION_CREATE => decode_payload(request.payload)
-            .and_then(|payload: SessionCreateRequest| state.sessions.create(payload))
-            .and_then(encode_response),
+        method::SESSION_CREATE => match decode_payload::<SessionCreateRequest>(request.payload) {
+            Ok(payload) => session_operation(state, move |sessions| sessions.create(payload)).await,
+            Err(error) => Err(error),
+        },
         method::SESSION_LIST => decode_payload(request.payload)
             .and_then(|payload: SessionListRequest| state.sessions.list_sessions(payload))
             .and_then(encode_response),
         method::SESSION_RENAME => decode_payload(request.payload)
             .and_then(|payload: SessionRenameRequest| state.sessions.rename(&payload))
             .and_then(encode_response),
-        method::SESSION_START => decode_payload(request.payload)
-            .and_then(|payload: SessionStartRequest| state.sessions.start(payload))
-            .and_then(encode_response),
-        method::SESSION_RESTART => decode_payload(request.payload)
-            .and_then(|payload: SessionRestartRequest| state.sessions.restart(payload))
-            .and_then(encode_response),
-        method::SESSION_STOP => decode_payload(request.payload)
-            .and_then(|payload: SessionStopRequest| state.sessions.stop(payload))
-            .and_then(encode_response),
-        method::SESSION_DELETE => decode_payload(request.payload)
-            .and_then(|payload: SessionDeleteRequest| state.sessions.delete(payload))
-            .and_then(encode_response),
+        method::SESSION_START => match decode_payload::<SessionStartRequest>(request.payload) {
+            Ok(payload) => session_operation(state, move |sessions| sessions.start(payload)).await,
+            Err(error) => Err(error),
+        },
+        method::SESSION_RESTART => match decode_payload::<SessionRestartRequest>(request.payload) {
+            Ok(payload) => {
+                session_operation(state, move |sessions| sessions.restart(payload)).await
+            }
+            Err(error) => Err(error),
+        },
+        method::SESSION_STOP => match decode_payload::<SessionStopRequest>(request.payload) {
+            Ok(payload) => session_operation(state, move |sessions| sessions.stop(payload)).await,
+            Err(error) => Err(error),
+        },
+        method::SESSION_DELETE => match decode_payload::<SessionDeleteRequest>(request.payload) {
+            Ok(payload) => session_operation(state, move |sessions| sessions.delete(payload)).await,
+            Err(error) => Err(error),
+        },
         method::SESSION_WRITE => decode_payload(request.payload)
             .and_then(|payload: SessionWriteRequest| state.sessions.write(&payload))
             .and_then(encode_response),
@@ -610,6 +623,26 @@ async fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> Respo
             .and_then(|payload: SessionResizeRequest| state.sessions.resize(payload))
             .and_then(encode_response),
         method::SESSION_UNSUBSCRIBE => encode_response(EmptyResponse::default()),
+        method::WORKTREE_LIST => decode_payload(request.payload)
+            .and_then(|payload: WorktreeListRequest| state.sessions.list_worktrees(payload))
+            .and_then(encode_response),
+        method::WORKTREE_PREPARE_REMOVE => {
+            match decode_payload::<WorktreePrepareRemoveRequest>(request.payload) {
+                Ok(payload) => {
+                    session_operation(state, move |sessions| {
+                        sessions.prepare_worktree_removal(payload)
+                    })
+                    .await
+                }
+                Err(error) => Err(error),
+            }
+        }
+        method::WORKTREE_REMOVE => match decode_payload::<WorktreeRemoveRequest>(request.payload) {
+            Ok(payload) => {
+                session_operation(state, move |sessions| sessions.remove_worktree(&payload)).await
+            }
+            Err(error) => Err(error),
+        },
         method::DIAGNOSTICS_GET => encode_response(&state.diagnostics),
         method::GIT_STATUS => match decode_payload::<GitStatusRequest>(request.payload) {
             Ok(payload) => {
@@ -640,6 +673,23 @@ async fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> Respo
         Ok(value) => ResponseEnvelope::success(request.request_id, value),
         Err(error) => ResponseEnvelope::failure(request.request_id, error),
     }
+}
+
+/// Git and PTY lifecycle calls may block; keep client I/O and output delivery responsive.
+async fn session_operation<T, F>(state: &Arc<ServerState>, operation: F) -> Result<Value, ApiError>
+where
+    T: Serialize,
+    F: FnOnce(&SessionRegistry) -> Result<T, ApiError> + Send + 'static,
+{
+    let state = Arc::clone(state);
+    tokio::task::spawn_blocking(move || operation(&state.sessions).and_then(encode_response))
+        .await
+        .map_err(|_| {
+            ApiError::new(
+                "session_operation_failed",
+                "The session operation could not complete.",
+            )
+        })?
 }
 
 fn decode_payload<T>(payload: Value) -> Result<T, ApiError>
