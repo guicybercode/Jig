@@ -39,9 +39,36 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../migrations/0004_knowledge_documents.sql"),
         destructive: false,
     },
+    Migration {
+        version: 5,
+        name: "organization",
+        sql: include_str!("../migrations/0005_organization.sql"),
+        destructive: false,
+    },
 ];
 
 const REQUIRED_TABLES: &[(&str, &[&str])] = &[
+    (
+        "project_organization",
+        &[
+            "project_id",
+            "pinned",
+            "archived",
+            "revision",
+            "updated_at_ms",
+        ],
+    ),
+    (
+        "session_organization",
+        &[
+            "session_id",
+            "pinned",
+            "archived",
+            "workflow",
+            "revision",
+            "updated_at_ms",
+        ],
+    ),
     (
         "projects",
         &["id", "name", "path", "created_at", "last_opened_at"],

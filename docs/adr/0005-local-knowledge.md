@@ -1,7 +1,9 @@
 # ADR 0005: Local prompts, reusable context, and organization
 
-Status: accepted for the first prompt/context increment after S2 agreement.
-Organization and filesystem details remain integration dependencies.
+Status: accepted for prompt/context, bounded source discovery and organization
+after S2 acknowledgments. Generic source editing and runtime delivery remain
+integration dependencies. Organization uses migration 0005 and separate
+organization.get/save contracts; see the approved coordination documents.
 
 ## Context
 
@@ -42,8 +44,10 @@ They neither replace process status nor signal a process. Workflow states are
 separate flag. The runtime owner coordinates their shared types/storage.
 
 Rule/skill discovery inventories explicitly supported locations with origin,
-format, scope, and precedence explanations. It reuses the runtime owner's
-file-access boundary; discovered content is data and is never executed.
+format, scope, and precedence explanations. S2 approved a narrow bounded reader
+inside daemon::knowledge while an adapter to the common file service remains
+pending; it does not introduce a generic editor. Discovered content is data
+and is never executed.
 Credential paths are excluded. Symlinks, external changes, size/count limits,
 encoding, and edit conflicts must have explicit behavior and real filesystem
 tests. Reference support for symlinked skill directories is a parity item,

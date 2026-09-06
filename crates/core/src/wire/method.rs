@@ -83,6 +83,11 @@ pub const KNOWLEDGE_DISCOVER: &str = "knowledge.discover";
 /// Read a bounded source selected by an expiring discovery capability.
 pub const KNOWLEDGE_READ: &str = "knowledge.read";
 
+/// Read a bounded batch of project/session organization metadata.
+pub const ORGANIZATION_GET: &str = "organization.get";
+/// Save visibility/workflow metadata after comparing its revision.
+pub const ORGANIZATION_SAVE: &str = "organization.save";
+
 /// Every method implemented by the Beta v1 contract.
 pub const ALL: &[&str] = &[
     SYSTEM_HELLO,
@@ -122,6 +127,8 @@ pub const ALL: &[&str] = &[
     KNOWLEDGE_DELETE,
     KNOWLEDGE_DISCOVER,
     KNOWLEDGE_READ,
+    ORGANIZATION_GET,
+    ORGANIZATION_SAVE,
 ];
 
 /// Returns whether a dotted method belongs to the Beta v1 contract.

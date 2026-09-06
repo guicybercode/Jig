@@ -602,6 +602,19 @@ async fn dispatch(
                 )),
             }
         }
+        method::ORGANIZATION_GET | method::ORGANIZATION_SAVE => {
+            let state = Arc::clone(state);
+            tokio::task::spawn_blocking(move || {
+                crate::organization::dispatch(&request.method, request.payload, &state.git_storage)
+            })
+            .await
+            .unwrap_or_else(|_| {
+                Err(ApiError::new(
+                    "organization_operation_failed",
+                    "The organization operation could not complete.",
+                ))
+            })
+        }
         method::SYSTEM_HELLO => encode_response(&state.hello),
         method::STATE_SNAPSHOT => state.projects.snapshot().and_then(|projects| {
             let agents = state.sessions.agents()?;

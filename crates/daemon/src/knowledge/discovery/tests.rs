@@ -5,6 +5,9 @@ use tempfile::TempDir;
 
 use super::*;
 
+#[path = "project_tests.rs"]
+mod project_tests;
+
 struct Fixture {
     root: TempDir,
     project: Project,
@@ -89,7 +92,6 @@ fn discovers_exact_provider_locations_without_configs_or_imports() {
         ".env",
         ".claude/settings.json",
         ".codex/auth.json",
-        "nested/AGENTS.md",
     ] {
         write(fixture.project.path.join(path), b"PRIVATE_CONFIG_SENTINEL");
     }
@@ -105,7 +107,7 @@ fn discovers_exact_provider_locations_without_configs_or_imports() {
     assert!(
         scan.issues
             .iter()
-            .any(|issue| issue.code == "project_root_scope")
+            .any(|issue| issue.code == "project_subtree_scope")
     );
     assert_eq!(
         fixture.service.scan_project_id(scan.scan_id).unwrap(),
@@ -449,6 +451,7 @@ fn enumeration_limit_preserves_candidates_already_collected() {
         scanner.remaining_nodes = 2;
         scanner.scan_source(&SourceSpec {
             base: fixture.project.path.clone(),
+            scope_directory: ".".to_owned(),
             directory,
             provider,
             scope: KnowledgeSourceScope::Project,

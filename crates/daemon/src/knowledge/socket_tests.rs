@@ -208,6 +208,100 @@ async fn discovery_and_explicit_read_use_scoped_capabilities_without_session_eff
     assert_scan_expired_after_restart(root.path(), &global).await;
 }
 
+#[tokio::test]
+async fn nested_sources_keep_their_scope_and_reject_replaced_parent_directories() {
+    let root = TempDir::new().unwrap();
+    write(root.path(), "project/AGENTS.md", "Root instructions");
+    write(
+        root.path(),
+        "project/packages/api service/AGENTS.md",
+        "Nested private instructions",
+    );
+    write(
+        root.path(),
+        "project/packages/api service/.claude/skills/review/SKILL.md",
+        "Review this package only.",
+    );
+    write(
+        root.path(),
+        "project/node_modules/dependency/AGENTS.md",
+        "Excluded dependency instructions",
+    );
+    let daemon = Running::start(root.path());
+    let mut client = daemon.connect().await;
+    let project = success(
+        &mut client,
+        "project.add",
+        json!({"path":root.path().join("project")}),
+    )
+    .await;
+    let scan = success(
+        &mut client,
+        "knowledge.discover",
+        json!({"projectId":project["id"]}),
+    )
+    .await;
+    assert_eq!(scan["truncated"], false);
+    let serialized = serde_json::to_string(&scan).unwrap();
+    assert!(!serialized.contains("Nested private instructions"));
+    assert!(!serialized.contains("node_modules/dependency"));
+    assert_eq!(source(&scan, "project/AGENTS.md")["scopeDirectory"], ".");
+    let nested = source(&scan, "packages/api service/AGENTS.md");
+    assert_eq!(nested["scope"], "project");
+    assert_eq!(nested["scopeDirectory"], "packages/api service");
+    let skill = source(&scan, "api service/.claude/skills/review/SKILL.md");
+    assert_eq!(skill["scopeDirectory"], "packages/api service");
+    let read = success(
+        &mut client,
+        "knowledge.read",
+        json!({"scanId":scan["scanId"],"entryId":nested["entryId"]}),
+    )
+    .await;
+    assert_eq!(read["entry"], nested);
+    assert_eq!(read["content"], "Nested private instructions");
+
+    // Keep the old directory alive so inode reuse cannot make replacement
+    // indistinguishable from the captured directory capability.
+    fs::rename(
+        root.path().join("project/packages/api service"),
+        root.path().join("original-package"),
+    )
+    .unwrap();
+    write(
+        root.path(),
+        "project/packages/api service/AGENTS.md",
+        "Replacement instructions",
+    );
+    assert_eq!(
+        error_code(
+            exchange(
+                &mut client,
+                "knowledge.read",
+                json!({"scanId":scan["scanId"],"entryId":nested["entryId"]}),
+            )
+            .await
+        ),
+        "knowledge_source_changed"
+    );
+    let refreshed = success(
+        &mut client,
+        "knowledge.discover",
+        json!({"projectId":project["id"]}),
+    )
+    .await;
+    let replacement = source(&refreshed, "packages/api service/AGENTS.md");
+    let reread = success(
+        &mut client,
+        "knowledge.read",
+        json!({"scanId":refreshed["scanId"],"entryId":replacement["entryId"]}),
+    )
+    .await;
+    assert_eq!(reread["content"], "Replacement instructions");
+    assert_eq!(replacement["scopeDirectory"], "packages/api service");
+    drop(client);
+    daemon.stop().await;
+}
+
 async fn assert_scan_expired_after_restart(root: &Path, global: &Value) {
     let daemon = Running::start(root);
     let mut client = daemon.connect().await;

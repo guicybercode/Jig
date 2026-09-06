@@ -169,3 +169,30 @@ export interface KnowledgeReadResponse {
   readonly entry: KnowledgeSourceEntry;
   readonly content: string;
 }
+
+/** Organization metadata targets existing catalog identities only. */
+export type OrganizationTarget = { readonly kind: "project"; readonly id: string } | { readonly kind: "session"; readonly id: string };
+export type OrganizationWorkflow = "backlog" | "in_progress" | "in_review" | "blocked" | "done";
+
+/** Visibility and user-managed workflow, independent of process state. */
+export interface OrganizationEntry {
+  readonly target: OrganizationTarget;
+  readonly pinned: boolean;
+  readonly archived: boolean;
+  readonly workflow: OrganizationWorkflow | null;
+  readonly revision: number;
+  readonly updatedAtMs: number | null;
+}
+
+/** Between one and 100 distinct targets; results retain request order. */
+export interface OrganizationGetRequest { readonly targets: readonly OrganizationTarget[]; }
+export interface OrganizationGetResponse { readonly entries: readonly OrganizationEntry[]; }
+
+/** Explicit replacement of all flags; zero is the revision of unwritten defaults. */
+export interface OrganizationSaveRequest {
+  readonly target: OrganizationTarget;
+  readonly expectedRevision: number;
+  readonly pinned: boolean;
+  readonly archived: boolean;
+  readonly workflow: OrganizationWorkflow | null;
+}

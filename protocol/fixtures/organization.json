@@ -1,0 +1,51 @@
+{
+  "request": {
+    "targets": [
+      {
+        "kind": "session",
+        "id": "0198b6e0-0001-7000-8000-000000000001"
+      },
+      {
+        "kind": "project",
+        "id": "0198b6e0-0000-7000-8000-000000000001"
+      }
+    ]
+  },
+  "response": {
+    "entries": [
+      {
+        "target": {
+          "kind": "session",
+          "id": "0198b6e0-0001-7000-8000-000000000001"
+        },
+        "pinned": false,
+        "archived": false,
+        "workflow": "backlog",
+        "revision": 0,
+        "updatedAtMs": null
+      },
+      {
+        "target": {
+          "kind": "project",
+          "id": "0198b6e0-0000-7000-8000-000000000001"
+        },
+        "pinned": false,
+        "archived": false,
+        "workflow": null,
+        "revision": 0,
+        "updatedAtMs": null
+      }
+    ]
+  },
+  "saved": {
+    "target": {
+      "kind": "session",
+      "id": "0198b6e0-0001-7000-8000-000000000001"
+    },
+    "pinned": true,
+    "archived": true,
+    "workflow": "in_review",
+    "revision": 2,
+    "updatedAtMs": 1788657000000
+  }
+}

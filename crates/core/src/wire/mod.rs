@@ -26,6 +26,10 @@ pub use crate::knowledge::{
     KnowledgeValidationError, MAX_KNOWLEDGE_BODY_BYTES, MAX_KNOWLEDGE_REVISION,
     MAX_KNOWLEDGE_TITLE_BYTES,
 };
+pub use crate::organization::{
+    OrganizationEntry, OrganizationGetRequest, OrganizationGetResponse, OrganizationSaveRequest,
+    OrganizationTarget, OrganizationTargets, OrganizationWorkflow,
+};
 pub use event::{
     AgentChangedEvent, AgentRemovedEvent, DaemonShuttingDownEvent, GitStatusChangedEvent,
     ProjectChangedEvent, ProjectRemovedEvent, SessionChangedEvent, SessionDeletedEvent,

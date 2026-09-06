@@ -31,6 +31,20 @@ const SCAN_TTL: Duration = Duration::from_secs(300);
 const MAX_ENTRY_JSON_BYTES: usize = 448 * 1_024;
 const MAX_ISSUE_JSON_BYTES: usize = 32 * 1_024;
 const MAX_ISSUES: usize = 32;
+// Provider directories are excluded from ordinary project traversal; only
+// explicit source specifications enter them. Other names are an explicit
+// dependency/VCS policy; build, dist and target may hold project instructions.
+const PRUNED_PROJECT_DIRECTORIES: &[&str] = &[
+    ".git",
+    "node_modules",
+    "vendor",
+    ".venv",
+    "venv",
+    ".codex",
+    ".agents",
+    ".claude",
+    ".cursor",
+];
 
 /// Daemon-selected roots; IPC callers cannot override any of these paths.
 #[derive(Clone, Debug)]
@@ -85,7 +99,7 @@ impl DiscoveryService {
         }
     }
 
-    /// Inventories known globals and project-root locations, without reading text.
+    /// Inventories known globals and bounded project scopes, without reading text.
     pub(crate) fn discover(
         &mut self,
         project: Option<&Project>,
@@ -100,16 +114,7 @@ impl DiscoveryService {
         let mut scanner = Scanner::new(scan_id);
         scanner.issue("activation_not_evaluated", None,
             "Discovery reports known source locations, not whether a native CLI loaded them. Imports, config overrides, frontmatter activation and plugins are not evaluated.");
-        if project.is_some() {
-            scanner.issue("project_root_scope", None,
-                "This inventory covers the registered project root. Rules or skills from a session's other working-directory ancestors are not evaluated.");
-        }
-        for spec in source_specs(&self.roots, project) {
-            if scanner.full() || scanner.remaining_nodes == 0 {
-                break;
-            }
-            scanner.scan_source(&spec);
-        }
+        scanner.scan_inventory(&self.roots, project);
         let now = Instant::now();
         self.scans
             .retain(|scan| now.duration_since(scan.created) < SCAN_TTL);
@@ -228,6 +233,7 @@ enum Shape {
 
 struct SourceSpec {
     base: PathBuf,
+    scope_directory: String,
     directory: &'static str,
     provider: KnowledgeProvider,
     scope: KnowledgeSourceScope,
@@ -266,9 +272,9 @@ impl SourceSpec {
     }
 }
 
-fn source_specs(roots: &DiscoveryRoots, project: Option<&Project>) -> Vec<SourceSpec> {
-    use KnowledgeProvider::{Claude, Codex, Cursor};
-    use KnowledgeSourceScope::{Admin, Global, Project as ProjectScope};
+fn global_source_specs(roots: &DiscoveryRoots) -> Vec<SourceSpec> {
+    use KnowledgeProvider::{Claude, Codex};
+    use KnowledgeSourceScope::{Admin, Global};
     let mut specs = Vec::new();
     let codex_home = roots
         .codex_home
@@ -278,6 +284,7 @@ fn source_specs(roots: &DiscoveryRoots, project: Option<&Project>) -> Vec<Source
         for leaf in ["AGENTS.override.md", "AGENTS.md"] {
             specs.push(SourceSpec {
                 base: base.clone(),
+                scope_directory: String::new(),
                 directory: "",
                 provider: Codex,
                 scope: Global,
@@ -288,6 +295,7 @@ fn source_specs(roots: &DiscoveryRoots, project: Option<&Project>) -> Vec<Source
     if let Some(home) = &roots.home {
         specs.push(SourceSpec {
             base: home.clone(),
+            scope_directory: String::new(),
             directory: ".claude",
             provider: Claude,
             scope: Global,
@@ -295,75 +303,87 @@ fn source_specs(roots: &DiscoveryRoots, project: Option<&Project>) -> Vec<Source
         });
         specs.push(SourceSpec {
             base: home.clone(),
+            scope_directory: String::new(),
             directory: ".claude/rules",
             provider: Claude,
             scope: Global,
             shape: Shape::Rules("md"),
         });
-        add_skills(&mut specs, home, Global);
+        add_skills(&mut specs, home, Global, "");
     }
     specs.push(SourceSpec {
         base: roots.admin_skills.clone(),
+        scope_directory: String::new(),
         directory: "",
         provider: Codex,
         scope: Admin,
         shape: Shape::Skills { recursive: false },
     });
-    if let Some(project) = project {
-        for leaf in ["AGENTS.override.md", "AGENTS.md"] {
-            specs.push(SourceSpec {
-                base: project.path.clone(),
-                directory: "",
-                provider: Codex,
-                scope: ProjectScope,
-                shape: Shape::Exact(leaf),
-            });
-        }
-        for (directory, leaf) in [
-            ("", "CLAUDE.md"),
-            (".claude", "CLAUDE.md"),
-            ("", "CLAUDE.local.md"),
-        ] {
-            specs.push(SourceSpec {
-                base: project.path.clone(),
-                directory,
-                provider: Claude,
-                scope: ProjectScope,
-                shape: Shape::Exact(leaf),
-            });
-        }
-        specs.push(SourceSpec {
-            base: project.path.clone(),
-            directory: ".claude/rules",
-            provider: Claude,
-            scope: ProjectScope,
-            shape: Shape::Rules("md"),
-        });
-        specs.push(SourceSpec {
-            base: project.path.clone(),
-            directory: ".cursor/rules",
-            provider: Cursor,
-            scope: ProjectScope,
-            shape: Shape::Rules("mdc"),
-        });
-        specs.push(SourceSpec {
-            base: project.path.clone(),
-            directory: "",
-            provider: Cursor,
-            scope: ProjectScope,
-            shape: Shape::Exact("AGENTS.md"),
-        });
-        add_skills(&mut specs, &project.path, ProjectScope);
-    }
-    specs.sort_by_key(|spec| match spec.scope {
-        ProjectScope => 0,
-        Global => 1,
-        Admin => 2,
-    });
     specs
 }
 
-fn add_skills(specs: &mut Vec<SourceSpec>, base: &Path, scope: KnowledgeSourceScope) {
+fn project_source_specs(base: &Path, scope_directory: &str) -> Vec<SourceSpec> {
+    use KnowledgeProvider::{Claude, Codex, Cursor};
+    use KnowledgeSourceScope::Project as ProjectScope;
+    let mut specs = Vec::new();
+    for leaf in ["AGENTS.override.md", "AGENTS.md"] {
+        specs.push(SourceSpec {
+            base: base.to_path_buf(),
+            scope_directory: scope_directory.to_owned(),
+            directory: "",
+            provider: Codex,
+            scope: ProjectScope,
+            shape: Shape::Exact(leaf),
+        });
+    }
+    for (directory, leaf) in [
+        ("", "CLAUDE.md"),
+        (".claude", "CLAUDE.md"),
+        ("", "CLAUDE.local.md"),
+    ] {
+        specs.push(SourceSpec {
+            base: base.to_path_buf(),
+            scope_directory: scope_directory.to_owned(),
+            directory,
+            provider: Claude,
+            scope: ProjectScope,
+            shape: Shape::Exact(leaf),
+        });
+    }
+    specs.push(SourceSpec {
+        base: base.to_path_buf(),
+        scope_directory: scope_directory.to_owned(),
+        directory: ".claude/rules",
+        provider: Claude,
+        scope: ProjectScope,
+        shape: Shape::Rules("md"),
+    });
+    specs.push(SourceSpec {
+        base: base.to_path_buf(),
+        scope_directory: scope_directory.to_owned(),
+        directory: ".cursor/rules",
+        provider: Cursor,
+        scope: ProjectScope,
+        shape: Shape::Rules("mdc"),
+    });
+    specs.push(SourceSpec {
+        base: base.to_path_buf(),
+        scope_directory: scope_directory.to_owned(),
+        directory: "",
+        provider: Cursor,
+        scope: ProjectScope,
+        shape: Shape::Exact("AGENTS.md"),
+    });
+    add_skills(&mut specs, base, ProjectScope, scope_directory);
+    specs
+}
+
+fn add_skills(
+    specs: &mut Vec<SourceSpec>,
+    base: &Path,
+    scope: KnowledgeSourceScope,
+    scope_directory: &str,
+) {
     for (provider, directory, recursive) in [
         (KnowledgeProvider::Codex, ".agents/skills", false),
         (KnowledgeProvider::Claude, ".claude/skills", false),
@@ -372,6 +392,7 @@ fn add_skills(specs: &mut Vec<SourceSpec>, base: &Path, scope: KnowledgeSourceSc
     ] {
         specs.push(SourceSpec {
             base: base.to_path_buf(),
+            scope_directory: scope_directory.to_owned(),
             directory,
             provider,
             scope,
@@ -404,6 +425,110 @@ impl Scanner {
         }
     }
 
+    fn scan_inventory(&mut self, roots: &DiscoveryRoots, project: Option<&Project>) {
+        if project.is_some() {
+            self.issue("project_subtree_scope", None,
+                "Discovery inventories known configurations in the registered project subtree. Session working-directory ancestors, repository boundaries and native activation are not evaluated.");
+            self.issue("project_scan_policy", None,
+                "Project-root sources are scanned before globals and then descendants, sharing all limits. Descendant traversal skips .git, node_modules, vendor, .venv, venv and .codex; .agents, .claude and .cursor use only their known rules and skills readers.");
+        }
+        // Resolve daemon-selected root aliases once. Nested scopes must keep
+        // their opened capability; reopening absolute paths could follow a link
+        // that replaced an ordinary directory after enumeration.
+        let project_directory = project.and_then(|project| self.open_base(&project.path));
+        if let (Some(project), Some(directory)) = (project, &project_directory) {
+            self.scan_project_scope(directory, &project.path, Path::new(""), 0);
+        }
+        for spec in global_source_specs(roots) {
+            if self.full() {
+                break;
+            }
+            self.scan_source(&spec);
+        }
+        // A large descendant tree cannot consume the budget before globals.
+        if let (Some(project), Some(directory)) = (project, &project_directory) {
+            if !self.full() && self.remaining_nodes > 0 {
+                self.walk_project(directory, &project.path, Path::new(""), 0);
+            }
+        }
+    }
+
+    fn scan_project_scope(
+        &mut self,
+        directory: &Directory,
+        logical: &Path,
+        relative: &Path,
+        depth: usize,
+    ) {
+        let Some(relative) = relative.to_str() else {
+            self.issue("non_utf8_path", None, "A project scope with a non-UTF-8 path was skipped; path bytes were not converted lossily.");
+            return;
+        };
+        let scope = if relative.is_empty() { "." } else { relative };
+        // Exact allowlisted probes remain possible for directory entries already
+        // collected at the enumeration limit, just like rule/skill candidates.
+        for spec in project_source_specs(logical, scope) {
+            if self.full() {
+                break;
+            }
+            self.scan_source_at(directory, &spec, depth);
+        }
+    }
+
+    fn walk_project(
+        &mut self,
+        directory: &Directory,
+        logical: &Path,
+        relative: &Path,
+        depth: usize,
+    ) {
+        for name in self.names(directory, logical) {
+            if self.full() {
+                break;
+            }
+            if PRUNED_PROJECT_DIRECTORIES
+                .iter()
+                .any(|pruned| name == OsStr::new(pruned))
+            {
+                continue;
+            }
+            let path = logical.join(&name);
+            match directory.open_child(&name, false) {
+                Ok((child, _)) => {
+                    if depth >= MAX_DEPTH {
+                        self.depth_limit(&path);
+                        continue;
+                    }
+                    let scope = relative.join(&name);
+                    self.scan_project_scope(&child, &path, &scope, depth + 1);
+                    if !self.full() && self.remaining_nodes > 0 {
+                        self.walk_project(&child, &path, &scope, depth + 1);
+                    }
+                }
+                Err(SafeError::NonRegular | SafeError::Missing) => (),
+                Err(SafeError::Symlink) => self.issue(
+                    "directory_symlink_skipped",
+                    Some(&path),
+                    "Project-directory symlinks are not followed; only known skill-directory links are supported.",
+                ),
+                Err(_) => self.issue(
+                    "directory_unavailable",
+                    Some(&path),
+                    "The project directory could not be opened safely.",
+                ),
+            }
+        }
+    }
+
+    fn depth_limit(&mut self, path: &Path) {
+        self.response.truncated = true;
+        self.issue(
+            "depth_limit",
+            Some(path),
+            "The cumulative source-directory depth limit was reached.",
+        );
+    }
+
     fn full(&mut self) -> bool {
         if self.response.entries.len() >= MAX_ENTRIES || self.entry_bytes >= MAX_ENTRY_JSON_BYTES {
             self.response.truncated = true;
@@ -431,28 +556,44 @@ impl Scanner {
         }
     }
 
-    fn scan_source(&mut self, spec: &SourceSpec) {
-        let logical = spec.base.join(spec.directory);
-        let (mut directory, _) = match Directory::open_absolute(&spec.base, true) {
-            Ok(value) => value,
-            Err(SafeError::Missing) => return,
+    fn open_base(&mut self, path: &Path) -> Option<Directory> {
+        match Directory::open_absolute(path, true) {
+            Ok((directory, _)) => Some(directory),
+            Err(SafeError::Missing) => None,
             Err(_) => {
                 self.issue(
                     "source_unavailable",
-                    Some(&logical),
+                    Some(path),
                     "The configured source directory could not be opened safely.",
                 );
-                return;
+                None
             }
-        };
+        }
+    }
+
+    fn scan_source(&mut self, spec: &SourceSpec) {
+        if let Some(directory) = self.open_base(&spec.base) {
+            self.scan_source_at(&directory, spec, 0);
+        }
+    }
+
+    fn scan_source_at(&mut self, base: &Directory, spec: &SourceSpec, mut depth: usize) {
+        let logical = spec.base.join(spec.directory);
+        let mut opened = None;
         let mut linked = false;
         for component in Path::new(spec.directory).components() {
+            let directory = opened.as_ref().unwrap_or(base);
             match directory.open_child(
                 component.as_os_str(),
                 spec.kind() == KnowledgeSourceKind::Skill,
             ) {
                 Ok((child, via_link)) => {
-                    directory = child;
+                    if depth >= MAX_DEPTH {
+                        self.depth_limit(&logical);
+                        return;
+                    }
+                    depth += 1;
+                    opened = Some(child);
                     linked |= via_link;
                 }
                 Err(SafeError::Missing) => return,
@@ -462,20 +603,22 @@ impl Scanner {
                 }
             }
         }
+        let directory = opened.as_ref().unwrap_or(base);
         match spec.shape {
             Shape::Exact(leaf) => self.add_candidate(
-                &directory,
+                directory,
                 OsStr::new(leaf),
                 spec,
                 &logical.join(leaf),
                 linked,
             ),
-            Shape::Rules(extension) => {
-                self.walk_rules(&directory, spec, &logical, extension, 0, linked);
+            Shape::Rules(extension) if self.remaining_nodes > 0 => {
+                self.walk_rules(directory, spec, &logical, extension, depth, linked);
             }
-            Shape::Skills { recursive } => {
-                self.walk_skills(&directory, spec, &logical, recursive, 0, linked, &[]);
+            Shape::Skills { recursive } if self.remaining_nodes > 0 => {
+                self.walk_skills(directory, spec, &logical, recursive, depth, linked, &[]);
             }
+            Shape::Rules(_) | Shape::Skills { .. } => (),
         }
     }
 
@@ -523,12 +666,7 @@ impl Scanner {
                         continue;
                     }
                     if depth >= MAX_DEPTH {
-                        self.response.truncated = true;
-                        self.issue(
-                            "depth_limit",
-                            Some(&path),
-                            "The rule-directory depth limit was reached.",
-                        );
+                        self.depth_limit(&path);
                     } else {
                         self.walk_rules(&child, spec, &path, extension, depth + 1, linked);
                     }
@@ -580,6 +718,10 @@ impl Scanner {
                         );
                         continue;
                     }
+                    if depth >= MAX_DEPTH {
+                        self.depth_limit(&path);
+                        continue;
+                    }
                     self.add_candidate(
                         &child,
                         OsStr::new("SKILL.md"),
@@ -588,24 +730,15 @@ impl Scanner {
                         linked || via_link,
                     );
                     if recursive && self.remaining_nodes > 0 {
-                        if depth >= MAX_DEPTH {
-                            self.response.truncated = true;
-                            self.issue(
-                                "depth_limit",
-                                Some(&path),
-                                "The skill-directory depth limit was reached.",
-                            );
-                        } else {
-                            self.walk_skills(
-                                &child,
-                                spec,
-                                &path,
-                                true,
-                                depth + 1,
-                                linked || via_link,
-                                &ancestors,
-                            );
-                        }
+                        self.walk_skills(
+                            &child,
+                            spec,
+                            &path,
+                            true,
+                            depth + 1,
+                            linked || via_link,
+                            &ancestors,
+                        );
                     }
                 }
                 Err(SafeError::NonRegular | SafeError::Missing) => (),
@@ -661,11 +794,7 @@ impl Scanner {
             scope: spec.scope,
             source_path: path.to_owned(),
             name: name.to_owned(),
-            scope_directory: if spec.scope == KnowledgeSourceScope::Project {
-                ".".to_owned()
-            } else {
-                String::new()
-            },
+            scope_directory: spec.scope_directory.clone(),
             precedence_hint: spec.precedence().to_owned(),
             via_symlink: linked,
             availability: candidate.availability,

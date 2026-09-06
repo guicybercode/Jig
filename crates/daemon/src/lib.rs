@@ -17,6 +17,7 @@ mod files;
 mod git_inspection;
 mod knowledge;
 mod lock;
+mod organization;
 mod paths;
 mod preflight;
 mod projects;

@@ -1,4 +1,4 @@
-/** Mirror of cli_master_core::wire::method; protocol/catalog.json is checked in tests. */
+/** Mirror of cli_master_core::wire::method; checked against the JSON catalog. */
 export const IPC_METHODS = [
   "system.hello",
   "state.snapshot",
@@ -36,7 +36,9 @@ export const IPC_METHODS = [
   "knowledge.save",
   "knowledge.delete",
   "knowledge.discover",
-  "knowledge.read"
+  "knowledge.read",
+  "organization.get",
+  "organization.save"
 ] as const;
 
 export type IpcMethod = (typeof IPC_METHODS)[number];

@@ -11,6 +11,7 @@ mod error;
 pub mod knowledge;
 mod migrate;
 mod models;
+pub mod organization;
 mod paths;
 mod projects;
 mod recovery;
@@ -34,10 +35,11 @@ pub use connection::Storage;
 pub use error::StorageError;
 pub use knowledge::KnowledgeStorageError;
 pub use models::{SessionRuntimeUpdate, StoredAgent, StoredSession, StoredWorktree, WorktreeState};
+pub use organization::OrganizationStorageError;
 pub use recovery::{ReconciliationEvent, ReconciliationReason, RecoveryContext};
 
 /// The newest schema version understood by this crate.
-pub const LATEST_SCHEMA_VERSION: u32 = 4;
+pub const LATEST_SCHEMA_VERSION: u32 = 5;
 
 impl Storage {
     /// Opens and configures a file-backed `SQLite` database.

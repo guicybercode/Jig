@@ -1,0 +1,324 @@
+--- a/crates/session/src/runtime/process_tree.rs
++++ b/crates/session/src/runtime/process_tree.rs
+@@ -12,6 +12,7 @@
+ 
+ #[derive(Clone)]
+ struct CachedSnapshot {
++    scan_started_at: Instant,
+     captured_at: Instant,
+     records: Arc<[ProcessRecord]>,
+ }
+@@ -40,6 +41,7 @@
+ 
+ pub(super) struct ProcessTree {
+     known: BTreeMap<i32, ProcessIdentity>,
++    last_snapshot_completed_at: Instant,
+     scan_timeout: Duration,
+     max_tracked_processes: usize,
+ }
+@@ -50,10 +52,11 @@
+         scan_timeout: Duration,
+         max_tracked_processes: usize,
+     ) -> io::Result<Self> {
+-        let records = process_snapshot(scan_timeout, true)?;
++        let records = process_snapshot(scan_timeout, true, None)?;
+         let root_pid = root_pid.as_raw();
+         let mut tree = Self {
+             known: BTreeMap::new(),
++            last_snapshot_completed_at: records.captured_at,
+             scan_timeout,
+             max_tracked_processes,
+         };
+@@ -69,12 +72,25 @@
+     }
+ 
+     pub fn refresh(&mut self) -> io::Result<Vec<TrackedProcess>> {
+-        let snapshot = process_snapshot(self.scan_timeout, false)?;
+-        self.absorb(&snapshot.records)
++        let snapshot = process_snapshot(
++            self.scan_timeout,
++            false,
++            Some(self.last_snapshot_completed_at),
++        )?;
++        self.absorb_snapshot(&snapshot)
+     }
+ 
+     pub fn refresh_fresh(&mut self) -> io::Result<Vec<TrackedProcess>> {
+-        let snapshot = process_snapshot(self.scan_timeout, true)?;
++        let snapshot = process_snapshot(self.scan_timeout, true, None)?;
++        self.absorb_snapshot(&snapshot)
++    }
++
++    fn absorb_snapshot(&mut self, snapshot: &CachedSnapshot) -> io::Result<Vec<TrackedProcess>> {
++        // Scans are not atomic: even a later-started overlapping scan can
++        // contain older observations. Accept cached scans only when they began
++        // after the snapshot already absorbed here finished collecting records.
++        // Advance this bound before absorb, which may mutate then fail on limits.
++        self.last_snapshot_completed_at = snapshot.captured_at;
+         self.absorb(&snapshot.records)
+     }
+ 
+@@ -144,15 +160,30 @@
+     fn with_root_for_test(root: ProcessRecord, max_tracked_processes: usize) -> Self {
+         Self {
+             known: BTreeMap::from([(root.identity.pid, root.identity)]),
++            last_snapshot_completed_at: Instant::now(),
+             scan_timeout: Duration::from_secs(1),
+             max_tracked_processes,
+         }
+     }
+ }
+ 
+-fn process_snapshot(timeout: Duration, force: bool) -> io::Result<CachedSnapshot> {
++fn process_snapshot(
++    timeout: Duration,
++    force: bool,
++    not_before: Option<Instant>,
++) -> io::Result<CachedSnapshot> {
++    let cache = PROCESS_SNAPSHOT_CACHE.get_or_init(|| Mutex::new(None));
++    process_snapshot_with(timeout, force, not_before, cache, scan_processes_uncached)
++}
++
++fn process_snapshot_with(
++    timeout: Duration,
++    force: bool,
++    not_before: Option<Instant>,
++    cache: &Mutex<Option<CachedSnapshot>>,
++    scan: impl FnOnce(Duration) -> io::Result<Vec<ProcessRecord>>,
++) -> io::Result<CachedSnapshot> {
+     let started = Instant::now();
+-    let cache = PROCESS_SNAPSHOT_CACHE.get_or_init(|| Mutex::new(None));
+     if !force {
+         let Some(cached) = cache.try_lock_for(timeout) else {
+             return Err(io::Error::new(
+@@ -160,10 +191,11 @@
+                 "process-tree snapshot cache lock exceeded its deadline",
+             ));
+         };
+-        if let Some(snapshot) = cached.as_ref() {
+-            if snapshot.captured_at.elapsed() <= SNAPSHOT_CACHE_TTL {
+-                return Ok(snapshot.clone());
+-            }
++        if let Some(snapshot) = cached.as_ref().filter(|snapshot| {
++            snapshot.captured_at.elapsed() <= SNAPSHOT_CACHE_TTL
++                && not_before.is_none_or(|minimum| snapshot.scan_started_at >= minimum)
++        }) {
++            return Ok(snapshot.clone());
+         }
+     }
+     let remaining = timeout.saturating_sub(started.elapsed());
+@@ -173,8 +205,10 @@
+             "process-tree snapshot exceeded its deadline",
+         ));
+     }
+-    let records = Arc::from(scan_processes_uncached(remaining)?);
++    let scan_started_at = Instant::now();
++    let records = Arc::from(scan(remaining)?);
+     let snapshot = CachedSnapshot {
++        scan_started_at,
+         captured_at: Instant::now(),
+         records,
+     };
+@@ -184,9 +218,20 @@
+     // itself is already complete and identity-checked.
+     let remaining = timeout.saturating_sub(started.elapsed());
+     if let Some(mut cache) = cache.try_lock_for(remaining) {
++        publish_snapshot(&mut cache, &snapshot);
++    }
++    Ok(snapshot)
++}
++
++fn publish_snapshot(cache: &mut Option<CachedSnapshot>, snapshot: &CachedSnapshot) {
++    // Concurrent scans can finish in a different order than they started.
++    // Completion time is useful for TTL, but cannot order their observations.
++    if cache
++        .as_ref()
++        .is_none_or(|current| snapshot.scan_started_at >= current.scan_started_at)
++    {
+         *cache = Some(snapshot.clone());
+     }
+-    Ok(snapshot)
+ }
+ 
+ #[cfg(target_os = "linux")]
+@@ -365,6 +410,180 @@
+         }
+     }
+ 
++    fn snapshot(scan_started_at: Instant, records: Vec<ProcessRecord>) -> CachedSnapshot {
++        CachedSnapshot {
++            scan_started_at,
++            captured_at: Instant::now(),
++            records: Arc::from(records),
++        }
++    }
++
++    #[test]
++    fn delayed_pre_spawn_cache_cannot_prune_a_new_live_root() {
++        let root = record(100, 1, 100, "root");
++        let mut tree = ProcessTree::with_root_for_test(root.clone(), 8);
++        let older = tree
++            .last_snapshot_completed_at
++            .checked_sub(Duration::from_millis(1))
++            .unwrap();
++        let cache = Mutex::new(Some(snapshot(older, Vec::new())));
++        let refreshed = process_snapshot_with(
++            tree.scan_timeout,
++            false,
++            Some(tree.last_snapshot_completed_at),
++            &cache,
++            |_| {
++                assert!(
++                    cache.try_lock().is_some(),
++                    "scan must not hold the cache lock"
++                );
++                Ok(vec![root])
++            },
++        )
++        .expect("an old cached scan should cause a fresh scan");
++
++        let tracked = tree.absorb_snapshot(&refreshed).unwrap();
++
++        assert_eq!(tracked.len(), 1);
++        assert_eq!(tracked[0].pid, Pid::from_raw(100));
++        assert!(tree.known.contains_key(&100));
++    }
++
++    #[test]
++    fn cached_snapshot_before_a_new_descendant_does_not_forget_its_identity() {
++        let root = record(100, 1, 100, "root");
++        let child = record(101, 100, 101, "child");
++        let mut tree = ProcessTree::with_root_for_test(root.clone(), 8);
++        let now = Instant::now();
++        let initial = snapshot(
++            now.checked_sub(Duration::from_millis(2)).unwrap(),
++            vec![root.clone()],
++        );
++        let observed = snapshot(
++            now.checked_sub(Duration::from_millis(1)).unwrap(),
++            vec![root.clone(), child.clone()],
++        );
++        let observed_completed_at = observed.captured_at;
++        tree.absorb_snapshot(&observed).unwrap();
++        assert_eq!(tree.last_snapshot_completed_at, observed_completed_at);
++        let cache = Mutex::new(Some(initial));
++        // The descendant has since escaped and been reparented. Losing its
++        // previously proven birth identity would make recovery impossible.
++        let escaped = record(101, 1, 101, "child");
++        let refreshed = process_snapshot_with(
++            tree.scan_timeout,
++            false,
++            Some(tree.last_snapshot_completed_at),
++            &cache,
++            |_| Ok(vec![root, escaped]),
++        )
++        .unwrap();
++
++        let tracked = tree.absorb_snapshot(&refreshed).unwrap();
++
++        assert_eq!(tracked.len(), 2);
++        assert!(tree.known.contains_key(&child.identity.pid));
++    }
++
++    #[test]
++    fn overlapping_later_started_cache_cannot_forget_an_observed_descendant() {
++        let root = record(100, 1, 100, "root");
++        let child = record(101, 100, 101, "child");
++        let now = Instant::now();
++        let mut tree = ProcessTree::with_root_for_test(root.clone(), 8);
++        let observed = CachedSnapshot {
++            scan_started_at: now.checked_sub(Duration::from_millis(2)).unwrap(),
++            captured_at: now,
++            records: Arc::from(vec![root.clone(), child]),
++        };
++        tree.absorb_snapshot(&observed).unwrap();
++        // B started after A, but read the process list before A observed this
++        // child. B finished late; completion and start order alone are unsafe.
++        let overlapping = snapshot(
++            now.checked_sub(Duration::from_millis(1)).unwrap(),
++            vec![root.clone()],
++        );
++        let cache = Mutex::new(Some(overlapping));
++        let refreshed = process_snapshot_with(
++            tree.scan_timeout,
++            false,
++            Some(tree.last_snapshot_completed_at),
++            &cache,
++            |_| Ok(vec![root, record(101, 1, 101, "child")]),
++        )
++        .unwrap();
++
++        let tracked = tree.absorb_snapshot(&refreshed).unwrap();
++
++        assert_eq!(tracked.len(), 2);
++        assert!(tree.known.contains_key(&101));
++    }
++
++    #[test]
++    fn late_publication_cannot_replace_a_scan_started_later() {
++        let now = Instant::now();
++        let newer = snapshot(now, vec![record(100, 1, 100, "root")]);
++        let older = snapshot(
++            now.checked_sub(Duration::from_millis(1)).unwrap(),
++            Vec::new(),
++        );
++        let mut cache = Some(newer);
++
++        publish_snapshot(&mut cache, &older);
++
++        let retained = cache.unwrap();
++        assert_eq!(retained.scan_started_at, now);
++        assert_eq!(retained.records.len(), 1);
++    }
++
++    #[test]
++    fn current_cached_absence_still_prunes_a_terminated_identity() {
++        let root = record(100, 1, 100, "root");
++        let mut tree = ProcessTree::with_root_for_test(root, 8);
++        let cache = Mutex::new(Some(snapshot(Instant::now(), Vec::new())));
++        let refreshed = process_snapshot_with(
++            tree.scan_timeout,
++            false,
++            Some(tree.last_snapshot_completed_at),
++            &cache,
++            |_| panic!("a current cached snapshot should not need another scan"),
++        )
++        .unwrap();
++
++        assert!(tree.absorb_snapshot(&refreshed).unwrap().is_empty());
++        assert!(tree.known.is_empty());
++    }
++
++    #[test]
++    fn forced_lifecycle_scan_bypasses_an_eligible_cached_snapshot() {
++        let now = Instant::now();
++        let cache = Mutex::new(Some(snapshot(now, Vec::new())));
++        let refreshed =
++            process_snapshot_with(Duration::from_secs(1), true, Some(now), &cache, |_| {
++                Ok(vec![record(100, 1, 100, "root")])
++            })
++            .unwrap();
++
++        assert_eq!(refreshed.records.len(), 1);
++    }
++
++    #[test]
++    fn rejected_cache_does_not_restart_an_exhausted_scan_budget() {
++        let now = Instant::now();
++        let cache = Mutex::new(Some(snapshot(
++            now.checked_sub(Duration::from_millis(1)).unwrap(),
++            Vec::new(),
++        )));
++        let result = process_snapshot_with(Duration::ZERO, false, Some(now), &cache, |_| {
++            panic!("an exhausted original budget must not start a scan")
++        });
++
++        let Err(error) = result else {
++            panic!("an old cache cannot satisfy an exhausted request");
++        };
++        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
++    }
++
+     #[test]
+     fn only_proven_descendants_are_retained_across_group_changes() {
+         let root = record(100, 1, 100, "root");

@@ -1,8 +1,9 @@
 # S3 organization contract proposal
 
-Status: S2 approved ownership and reserved migration 0005_organization.sql
-in xirp-coordination-reply.md. This document records the proposal; no
-organization IPC names or handlers are implemented by this document.
+Status: approved by S2 in `xirp-coordination-reply.md`; migration
+`0005_organization.sql` allocated to S3. Backend, typed IPC and migration are
+published in `fce3982`; isolated controls are published in `3feb82d`.
+Canvas mounting and Linux/macOS integration acceptance remain separate work.
 
 The original user task assigns new organization/context modules to S3 and
 shared contracts to S2. This proposal resolves the earlier replies' ownership
@@ -35,7 +36,7 @@ accepted by this API.
 
 ## Persistence and concurrency
 
-Proposed migration number must be allocated by S2. Add two tables,
+S2 allocated migration 0005. It adds two tables,
 `project_organization` and `session_organization`, each keyed by its existing
 entity ID with an ON DELETE CASCADE foreign key. Keep metadata separate from
 the process-owned session row. Use immediate write transactions for compare

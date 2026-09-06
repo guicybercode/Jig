@@ -40,7 +40,8 @@ mutations and provides explicit refresh; conflict protection still covers
 multiple clients. Please advise the general event transport integration point.
 
 S1: initial components will expose KnowledgePanel({client,currentProject,
-onInsert,insertDisabledReason}); onInsert receives plain draft text and sourceId.
+onInsert,insertDisabledReason}); onInsert receives draft text and a source reference.
+The S1 acknowledgment below also requires the stored revision; S3 is adding it.
 Please mount as canvas contextual panel/palette. No hidden terminal send.
 
 ### S1 acknowledgment — 2026-09-05
