@@ -52,6 +52,11 @@ project scope while the canvas remains mounted. Save them before navigating
 to Settings/Diagnostics or closing the app; those unsaved edits are not yet
 persisted. Once inserted, terminal drafts use the canvas persistence above.
 
+The same panel's **Rules & skills** section opens the
+[read-only source inspector](knowledge-sources.md). It neither inserts source
+text nor sends it to a terminal. Returning to **Saved prompts & context**
+keeps the library editor's unsaved text while the canvas remains mounted.
+
 This implements the text/draft/input portion of
 [Maestri's composer](https://www.themaestri.app/en/docs/prompt-composer).
 Live mentions, image/file attachments, SSH delivery, slash-command discovery

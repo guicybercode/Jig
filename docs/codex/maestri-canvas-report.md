@@ -1,6 +1,6 @@
 # S1 — canvas Maestri e integração XIRP
 
-Atualizado em 2026-09-05. A meta completa continua ativa; esta entrega não
+Atualizado em 2026-09-05. A meta completa continua em aberto; esta entrega não
 constitui paridade integral com Maestri nem integração com Spotify Portal.
 O inventário completo está em [maestri-xirp-parity.md](../maestri-xirp-parity.md).
 
@@ -24,6 +24,9 @@ O inventário completo está em [maestri-xirp-parity.md](../maestri-xirp-parity.
 | `645047b` | Probe de executáveis: retry limitado para `ETXTBSY`; diagnóstico só contém tipo/errno, sem caminho, argv ou mensagem original. A causa da falha histórica do CI não foi comprovada. |
 | `dd84a49` | Lista de worktrees atualizada após criação/start isolado e remoção, protegida contra respostas antigas; cliente estável para operações da biblioteca. |
 | `1150de6` | Biblioteca montada no canvas e paleta; inserção explícita em draft sem enviar; escolha de worktree isolada no diálogo do canvas; fixtures de refresh corrigidas e E2E offline da biblioteca. |
+| `871d024` | Expirar o deadline após `ETXTBSY` retorna timeout; limite de tentativas antes do prazo conserva errno. Duas regressões com relógio controlado passam também no macOS. |
+| `52c1e29` | Discovery S3 integrado: inventário limitado e leitura com IDs opacos, expiração, revalidação de projeto e identidade de arquivos. Mantidos `worktree.list`, catálogos e `spawn_blocking`. |
+| `9329d01` | Inspetor de regras/skills montado na biblioteca do canvas, sob demanda; previews invalidados por reconexão/projeto; texto salvo em edição permanece ao alternar seções. Teclas na prévia/lista de issues não removem nem selecionam cartões. |
 
 Os commits foram enviados individualmente para
 `origin/refactor/canvas-only-shell`, com autoria Git do usuário e sem trailers
@@ -32,19 +35,28 @@ nenhuma operação de stop/delete do daemon é chamada ao remover uma seleção.
 
 ## Validação e limites
 
-- `pnpm --filter @cli-master/desktop check`: TypeScript, **253 testes** e
+- `pnpm --filter @cli-master/desktop check`: TypeScript, **283 testes** e
   build de produção passaram no macOS com Node 25.9. O build ainda informa
   bundle principal maior que 500 kB; isso não foi corrigido nesta entrega.
-- `pnpm --filter @cli-master/desktop test:e2e`: **12 testes** passaram no
+- `pnpm --filter @cli-master/desktop test:e2e`: **13 testes** passaram no
   Chromium/macOS, com build novo. Incluem ponteiro, teclado, persistência após
   reload, drafts por terminal e inserção da biblioteca offline, com janela
   compacta. Os testes anteriores também cobrem dimensões de 360/640/1440 px.
+- A rodada E2E final inclui reabrir o inspetor com foco na busca visível e
+  preservar o editor da biblioteca. Componentes exercitam previews literais,
+  reconexão, leituras por IDs opacos e teclas em superfícies não editáveis.
+  ESLint dos arquivos alterados passou sem erros; permanece o aviso existente
+  de Fast Refresh no módulo que exporta WorkspaceProvider/useWorkspace.
 - `cargo test -p cli-master-core -p cli-master-storage -p cli-master-daemon`:
   **167 testes** passaram após integrar conhecimento; Clippy desses crates
   com todos os targets e `-D warnings` e formatação passaram. A integração da
   saga foi verificada antes com **119 testes** de session/storage. Não são
   contagens somáveis: há cobertura sobreposta e checkpoints diferentes.
-- `cargo test -p cli-master-agents`: **62 testes** passaram no patch de probe;
+- `cargo test -p cli-master-core -p cli-master-daemon`: **157 testes** passaram
+  após integrar discovery, incluindo contratos, socket real, symlinks,
+  alterações externas, projeto removido e restart. Clippy all-targets desses
+  crates com `-D warnings` e formatação passaram.
+- `cargo test -p cli-master-agents`: **64 testes** passaram no patch de probe;
   Clippy de todos os targets passou. Usam processos/arquivos reais, sem login
   em CLI de fornecedor. O harness de smoke do navegador tem **5 testes Node**.
 - A build Rust usou `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0
@@ -65,6 +77,10 @@ nenhuma operação de stop/delete do daemon é chamada ao remover uma seleção.
   falhou em dois fixtures AppShell sem o handler `listWorktrees`. O ajuste
   está em `1150de6`, validado localmente; conferir CI/Packaging do novo HEAD.
   Jobs antigos cancelados por pushes seguintes não são evidência de falha.
+- Em `52c1e29`, [Packaging Linux/macOS](https://github.com/guicybercode/Jig/actions/runs/34005097607)
+  passou; Quality Linux também passou no [CI](https://github.com/guicybercode/Jig/actions/runs/34005097610).
+  Não usar esse checkpoint parcial para afirmar CI completo do HEAD com o
+  inspetor: acompanhar os checks do PR 43 após o push de `9329d01` e docs.
 - Smoke interativo do navegador/PTY em pacotes Linux/macOS continua aberto,
   inclusive permissões de mídia, subframes, redirects e downloads. Compilar
   ou testar strings de proteção não demonstra toda a fronteira nativa.
@@ -88,14 +104,24 @@ do canvas. Snapshots são texto, não referências vivas nem permissões de agen
 2. S2: integrar os próximos contratos publicados de arquivos/notas/workspace/
    floors. Isolamento por sessão já usa o caminho público; isso ainda não é
    o modelo de floor compartilhado por várias sessões.
-3. S3: biblioteca e composer já estão ligados. Próximos incrementos são o
-   inspetor de regras/skills e organização (pin/archive/workflow), com contratos
-   e migrations coordenados. [Coordenação com S3](xirp-integration-request.md)
+3. S3: biblioteca, composer e inspetor de regras/skills já estão ligados.
+   Organização (pin/archive/workflow) é o próximo incremento; migration0005
+   foi reservada por S2 para S3, antes de workspace0006.
+   [Coordenação com S3](xirp-integration-request.md)
    registra hashes e acordos. Não confundir publicação na branch S3 com
    montagem/verificação no canvas desta branch.
 4. Continuar as linhas obrigatórias da matriz, incluindo lift/dock, conteúdo,
    portais/dispositivos, automações, continuidade, ambientes e capacidades
    de plataforma. A entrega atual não reduz esse escopo.
+
+Commits de referência para as próximas integrações, ainda não aplicados neste
+checkpoint: S2 `1225931`/`2499b0b` (arquivos e documentação, reconciliados em
+`968b393`); S3 `fce3982`/`3feb82d` (organização e painel). Revisar dependências,
+preservar as correções atuais e não importar merges em edição. A regressão
+Linux de probe presente em `968b393` deve esperar Timeout como já corrige
+`871d024`; não relaxar o teste. S3 também reportou uma corrida no cache de
+árvore de processos; S2 coordena a investigação e a correção antes de declarar
+concluída a aceitação de cleanup de PTYs.
 
 As worktrees das sessões adicionais já existem. Os paths efetivamente
 observados são `/Users/eguimacs/cli-master-runtime` e

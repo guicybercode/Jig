@@ -651,6 +651,7 @@ export function AppShell() {
           sessionFocusRevision={sessionFocusRevision}
           knowledgeOpenRevision={knowledgeOpenRevision}
           knowledgeClient={workspace.knowledgeClient}
+          knowledgeConnectionKey={`${workspace.connection.status}:${workspace.hello?.instanceId ?? "none"}`}
           onRetry={workspace.retry}
           onOpenCanvas={() => workspace.setView("canvas")}
           onSelectSession={(sessionId) => workspace.selectSession(sessionId)}

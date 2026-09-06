@@ -97,7 +97,8 @@ interface CanvasWorkspaceProps extends LiveTerminalTransport {
   readonly onGitStatus: (sessionId: string) => void;
   readonly onOpenPath: (path: string) => Promise<void>;
   readonly browserRuntime?: BrowserRuntime;
-  readonly knowledgeClient?: Pick<IpcClient, "listKnowledge" | "saveKnowledge" | "deleteKnowledge">;
+  readonly knowledgeClient?: Pick<IpcClient, "listKnowledge" | "saveKnowledge" | "deleteKnowledge" | "discoverKnowledge" | "readKnowledge">;
+  readonly knowledgeConnectionKey?: string;
   readonly knowledgeOpenRevision?: number;
 }
 
@@ -129,6 +130,7 @@ export function CanvasWorkspace({
   onOpenPath,
   browserRuntime = defaultBrowserRuntime,
   knowledgeClient,
+  knowledgeConnectionKey,
   knowledgeOpenRevision = 0,
   subscribeTerminal,
   writeTerminal,
@@ -836,6 +838,7 @@ export function CanvasWorkspace({
           || event.metaKey === event.ctrlKey || event.key.toLowerCase() !== "p"
         ) return;
         const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest('[data-shortcut-scope="knowledge-library"]')) return;
         const targetId = target?.closest("[data-canvas-node-id]")?.getAttribute("data-canvas-node-id");
         const targetNode = visibleNodes.find((node) => node.id === targetId);
         if (targetNode && targetNode.kind !== "terminal") return;
@@ -1312,6 +1315,7 @@ export function CanvasWorkspace({
         <CanvasKnowledgePanel
           open={knowledgeOpen && !layersOpen && !terminalDialogOpen}
           client={knowledgeClient}
+          connectionKey={knowledgeConnectionKey}
           currentProject={project ?? null}
           projects={projects}
           targetTitle={selectedNode?.kind === "terminal" ? selectedNode.title : undefined}
@@ -2534,7 +2538,7 @@ function isCanvasEditingTarget(target: EventTarget | null): boolean {
   return (
     target instanceof Element &&
     target.closest(
-      "input, textarea, select, button, a, summary, [contenteditable]:not([contenteditable='false']), [role='textbox'], [data-terminal-root], .xterm, [role='dialog']",
+      "input, textarea, select, button, a, summary, [contenteditable]:not([contenteditable='false']), [role='textbox'], [data-terminal-root], [data-shortcut-scope], .xterm, [role='dialog']",
     ) !== null
   );
 }

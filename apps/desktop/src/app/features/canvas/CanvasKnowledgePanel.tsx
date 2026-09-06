@@ -4,10 +4,14 @@ import { Icon } from "../../components/Icon";
 import { KnowledgePanel } from "../knowledge/KnowledgePanel";
 import type { KnowledgePanelProps } from "../knowledge/KnowledgePanel";
 import type { KnowledgeProject } from "../knowledge/knowledge-types";
+import { KnowledgeSourceInspector } from "../knowledge/KnowledgeSourceInspector";
+import type { KnowledgeSourceInspectorProps } from "../knowledge/useKnowledgeSources";
 import "./canvas-knowledge-panel.css";
 
 /** Keeps library drafts mounted while the canvas overlay is dismissed. */
-interface CanvasKnowledgePanelProps extends Omit<KnowledgePanelProps, "currentProject"> {
+interface CanvasKnowledgePanelProps extends Omit<KnowledgePanelProps, "currentProject" | "client"> {
+  readonly client: KnowledgePanelProps["client"] & KnowledgeSourceInspectorProps["client"];
+  readonly connectionKey?: string;
   readonly open: boolean;
   readonly currentProject?: KnowledgeProject | null;
   readonly projects: readonly KnowledgeProject[];
@@ -17,6 +21,8 @@ interface CanvasKnowledgePanelProps extends Omit<KnowledgePanelProps, "currentPr
 
 export function CanvasKnowledgePanel({
   open,
+  client,
+  connectionKey,
   currentProject,
   projects,
   targetTitle,
@@ -26,6 +32,7 @@ export function CanvasKnowledgePanel({
   const panelRef = useRef<HTMLElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const composingRef = useRef(false);
+  const [section, setSection] = useState<"library" | "sources">("library");
   // Keep the last project identity when it disappears instead of relabeling
   // its in-memory drafts as global. Switching to another real project is safe.
   const [scopeProject, setScopeProject] = useState(currentProject ?? null);
@@ -41,7 +48,8 @@ export function CanvasKnowledgePanel({
     const previous = document.activeElement;
     returnFocusRef.current = previous instanceof HTMLElement ? previous : null;
     const panel = panelRef.current;
-    panel?.querySelector<HTMLInputElement>('input[type="search"]')?.focus();
+    Array.from(panel?.querySelectorAll<HTMLInputElement>('input[type="search"]') ?? [])
+      .find((input) => !input.closest("[hidden]"))?.focus();
     return () => {
       if (panel?.contains(document.activeElement) && returnFocusRef.current?.isConnected) {
         returnFocusRef.current.focus();
@@ -80,17 +88,34 @@ export function CanvasKnowledgePanel({
       }}
     >
       <header className="canvas-knowledge-panel__target">
-        <p>{targetTitle ? <>Insert a snapshot into <strong>{targetTitle}</strong></> : "Select a terminal to insert a snapshot into its draft."}</p>
+        <p>{section === "sources"
+          ? "Inspect local instruction sources. Previewing never sends their content."
+          : targetTitle ? <>Insert a snapshot into <strong>{targetTitle}</strong></> : "Select a terminal to insert a snapshot into its draft."}</p>
         <button type="button" aria-label="Close knowledge library" onClick={requestClose}>
           <Icon name="close" />
         </button>
       </header>
+      <nav className="canvas-knowledge-panel__sections" aria-label="Knowledge sections">
+        <button type="button" aria-pressed={section === "library"} onClick={() => setSection("library")}>
+          Saved prompts &amp; context
+        </button>
+        <button type="button" aria-pressed={section === "sources"} onClick={() => setSection("sources")}>
+          Rules &amp; skills
+        </button>
+      </nav>
       {missingProject ? (
         <p className="canvas-knowledge-panel__scope" role="status">
           {scopeProject.name} is no longer in the workspace. Its library drafts stay associated with that project.
         </p>
       ) : null}
-      <KnowledgePanel {...props} currentProject={scopeProject} />
+      <div hidden={section !== "library"}>
+        <KnowledgePanel {...props} client={client} currentProject={scopeProject} />
+      </div>
+      {open && section === "sources" ? (
+        <div>
+          <KnowledgeSourceInspector client={client} currentProject={scopeProject} connectionKey={connectionKey} />
+        </div>
+      ) : null}
     </section>
   );
 }
