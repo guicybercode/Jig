@@ -257,3 +257,25 @@ Sources above the registered project and effective session-cwd ancestry remain
 unevaluated. Native activation, editing and bundled/plugin sources remain open
 as described in the discovery contract. Earlier cross-platform results at
 `41f679c` are not evidence for this new scanner increment; its CI follows push.
+
+## Integrated source inspector
+
+Nested source discovery is published in `8f5ff86`. Merge `a76edd7` reconciles
+S1 through `35558c2`, including inspector mounting `9329d01`; source inspection
+is now available alongside the saved library in the canvas. The existing
+source component and decoder already render/search project-relative scopes.
+
+Combined frontend validation on macOS: **300 tests across 30 files**, TypeScript
+and production build pass. **13 Chromium E2E** pass, including the inspector
+at 360 px, keyboard focus and retained saved-library edits while switching tabs.
+The inspector E2E runs with the daemon disconnected; real source reads remain
+covered by the daemon/socket tests. These layers do not establish packaged
+WebKit or native CLI activation acceptance.
+
+The runtime investigation now has a concrete S2 review artifact:
+[process-cache ordering proposal](proposals/pty-process-cache-ordering.md) and
+[patch](proposals/pty-process-cache-ordering.patch). The patched module passes
+11 standalone tests (7 new), formatting and Clippy on macOS; the unchanged
+runtime still awaits S2 application and full lifecycle validation. The proposal
+retains identity checks and deadlines, orders cache publication and rejects
+overlapping older observations. No runtime file changed in this handoff.

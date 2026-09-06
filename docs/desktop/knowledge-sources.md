@@ -3,7 +3,8 @@
 Open **Prompts and context** from the canvas toolbar or command palette, then
 choose **Rules & skills**. Opening the saved library alone does not scan sources.
 The inspector inventories supported global/administrator locations and the
-selected registered project's root configuration locations.
+selected registered project's supported root and nested configuration locations.
+The preview shows the owning project-relative directory for each source.
 
 Select an entry to request a read-only text preview. File contents are never
 rendered as HTML, executed, saved, inserted into a prompt or sent to a terminal
@@ -25,8 +26,9 @@ scan/entry IDs for reading. It cannot submit a filesystem path. The daemon
 keeps at most four scans, expiring after five minutes, and checks that a
 project remains registered before reading its sources.
 
-Inventory is bounded to 512 candidates, 10,000 visited entries and depth 16;
-project locations are checked before large global libraries. Source metadata
+Inventory is bounded to 512 candidates, 10,000 enumerated entries and cumulative
+directory depth 16. The selected root is checked first, followed by global/admin
+locations and then project descendants. Source metadata
 and issue lists have separate serialized byte limits. Preview is bounded to
 64 KiB of UTF-8 text; truncation, unsupported scope and unavailable files are
 visible, not represented as a complete or successful empty inventory.
@@ -38,10 +40,17 @@ opening and identity checks detect replaced parents, changed files and edits
 that restore the old mtime. A changed source requires rescan; the inspector is
 not an arbitrary file reader or editor.
 
-This increment does not enumerate every project subfolder or bundled plugin,
-evaluate native activation conditions, process imports, or inspect transcripts,
-credentials and agent configuration files. Rule editing and broader source
-coverage remain separate parity work. Offline discovery fails visibly and
+Nested traversal skips exact VCS/dependency directory names (`.git`,
+`node_modules`, `vendor`, `.venv`, `venv`) and provider configuration trees
+(`.agents`, `.claude`, `.cursor`, `.codex`). The supported rule/skill locations
+inside the first three provider trees are scanned by their dedicated readers.
+A registered root with a normally skipped basename is still eligible. Ordinary
+directory links are skipped; the displayed scan policy explains these limits.
+
+Sources above the registered project, effective session-cwd ancestry and bundled
+plugins are not inventoried. Discovery does not evaluate native activation,
+process imports, or inspect transcripts, credentials and agent configuration
+files. Rule editing and broader source coverage remain separate parity work. Offline discovery fails visibly and
 does not fabricate a source list.
 
 ## Verification boundary
