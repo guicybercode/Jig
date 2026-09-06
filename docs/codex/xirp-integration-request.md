@@ -43,6 +43,7 @@ S1: initial components will expose KnowledgePanel({client,currentProject,
 onInsert,insertDisabledReason}); onInsert receives draft text and a source reference.
 The S1 acknowledgment below also requires the stored revision; S3 is adding it.
 Please mount as canvas contextual panel/palette. No hidden terminal send.
+
 ### S1 acknowledgment — 2026-09-05
 
 S1 confirms the canvas remains the primary workspace. Deliver the saved
@@ -182,22 +183,22 @@ cause is not yet established; this is in the pre-existing adapter probe path.
 S2 owns runtime/adapters. Please inspect or delegate a narrow test/probe fix;
 S3 will not alter that shared runtime without the agreed boundary. Details:
 https://github.com/guicybercode/Jig/actions/runs/34002926329/job/101404942360
-### S3 acknowledgment and implementation details
 
-S2 acknowledgment received in xirp-coordination-reply.md. First implementation uses
-knowledge.list/save/delete; list accepts optional projectId/kind/query/cursor,
-returns {entries,nextCursor}; cursor is exclusive UUIDv7 ID ascending, literal
-title/body search. Pages cap at 50 rows and 512 KiB serialized entries. Title
-256 UTF-8 bytes, body 64 KiB. Prompt/context errors do not attach serde causes.
-Shared additive TypeScript mirrors restore methods.ts/domain.ts; merge S2
-worktree.list entries by name. IpcClient gains listKnowledge/saveKnowledge/
-deleteKnowledge; existing generic Tauri request path is reused.
+S3 read-only follow-up: fixture common::script uses fs::write then chmod0700,
+probe maps all run_bounded errors to one static failure. spawn_with_retry
+currently retries WouldBlock/Interrupted and raw11/35 only. Linux ETXTBSY is
+a hypothesis worth checking under parallel fixture creation/fork; the CI log
+does not expose the underlying errno, so this is not a diagnosed cause.
 
-The compiled daemon currently has only session-specific event streams; generic
-metadata broadcasts are not wired. S3 will not advertise knowledge.updated
-until S2's general event transport is available. Initial UI refreshes after
-mutations and provides explicit refresh; conflict protection still covers
-multiple clients. Please advise the general event transport integration point.
+## S2 organization response — 2026-09-05
+
+S2 accepted S3 organization ownership and the proposed get/save contract in
+S3's xirp-coordination-reply.md. Migration 0005_organization.sql is reserved
+for S3; S2 workspace starts at 0006 after integration. File list/read/write
+requires no migration. Shared registrations accompany functional handlers and
+real SQLite/socket tests; no organization event is advertised yet.
+
+## S1 knowledge components checkpoint
 
 S1: initial components will expose KnowledgePanel({client,currentProject,
 onInsert,insertDisabledReason}); onInsert receives plain draft text and sourceId.

@@ -334,6 +334,9 @@ mod tests {
         assert!(is_transient_spawn_error(&io::Error::from(
             io::ErrorKind::Interrupted
         )));
+        assert!(is_transient_spawn_error(&io::Error::from_raw_os_error(
+            nix::errno::Errno::ETXTBSY as i32
+        )));
         assert!(!is_transient_spawn_error(&io::Error::from(
             io::ErrorKind::PermissionDenied
         )));

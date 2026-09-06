@@ -8,6 +8,7 @@ pub mod event_name;
 pub mod method;
 
 mod event;
+mod files;
 mod git_path;
 mod request;
 mod response;
@@ -34,6 +35,11 @@ pub use event::{
     ProjectChangedEvent, ProjectRemovedEvent, SessionChangedEvent, SessionDeletedEvent,
     SessionExitedEvent, SessionOutputEvent, SessionOutputGapEvent, SessionReplayCompleteEvent,
     SessionStatusChangedEvent, WorktreeChangedEvent, WorktreeRemovedEvent,
+};
+pub use files::{
+    DEFAULT_FILE_LIST_LIMIT, FileEntry, FileEntryKind, FileListRequest, FileListResponse, FileName,
+    FilePath, FileReadRequest, FileReadResponse, FileRevision, FileTarget, FileWriteRequest,
+    FileWriteResponse, MAX_FILE_LIST_LIMIT, MAX_FILE_PATH_BYTES, MAX_FILE_TEXT_BYTES,
 };
 pub use git_path::GitRelativePath;
 pub use request::{

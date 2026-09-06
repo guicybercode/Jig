@@ -25,6 +25,106 @@ fn version_probe_captures_first_line_with_timeout() {
 }
 
 #[test]
+fn failed_probe_diagnostic_contains_only_error_kind_and_os_code() {
+    let temp = TempDir::new().expect("temporary directory should be created");
+    let path = script(temp.path(), "probe-path-secret", "echo unused");
+    std::fs::write(
+        &path,
+        b"#!/missing-probe-interpreter-secret/TOKEN=must-not-appear\n",
+    )
+    .expect("invalid interpreter fixture should be written");
+
+    let report = test_executable(&path, &isolated_env(&temp), ProbeOptions::default());
+    let LaunchTestStatus::Failed { message } = report.launch_test else {
+        panic!("missing interpreter must fail the probe");
+    };
+    assert!(message.contains("kind: NotFound"));
+    assert!(message.contains(&format!("os error: {}", nix::errno::Errno::ENOENT as i32)));
+    for sensitive in [
+        "probe-path-secret",
+        "interpreter-secret",
+        "TOKEN",
+        "must-not-appear",
+    ] {
+        assert!(!message.contains(sensitive));
+    }
+    assert!(!message.contains("spawn"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn version_probe_retries_a_busy_executable_until_its_writer_closes() {
+    use std::{
+        fs::OpenOptions,
+        process::Command,
+        sync::mpsc::{self, RecvTimeoutError},
+        thread,
+    };
+
+    let temp = TempDir::new().expect("temporary directory should be created");
+    let path = script(temp.path(), "busy-probe", "echo 'fixture-cli 1.0'");
+    let writer = OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("fixture writer should remain open");
+    let error = Command::new(&path)
+        .arg("--version")
+        .spawn()
+        .expect_err("the held writer must cause real ETXTBSY");
+    assert_eq!(
+        error.raw_os_error(),
+        Some(nix::errno::Errno::ETXTBSY as i32)
+    );
+
+    let environment = isolated_env(&temp);
+    let (sender, receiver) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let report = test_executable(&path, &environment, ProbeOptions::default());
+        sender
+            .send(report)
+            .expect("test receiver should remain open");
+    });
+    // Keep ETXTBSY in force during multiple bounded retries. An immediate
+    // Failed report would demonstrate that the busy executable was not retried.
+    let early_result = receiver.recv_timeout(Duration::from_millis(60));
+    drop(writer);
+    worker.join().expect("probe worker should finish");
+    assert!(
+        matches!(early_result, Err(RecvTimeoutError::Timeout)),
+        "probe must remain pending while the writer is held: {early_result:?}"
+    );
+    let report = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("probe should complete after the writer closes");
+    assert_eq!(report.launch_test, LaunchTestStatus::Success);
+    assert_eq!(report.version.as_deref(), Some("fixture-cli 1.0"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn busy_executable_retries_remain_bounded_by_the_probe_deadline() {
+    use std::{fs::OpenOptions, time::Instant};
+
+    let temp = TempDir::new().expect("temporary directory should be created");
+    let path = script(temp.path(), "busy-probe", "echo 'fixture-cli 1.0'");
+    let writer = OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("fixture writer should remain open");
+    let started = Instant::now();
+    let report = test_executable(
+        &path,
+        &isolated_env(&temp),
+        ProbeOptions::default().with_timeout(Duration::from_millis(60)),
+    );
+    drop(writer);
+
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert_eq!(report.launch_test, LaunchTestStatus::Timeout);
+    assert!(report.version.is_none());
+}
+
+#[test]
 fn version_probe_times_out_on_hanging_executable() {
     let temp = TempDir::new().expect("temporary directory should be created");
     // Sleep instead of a busy loop so parallel workspace tests cannot starve

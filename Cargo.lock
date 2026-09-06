@@ -493,6 +493,7 @@ dependencies = [
 name = "cli-master-core"
 version = "0.2.0"
 dependencies = [
+ "base64 0.22.1",
  "serde",
  "serde_json",
  "uuid",
@@ -505,6 +506,7 @@ dependencies = [
  "base64 0.22.1",
  "cli-master-agents",
  "cli-master-core",
+ "cli-master-file-metadata",
  "cli-master-git",
  "cli-master-session",
  "cli-master-storage",
@@ -512,6 +514,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -558,6 +561,13 @@ version = "0.2.0"
 dependencies = [
  "rustix",
  "signal-hook",
+]
+
+[[package]]
+name = "cli-master-file-metadata"
+version = "0.2.0"
+dependencies = [
+ "tempfile",
 ]
 
 [[package]]

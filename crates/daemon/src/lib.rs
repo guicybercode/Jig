@@ -13,6 +13,7 @@ mod config;
 mod diagnostics;
 mod error;
 mod events;
+mod files;
 mod git_inspection;
 mod knowledge;
 mod lock;
