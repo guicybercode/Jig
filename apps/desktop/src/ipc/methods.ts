@@ -32,7 +32,9 @@ export const IPC_METHODS = [
   "knowledge.save",
   "knowledge.delete",
   "knowledge.discover",
-  "knowledge.read"
+  "knowledge.read",
+  "organization.get",
+  "organization.save"
 ] as const;
 
 export type IpcMethod = (typeof IPC_METHODS)[number];

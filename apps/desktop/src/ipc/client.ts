@@ -1,5 +1,7 @@
 import { decodeKnowledgeEntry, decodeKnowledgePage } from "./knowledge-schema";
 import { decodeKnowledgeDiscoverResponse, decodeKnowledgeReadResponse } from "./discovery-schema";
+import { decodeOrganizationGetResponse, decodeOrganizationSaveResponse, validateOrganizationGet, validateOrganizationSave } from "./organization-schema";
+import type { OrganizationEntry, OrganizationGetRequest, OrganizationGetResponse, OrganizationSaveRequest } from "./domain";
 import type { KnowledgeEntry, KnowledgeListRequest, KnowledgeListResponse, KnowledgeSaveRequest, KnowledgeDeleteRequest, KnowledgeDiscoverRequest, KnowledgeDiscoverResponse, KnowledgeReadRequest, KnowledgeReadResponse } from "./domain";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -68,6 +70,8 @@ export interface IpcClient {
   deleteKnowledge(input: KnowledgeDeleteRequest): Promise<void>;
   discoverKnowledge(input: KnowledgeDiscoverRequest): Promise<KnowledgeDiscoverResponse>;
   readKnowledge(input: KnowledgeReadRequest): Promise<KnowledgeReadResponse>;
+  getOrganization(input: OrganizationGetRequest): Promise<OrganizationGetResponse>;
+  saveOrganization(input: OrganizationSaveRequest): Promise<OrganizationEntry>;
   initialize(): Promise<BootstrapResult>;
   subscribe(
     handler: IpcEventHandler,
@@ -158,6 +162,16 @@ class TauriIpcClient implements IpcClient {
 
   async discoverKnowledge(input: KnowledgeDiscoverRequest): Promise<KnowledgeDiscoverResponse> {
     return decodeKnowledgeDiscoverResponse(await this.request("knowledge.discover", input));
+  }
+
+  async getOrganization(input: OrganizationGetRequest): Promise<OrganizationGetResponse> {
+    validateOrganizationGet(input);
+    return decodeOrganizationGetResponse(await this.request("organization.get", input), input);
+  }
+
+  async saveOrganization(input: OrganizationSaveRequest): Promise<OrganizationEntry> {
+    validateOrganizationSave(input);
+    return decodeOrganizationSaveResponse(await this.request("organization.save", input), input);
   }
 
   async readKnowledge(input: KnowledgeReadRequest): Promise<KnowledgeReadResponse> {

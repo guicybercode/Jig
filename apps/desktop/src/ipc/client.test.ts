@@ -12,6 +12,8 @@ vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: transport.openPath }));
 
 import { createTauriIpcClient } from "./client";
 import discoveryFixture from "../../../../protocol/fixtures/knowledge-discovery.json";
+import organizationFixture from "../../../../protocol/fixtures/organization.json";
+import type { OrganizationGetRequest, OrganizationSaveRequest } from "./domain";
 import type { RequestEnvelope } from "./types";
 
 const PROJECT = {
@@ -448,5 +450,35 @@ describe("discovery IPC transport", () => {
       scanId: discoveryFixture.scan.scanId, entryId: discoveryFixture.read.entry.entryId,
     })).rejects.toMatchObject({ code: "knowledge_scan_expired" });
     expect(capturedRequests()).toHaveLength(1);
+  });
+});
+
+describe("organization IPC transport", () => {
+  beforeEach(() => { transport.invoke.mockReset(); });
+
+  it("batches existing targets and explicitly saves metadata without runtime methods", async () => {
+    installWireResponder({ "organization.get": organizationFixture.response, "organization.save": organizationFixture.saved });
+    const client = createTauriIpcClient();
+    const input: OrganizationGetRequest = { targets: [
+      { kind: "session", id: organizationFixture.request.targets[0].id },
+      { kind: "project", id: organizationFixture.request.targets[1].id },
+    ] };
+    expect(await client.getOrganization(input)).toEqual(organizationFixture.response);
+    const save: OrganizationSaveRequest = { target: input.targets[0], expectedRevision: 1, pinned: true, archived: true, workflow: "in_review" };
+    expect(await client.saveOrganization(save)).toEqual(organizationFixture.saved);
+    expect(capturedRequests().map((request) => ({ method: request.method, payload: request.payload }))).toEqual([
+      { method: "organization.get", payload: input }, { method: "organization.save", payload: save },
+    ]);
+  });
+
+  it("rejects an empty batch before transport and preserves optimistic conflicts", async () => {
+    const client = createTauriIpcClient();
+    await expect(client.getOrganization({ targets: [] })).rejects.toThrow();
+    expect(transport.invoke).not.toHaveBeenCalled();
+    transport.invoke.mockImplementation(async (_command, { request }) => ({
+      kind: "response", version: 1, requestId: request.requestId, status: "error",
+      error: { code: "organization_conflict", message: "Organization changed in another window." },
+    }));
+    await expect(client.saveOrganization({ target: { kind: "project", id: PROJECT.id }, expectedRevision: 0, pinned: true, archived: false, workflow: null })).rejects.toMatchObject({ code: "organization_conflict" });
   });
 });

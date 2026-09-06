@@ -11,6 +11,7 @@ mod error;
 mod ids;
 pub mod knowledge;
 mod model;
+pub mod organization;
 mod protocol;
 mod redact;
 pub mod wire;

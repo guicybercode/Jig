@@ -36,6 +36,7 @@ fn configured_file_database_uses_full_wal_and_verified_schema() {
             (2, "worktree_dirty_state"),
             (3, "recovery_metadata"),
             (4, "knowledge_documents"),
+            (5, "organization"),
         ]
     );
 

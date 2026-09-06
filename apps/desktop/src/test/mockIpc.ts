@@ -29,6 +29,8 @@ export interface MockIpcClient extends IpcClient {
   readonly deleteKnowledge: Mock<IpcClient["deleteKnowledge"]>;
   readonly discoverKnowledge: Mock<IpcClient["discoverKnowledge"]>;
   readonly readKnowledge: Mock<IpcClient["readKnowledge"]>;
+  readonly getOrganization: Mock<IpcClient["getOrganization"]>;
+  readonly saveOrganization: Mock<IpcClient["saveOrganization"]>;
   readonly initialize: Mock<IpcClient["initialize"]>;
   readonly subscribe: Mock<IpcClient["subscribe"]>;
   readonly subscribeTerminal: Mock<IpcClient["subscribeTerminal"]>;
@@ -156,6 +158,8 @@ export function createMockIpcClient(
     deleteKnowledge: vi.fn<IpcClient["deleteKnowledge"]>(handlers.deleteKnowledge ?? (() => rejectUnhandled("deleteKnowledge"))),
     discoverKnowledge: vi.fn<IpcClient["discoverKnowledge"]>(handlers.discoverKnowledge ?? (() => rejectUnhandled("discoverKnowledge"))),
     readKnowledge: vi.fn<IpcClient["readKnowledge"]>(handlers.readKnowledge ?? (() => rejectUnhandled("readKnowledge"))),
+    getOrganization: vi.fn<IpcClient["getOrganization"]>(handlers.getOrganization ?? (() => rejectUnhandled("getOrganization"))),
+    saveOrganization: vi.fn<IpcClient["saveOrganization"]>(handlers.saveOrganization ?? (() => rejectUnhandled("saveOrganization"))),
     openPath: vi.fn<IpcClient["openPath"]>(
       handlers.openPath ?? (() => rejectUnhandled("openPath")),
     ),

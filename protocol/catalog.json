@@ -34,7 +34,9 @@
     "knowledge.save",
     "knowledge.delete",
     "knowledge.discover",
-    "knowledge.read"
+    "knowledge.read",
+    "organization.get",
+    "organization.save"
   ],
   "events": [
     "project.updated",
