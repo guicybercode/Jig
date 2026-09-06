@@ -227,6 +227,31 @@ test("keeps the compact composer visible and text-editing shortcuts inside its d
   await expect(editor).toHaveValue("First line\nSecond line");
 });
 
+test("uses the local knowledge editor as an explicit draft source while offline", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 640, height: 800 });
+  await canvasCard(page, "Terminal 1", "terminal").getByRole("button", { name: "Open Prompt Composer for Terminal 1" }).click();
+  await page.getByRole("textbox", { name: "Prompt for Terminal 1", exact: true }).fill("Start with this draft.");
+  await page.getByRole("button", { name: "Close Prompt Composer", exact: true }).click();
+  await page.getByRole("button", { name: "Open prompts and context", exact: true }).click();
+  const library = page.getByRole("region", { name: "Knowledge library", exact: true });
+  await expect(library).toBeVisible();
+  await library.getByRole("textbox", { name: "Title", exact: true }).fill("Review checklist");
+  await library.getByRole("textbox", { name: "Content", exact: true }).fill("Inspect the Linux and macOS acceptance evidence.");
+  await library.getByRole("button", { name: "Close knowledge library", exact: true }).click();
+  await page.getByRole("button", { name: "Open prompts and context", exact: true }).click();
+  await expect(library.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Review checklist");
+  await library.getByRole("button", { name: "Insert into draft", exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath("canvas-knowledge-compact.png") });
+  await library.getByRole("button", { name: "Insert into draft", exact: true }).click();
+  const editor = page.getByRole("textbox", { name: "Prompt for Terminal 1", exact: true });
+  const expected = "Start with this draft.\n\nKnowledge snapshot: Review checklist\nInspect the Linux and macOS acceptance evidence.\n";
+  await expect(editor).toHaveValue(expected);
+  await expect(page.getByRole("button", { name: "Send prompt", exact: true })).toBeDisabled();
+  await page.reload();
+  await canvasCard(page, "Terminal 1", "terminal").getByRole("button", { name: "Open Prompt Composer for Terminal 1" }).click();
+  await expect(editor).toHaveValue(expected);
+});
+
 /** Resolves a canvas card through its user-facing accessible name. */
 function canvasCard(page: Page, title: string, kind: "terminal" | "note") {
   return page.getByRole("article", { name: `${title}, ${kind} canvas item`, exact: true });

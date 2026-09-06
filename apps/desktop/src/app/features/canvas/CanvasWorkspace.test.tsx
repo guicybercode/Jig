@@ -13,7 +13,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { IpcError } from "../../../ipc/client";
 import type { Session, Worktree } from "../../../ipc/types";
+import { createMockIpcClient } from "../../../test/mockIpc";
 import type { BrowserRuntime } from "../browser/browser-runtime";
+import type { KnowledgeRecord } from "../knowledge/knowledge-types";
 import type {
   LiveTerminalInputHandle,
   LiveTerminalTransport,
@@ -152,6 +154,151 @@ describe("CanvasWorkspace", () => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  describe("Knowledge library", () => {
+    it.each([true, false])("loads saved content only after an explicit open (connected: %s)", async (isConnected) => {
+      const user = userEvent.setup();
+      const knowledgeClient = createMockIpcClient({
+        handlers: { listKnowledge: async () => ({ entries: [], nextCursor: null }) },
+      });
+      renderProjectCanvas({ knowledgeClient, isConnected });
+      await user.click(screen.getByRole("button", { name: "Add note" }));
+      expect(knowledgeClient.listKnowledge).not.toHaveBeenCalled();
+      expect(screen.queryByRole("region", { name: "Knowledge library" })).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Open prompts and context" }));
+      expect(screen.getByRole("region", { name: "Knowledge library" })).toBeVisible();
+      await waitFor(() => expect(knowledgeClient.listKnowledge).toHaveBeenCalledExactlyOnceWith({ projectId: PROJECT.id }));
+      expect(knowledgeClient.saveKnowledge).not.toHaveBeenCalled();
+    });
+
+    it("saves project context through the owned client and reloads the saved record", async () => {
+      const user = userEvent.setup();
+      const saved = knowledgeEntry({ kind: "context", projectId: PROJECT.id, title: "Architecture", body: "Keep Linux and macOS support.\n" });
+      const knowledgeClient = createMockIpcClient();
+      knowledgeClient.listKnowledge.mockResolvedValueOnce({ entries: [], nextCursor: null });
+      knowledgeClient.listKnowledge.mockResolvedValue({ entries: [saved], nextCursor: null });
+      knowledgeClient.saveKnowledge.mockResolvedValue(saved);
+      const view = renderProjectCanvas({ knowledgeClient });
+      await user.click(screen.getByRole("button", { name: "Open prompts and context" }));
+      const library = screen.getByRole("region", { name: "Prompts & context" });
+      await user.selectOptions(within(library).getByLabelText("Type"), "context");
+      await user.type(within(library).getByLabelText("Title"), "Architecture");
+      await user.type(within(library).getByLabelText("Content"), "Keep Linux and macOS support.{Enter}");
+      await user.click(within(library).getByRole("button", { name: "Save locally" }));
+      expect(knowledgeClient.saveKnowledge).toHaveBeenCalledExactlyOnceWith({
+        kind: "context", projectId: PROJECT.id, title: saved.title, body: saved.body,
+      });
+      expect(await within(library).findByText("Saved locally.")).toBeVisible();
+      view.unmount();
+
+      renderProjectCanvas({ knowledgeClient });
+      await user.click(screen.getByRole("button", { name: "Open prompts and context" }));
+      const reloaded = screen.getByRole("region", { name: "Prompts & context" });
+      await user.click(await within(reloaded).findByRole("button", { name: saved.title }));
+      expect(within(reloaded).getByLabelText("Content")).toHaveValue(saved.body);
+      expect(within(reloaded).getByLabelText("Scope")).toHaveValue(PROJECT.id);
+      expect(view.props.writeTerminal).not.toHaveBeenCalled();
+      expect(view.props.onStartSession).not.toHaveBeenCalled();
+    });
+
+    it("keeps unsaved library edits across hide/reopen and ignores canvas deletion shortcuts inside its editor", async () => {
+      const user = userEvent.setup();
+      const knowledgeClient = createMockIpcClient({ handlers: { listKnowledge: async () => ({ entries: [], nextCursor: null }) } });
+      seedCanvasDocument([TERMINAL_NODE]);
+      renderProjectCanvas({ knowledgeClient, sessions: [LIVE_SESSION] });
+      const terminal = screen.getByRole("article", { name: "Terminal 1, terminal canvas item" });
+      await user.click(terminal);
+      const trigger = screen.getByRole("button", { name: "Open prompts and context" });
+      await user.click(trigger);
+      const library = screen.getByRole("region", { name: "Prompts & context" });
+      await user.type(within(library).getByLabelText("Title"), "Unfinished context");
+      const content = within(library).getByLabelText("Content");
+      await user.type(content, "Keep this draft");
+      fireEvent.keyDown(content, { key: "Delete", ctrlKey: true });
+      fireEvent.keyDown(content, { key: "Backspace", metaKey: true });
+      expect(terminal).toBeInTheDocument();
+      expect(readCanvasDocument().nodes).toHaveLength(1);
+      await user.click(screen.getByRole("button", { name: "Close knowledge library" }));
+      expect(library).not.toBeVisible();
+      await user.click(trigger);
+
+      expect(within(screen.getByRole("region", { name: "Prompts & context" })).getByLabelText("Title")).toHaveValue("Unfinished context");
+      expect(content).toHaveValue("Keep this draft");
+      expect(knowledgeClient.listKnowledge).toHaveBeenCalledTimes(1);
+      expect(knowledgeClient.saveKnowledge).not.toHaveBeenCalled();
+      expect(knowledgeClient.deleteKnowledge).not.toHaveBeenCalled();
+    });
+
+    it("inserts the edited snapshot only into the current offline terminal draft without delivering input", async () => {
+      const user = userEvent.setup();
+      const original = knowledgeEntry();
+      const knowledgeClient = createMockIpcClient({ handlers: { listKnowledge: async () => ({ entries: [original], nextCursor: null }) } });
+      const firstNode = { ...TERMINAL_NODE, promptDraft: "First draft", promptDraftRevision: 1 };
+      const secondNode = { ...TERMINAL_NODE, id: "terminal-second", title: "Terminal 2", sessionId: undefined, promptDraft: "Second draft", promptDraftRevision: 1 };
+      seedCanvasDocument([firstNode, secondNode, NOTE_NODE]);
+      const { props } = renderProjectCanvas({ knowledgeClient, isConnected: false });
+      await user.click(screen.getByRole("article", { name: "Terminal 1, terminal canvas item" }));
+      await user.click(screen.getByRole("button", { name: "Open prompts and context" }));
+      const library = screen.getByRole("region", { name: "Prompts & context" });
+      await user.click(await within(library).findByRole("button", { name: original.title }));
+      await user.clear(within(library).getByLabelText("Content"));
+      await user.type(within(library).getByLabelText("Content"), "Unsaved instructions{Enter}Keep exact whitespace.  ");
+      await user.click(screen.getByRole("article", { name: "Notes, note canvas item" }));
+      expect(within(library).getByRole("button", { name: "Insert into draft" })).toBeDisabled();
+      await user.click(screen.getByRole("article", { name: "Terminal 2, terminal canvas item" }));
+      await user.click(within(library).getByRole("button", { name: "Insert into draft" }));
+
+      expect(library).not.toBeVisible();
+      const editor = screen.getByRole("textbox", { name: "Prompt for Terminal 2" });
+      expect(editor).toHaveFocus();
+      const draft = (editor as HTMLTextAreaElement).value;
+      expect(draft).toContain("Second draft\n\nKnowledge snapshot: Review changes\n");
+      expect(draft).toContain("Unsaved instructions\nKeep exact whitespace.  \n");
+      expect(draft).not.toContain(original.body);
+      expect(readPromptDraft(firstNode.id)).toBe("First draft");
+      expect(readPromptDraft(secondNode.id)).toBe(draft);
+      expect(props.writeTerminal).not.toHaveBeenCalled();
+      expect(props.onCreateSession).not.toHaveBeenCalled();
+      expect(props.onStartSession).not.toHaveBeenCalled();
+      expect(knowledgeClient.saveKnowledge).not.toHaveBeenCalled();
+    });
+
+    it("keeps new library drafts and listing requests scoped to the selected project", async () => {
+      const user = userEvent.setup();
+      const knowledgeClient = createMockIpcClient({ handlers: { listKnowledge: async () => ({ entries: [], nextCursor: null }) } });
+      const props = createProjectCanvasProps({ knowledgeClient, projects: [PROJECT, OTHER_PROJECT] });
+      function ProjectSwitcher() {
+        const [project, setProject] = useState<typeof PROJECT | typeof OTHER_PROJECT>(PROJECT);
+        return <>
+          <button type="button" onClick={() => setProject(PROJECT)}>Use Jig</button>
+          <button type="button" onClick={() => setProject(OTHER_PROJECT)}>Use other project</button>
+          <CanvasWorkspace {...props} project={project} />
+        </>;
+      }
+      render(<ProjectSwitcher />);
+      await user.click(screen.getByRole("button", { name: "Open prompts and context" }));
+      await user.type(screen.getByLabelText("Title"), "Jig draft");
+      await user.type(screen.getByLabelText("Content"), "Jig context");
+      await user.click(screen.getByRole("button", { name: "Use other project" }));
+      await ensureKnowledgeLibraryOpen(user);
+      await waitFor(() => expect(knowledgeClient.listKnowledge).toHaveBeenLastCalledWith({ projectId: OTHER_PROJECT.id }));
+      expect(screen.getByLabelText("Title")).toHaveValue("");
+      expect(screen.getByLabelText("Content")).toHaveValue("");
+      expect(screen.getByLabelText("Scope")).toHaveValue(OTHER_PROJECT.id);
+      await user.type(screen.getByLabelText("Title"), "Other draft");
+      await user.type(screen.getByLabelText("Content"), "Other context");
+      await user.click(screen.getByRole("button", { name: "Use Jig" }));
+      await ensureKnowledgeLibraryOpen(user);
+
+      expect(screen.getByLabelText("Title")).toHaveValue("Jig draft");
+      expect(screen.getByLabelText("Content")).toHaveValue("Jig context");
+      expect(screen.getByLabelText("Scope")).toHaveValue(PROJECT.id);
+      await waitFor(() => expect(knowledgeClient.listKnowledge).toHaveBeenLastCalledWith({ projectId: PROJECT.id }));
+      expect(knowledgeClient.saveKnowledge).not.toHaveBeenCalled();
+      expect(props.writeTerminal).not.toHaveBeenCalled();
+    });
   });
 
   describe("Prompt Composer", () => {
@@ -588,6 +735,38 @@ describe("CanvasWorkspace", () => {
         expect.objectContaining({ title: "Codex", preset: "codex" }),
       );
     });
+  });
+
+  it("prepares an isolated checkout before explicitly starting its returned session", async () => {
+    const user = userEvent.setup();
+    const session: Session = {
+      id: "isolated-session", projectId: PROJECT.id, agentId: SHELL_AGENT.id, name: "Shell",
+      cwd: "/managed/worktrees/review/tools", worktreeId: "isolated-worktree",
+      worktreePath: "/managed/worktrees/review", status: "unknown", createdAtMs: 1, updatedAtMs: 1,
+    };
+    let resolveCreate!: (value: Session) => void;
+    const prepared = new Promise<Session>((resolve) => { resolveCreate = resolve; });
+    const { props } = renderProjectCanvas({
+      onCreateSession: vi.fn(() => prepared),
+      onStartSession: vi.fn(async () => ({ ...session, status: "running" as const })),
+    });
+    await user.click(screen.getByRole("button", { name: "Add terminal card" }));
+    const dialog = screen.getByRole("dialog", { name: "New Terminal" });
+    await user.selectOptions(within(dialog).getByRole("combobox", { name: "Working copy" }), "new_worktree");
+    await user.clear(within(dialog).getByLabelText("Working directory"));
+    await user.type(within(dialog).getByLabelText("Working directory"), `${PROJECT.path}/tools`);
+    await user.click(within(dialog).getByRole("button", { name: "Create terminal" }));
+    await waitFor(() => expect(props.onCreateSession).toHaveBeenCalledExactlyOnceWith({
+      projectId: PROJECT.id, name: "Shell", agentId: SHELL_AGENT.id,
+      isolation: "new_worktree", relativeDirectory: "tools",
+    }));
+    expect(props.onStartSession).not.toHaveBeenCalled();
+    await act(async () => { resolveCreate(session); await prepared; });
+    await waitFor(() => expect(props.onStartSession).toHaveBeenCalledExactlyOnceWith(session.id));
+    const saved = parseCanvasDocument(localStorage.getItem(CANVAS_STORAGE_KEY));
+    expect(saved.nodes).toContainEqual(expect.objectContaining({
+      isolation: "new_worktree", sessionId: session.id, projectId: PROJECT.id,
+    }));
   });
 
   it("adds an integrated browser card to the persisted canvas", async () => {
@@ -2245,6 +2424,20 @@ function readPromptDraft(nodeId: string): string {
   const node = readCanvasDocument().nodes.find((candidate) => candidate.id === nodeId);
   if (node?.kind !== "terminal") throw new Error(`Expected terminal ${nodeId}.`);
   return node.promptDraft ?? "";
+}
+
+function knowledgeEntry(overrides: Partial<KnowledgeRecord> = {}): KnowledgeRecord {
+  return {
+    id: "knowledge-review", kind: "prompt", projectId: null,
+    title: "Review changes", body: "Review the diff.\n", revision: 3,
+    createdAtMs: 1, updatedAtMs: 2, ...overrides,
+  };
+}
+
+async function ensureKnowledgeLibraryOpen(user: ReturnType<typeof userEvent.setup>) {
+  if (!screen.queryByRole("region", { name: "Knowledge library" })) {
+    await user.click(screen.getByRole("button", { name: "Open prompts and context" }));
+  }
 }
 
 function deferredPromptDelivery() {
