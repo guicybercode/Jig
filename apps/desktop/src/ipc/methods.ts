@@ -28,7 +28,10 @@ export const IPC_METHODS = [
   "worktree.list",
   "worktree.prepare_remove",
   "worktree.remove",
-  "diagnostics.get"
+  "diagnostics.get",
+  "knowledge.list",
+  "knowledge.save",
+  "knowledge.delete"
 ] as const;
 
 export type IpcMethod = (typeof IPC_METHODS)[number];
