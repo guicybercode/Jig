@@ -7,11 +7,105 @@ import {
   createInitialCanvasState,
   createSessionTerminalCanvasNode,
   createTerminalCanvasNode,
+  duplicateCanvasSelection,
   parseCanvasDocument,
   serializeCanvasDocument,
 } from "./canvas-state";
 
 describe("canvas state", () => {
+  it("toggles multi-selection, filters unknown IDs, and keeps selection transient", () => {
+    const initial = createInitialCanvasState();
+    const first = canvasReducer(initial, { type: "node/select", nodeId: "note-first" });
+    const multiple = canvasReducer(first, {
+      type: "node/select", nodeId: "terminal-primary", additive: true,
+    });
+    expect(multiple.selectedNodeIds).toEqual(["note-first", "terminal-primary"]);
+    expect(multiple.selectedNodeId).toBe("terminal-primary");
+    const toggled = canvasReducer(multiple, {
+      type: "node/select", nodeId: "terminal-primary", additive: true,
+    });
+    expect(toggled.selectedNodeIds).toEqual(["note-first"]);
+    expect(toggled.selectedNodeId).toBe("note-first");
+    const selected = canvasReducer(toggled, {
+      type: "nodes/select", nodeIds: ["terminal-primary", "missing", "terminal-primary", "note-first"],
+    });
+    expect(selected.selectedNodeIds).toEqual(["terminal-primary", "note-first"]);
+    expect(JSON.parse(serializeCanvasDocument(selected))).not.toHaveProperty("selectedNodeIds");
+    expect(createInitialCanvasState(parseCanvasDocument(serializeCanvasDocument(selected))).selectedNodeIds).toEqual([]);
+    expect(canvasReducer(selected, { type: "node/select", nodeId: null }).selectedNodeIds).toEqual([]);
+  });
+
+  it("moves a group by one bounded delta without distorting its layout", () => {
+    const initial = createInitialCanvasState({
+      version: 1,
+      nodes: [
+        createCanvasNode("note", { x: 7_990, y: -1_990 }, "edge"),
+        createCanvasNode("note", { x: 7_500, y: -1_500 }, "neighbor"),
+        createCanvasNode("note", { x: 0, y: 0 }, "unselected"),
+      ],
+      connections: [], zoom: 1,
+    });
+    const moved = canvasReducer(initial, {
+      type: "nodes/move", nodeIds: ["edge", "neighbor"], delta: { x: 80, y: -80 },
+    });
+    expect(moved.nodes[0]).toMatchObject({ x: 8_000, y: -2_000 });
+    expect(moved.nodes[1]).toMatchObject({ x: 7_510, y: -1_510 });
+    expect(moved.nodes[2]).toBe(initial.nodes[2]);
+    expect(canvasReducer(moved, {
+      type: "nodes/move", nodeIds: ["edge"], delta: { x: NaN, y: 3 },
+    })).toBe(moved);
+  });
+
+  it("duplicates notes, agent references, and internal connections without live sessions", () => {
+    const terminal = createSessionTerminalCanvasNode({ x: 0, y: 0 }, {
+      id: "live-session", agentId: "custom-agent", projectId: "project-one", name: "Review", cwd: "/repo",
+    });
+    const note = { ...createCanvasNode("note", { x: 400, y: 0 }, "note"), title: "Release", text: "Ship it", projectId: "project-one" };
+    const outside = createCanvasNode("note", { x: 0, y: 400 }, "outside");
+    const initial = createInitialCanvasState({
+      version: 1, nodes: [terminal, note, outside], zoom: 1,
+      connections: [
+        { id: "internal", sourceNodeId: terminal.id, targetNodeId: note.id },
+        { id: "external", sourceNodeId: terminal.id, targetNodeId: outside.id },
+      ],
+    });
+    const action = duplicateCanvasSelection(initial, [terminal.id, note.id]);
+    const copied = canvasReducer(initial, action);
+    expect(copied.nodes).toHaveLength(5);
+    const copies = copied.nodes.slice(3);
+    expect(copies[0]).toMatchObject({ kind: "terminal", title: "Review copy", agentId: "custom-agent", projectId: "project-one", x: 32, y: 32 });
+    expect(copies[0]).not.toHaveProperty("sessionId", "live-session");
+    expect(copies[1]).toMatchObject({ kind: "note", title: "Release copy", text: "Ship it", x: 432, y: 32 });
+    expect(copied.connections).toHaveLength(3);
+    expect(copied.connections[2]).toMatchObject({ sourceNodeId: copies[0]?.id, targetNodeId: copies[1]?.id });
+    expect(copied.selectedNodeIds).toEqual(copies.map((node) => node.id));
+    expect(copied.nodes[0]).toBe(terminal);
+    expect(canvasReducer(copied, action)).toBe(copied);
+    expect(parseCanvasDocument(serializeCanvasDocument(copied)).nodes[3]).toMatchObject({ agentId: "custom-agent" });
+  });
+
+  it("removes a selected group atomically, hiding its sessions and retaining other projects", () => {
+    const terminal = createSessionTerminalCanvasNode({ x: 0, y: 0 }, {
+      id: "live", projectId: "project-one", name: "Agent", cwd: "/repo",
+    });
+    const note = createCanvasNode("note", { x: 400, y: 0 }, "note");
+    const otherProject = { ...createCanvasNode("note", { x: 0, y: 0 }, "other"), projectId: "project-two" };
+    const initial = createInitialCanvasState({
+      version: 1, nodes: [terminal, note, otherProject], zoom: 1,
+      connections: [{ id: "edge", sourceNodeId: terminal.id, targetNodeId: note.id }],
+    });
+    const selected = canvasReducer(initial, { type: "nodes/select", nodeIds: [terminal.id, note.id] });
+    const deleted = canvasReducer(selected, { type: "nodes/delete", nodeIds: selected.selectedNodeIds });
+    expect(deleted.nodes).toEqual([otherProject]);
+    expect(deleted.connections).toEqual([]);
+    expect(deleted.hiddenSessionIds).toEqual(["live"]);
+    expect(deleted.selectedNodeIds).toEqual([]);
+    expect(deleted.selectedNodeId).toBeNull();
+    expect(canvasReducer(deleted, {
+      type: "sessions/reconcile", knownSessionIds: ["live"], sessionNodes: [terminal],
+    }).nodes).toEqual([otherProject]);
+  });
+
   it("provides the reference terminal and note composition on first launch", () => {
     const document = createInitialCanvasDocument();
 
