@@ -3,6 +3,8 @@
 //! Text crosses the local IPC boundary intentionally, but is excluded from
 //! diagnostic formatting. This module performs no filesystem or process I/O.
 
+pub mod discovery;
+
 use std::{error::Error, fmt, str::FromStr};
 
 use serde::{Deserialize, Deserializer, Serialize, de};

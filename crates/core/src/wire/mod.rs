@@ -13,6 +13,12 @@ mod request;
 mod response;
 mod value;
 
+pub use crate::knowledge::discovery::{
+    KnowledgeDiscoverRequest, KnowledgeDiscoverResponse, KnowledgeDiscoveryIssue,
+    KnowledgeProvider, KnowledgeReadRequest, KnowledgeReadResponse, KnowledgeScanId,
+    KnowledgeSourceAvailability, KnowledgeSourceEntry, KnowledgeSourceId, KnowledgeSourceKind,
+    KnowledgeSourceScope,
+};
 pub use crate::knowledge::{
     KnowledgeBody, KnowledgeDeleteRequest, KnowledgeEntry, KnowledgeId, KnowledgeKind,
     KnowledgeListRequest, KnowledgeListResponse, KnowledgeSaveRequest, KnowledgeTitle,

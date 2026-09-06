@@ -11,6 +11,8 @@ fn knowledge_operations_share_the_authoritative_catalog() {
         method::KNOWLEDGE_LIST,
         method::KNOWLEDGE_SAVE,
         method::KNOWLEDGE_DELETE,
+        method::KNOWLEDGE_DISCOVER,
+        method::KNOWLEDGE_READ,
     ] {
         assert!(method::is_supported(name));
     }
