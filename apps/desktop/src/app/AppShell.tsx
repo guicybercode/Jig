@@ -519,6 +519,7 @@ export function AppShell() {
           ref={navigationRef}
           className="navigation-pane"
           data-open={navigationOpen ? "true" : "false"}
+          data-browser-obstruction="true"
           role={isCompactNavigation ? "dialog" : undefined}
           aria-label={isCompactNavigation ? "Workspace navigation" : undefined}
           aria-modal={isCompactNavigation && navigationOpen ? true : undefined}
@@ -562,8 +563,8 @@ export function AppShell() {
             }}
           />
         </div>
-        {navigationOpen ? <button className="navigation-backdrop" type="button" aria-label="Dismiss navigation" onClick={() => setNavigationOpen(false)} /> : null}
-        <div className="canvas-session-actions" role="toolbar" aria-label="Workspace actions">
+        {navigationOpen ? <button className="navigation-backdrop" data-browser-obstruction="true" type="button" aria-label="Dismiss navigation" onClick={() => setNavigationOpen(false)} /> : null}
+        <div className="canvas-session-actions" data-browser-obstruction="true" role="toolbar" aria-label="Workspace actions">
           <button
             ref={navigationTriggerRef}
             className="canvas-tool canvas-navigation-trigger"

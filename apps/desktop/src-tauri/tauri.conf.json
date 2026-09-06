@@ -21,7 +21,8 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; font-src 'self' data:; frame-src 'none'; frame-ancestors 'none'; img-src 'self' asset: http://asset.localhost blob: data:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+      "devCsp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1420; font-src 'self' data:; frame-src 'none'; frame-ancestors 'none'; img-src 'self' asset: http://asset.localhost blob: data:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'"
     }
   },
   "bundle": {
@@ -45,7 +46,7 @@
     },
     "macOS": {
       "minimumSystemVersion": "12.0",
-      "hardenedRuntime": false,
+      "hardenedRuntime": true,
       "signingIdentity": null
     }
   }

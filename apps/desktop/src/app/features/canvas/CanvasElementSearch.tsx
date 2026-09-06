@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 
 import type { AgentRecord, Session } from "../../../ipc/types";
 import { Icon } from "../../components/Icon";
-import type { CanvasNode } from "./canvas-state";
+import { normalizeBrowserUrl, type CanvasNode } from "./canvas-state";
 
 interface CanvasElementSearchProps {
   readonly nodes: readonly CanvasNode[];
@@ -32,6 +32,8 @@ export function CanvasElementSearch({
     const agent = agents.find((candidate) => candidate.id === agentId);
     const details = node.kind === "note"
       ? node.text
+      : node.kind === "browser"
+      ? normalizeBrowserUrl(node.url)
       : [agent?.displayName, agent?.command.executable ?? node.executable, session?.branch, session?.cwd ?? node.workingDirectory]
           .filter(Boolean).join(" · ");
     return { node, details, searchable: `${node.title} ${node.kind} ${details}`.toLocaleLowerCase() };
@@ -46,6 +48,7 @@ export function CanvasElementSearch({
       id="canvas-layers-panel"
       className="canvas-layers-panel"
       aria-labelledby="canvas-layers-title"
+      data-browser-obstruction="true"
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           event.preventDefault();
@@ -70,7 +73,7 @@ export function CanvasElementSearch({
           ref={inputRef}
           type="search"
           value={query}
-          placeholder="Title, note, agent, branch or path…"
+          placeholder="Title, note, URL, agent, branch or path…"
           onChange={(event) => setQuery(event.currentTarget.value)}
           onKeyDown={(event) => {
             const first = entries[0];
@@ -88,7 +91,7 @@ export function CanvasElementSearch({
         {entries.length} of {nodes.length} items
       </p>
       {entries.length === 0 ? (
-        <p className="canvas-item-search__empty">No matching items. Try a title, note, agent, branch or path.</p>
+        <p className="canvas-item-search__empty">No matching items. Try a title, note, URL, agent, branch or path.</p>
       ) : (
         <ul aria-label="Canvas search results">
           {entries.map(({ node, details }, index) => (
@@ -109,10 +112,10 @@ export function CanvasElementSearch({
                   else if (event.key === "ArrowUp") inputRef.current?.focus();
                 }}
               >
-                <Icon name={node.kind === "terminal" ? "terminal" : "note"} />
+                <Icon name={node.kind === "terminal" ? "terminal" : node.kind === "browser" ? "browser" : "note"} />
                 <span>
-                  <strong>{node.title}</strong>
-                  <small>{details || (node.kind === "terminal" ? "Terminal draft" : "Empty note")}</small>
+                  <strong>{node.title}</strong>{" "}
+                  <small>{details || (node.kind === "terminal" ? "Terminal draft" : node.kind === "browser" ? "Browser without an address" : "Empty note")}</small>
                 </span>
               </button>
             </li>

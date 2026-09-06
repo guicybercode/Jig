@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   canvasReducer,
+  createBrowserCanvasNode,
   createCanvasNode,
   createInitialCanvasDocument,
   createInitialCanvasState,
   createSessionTerminalCanvasNode,
   createTerminalCanvasNode,
   duplicateCanvasSelection,
+  normalizeBrowserNavigationUrl,
+  normalizeBrowserUrl,
   parseCanvasDocument,
   serializeCanvasDocument,
 } from "./canvas-state";
@@ -15,7 +18,7 @@ import {
 describe("canvas state", () => {
   it("persists the Gemini quick-start preset with its native executable", () => {
     const node = createTerminalCanvasNode({ x: 0, y: 0 }, { preset: "gemini" }, "gemini");
-    const state = createInitialCanvasState({ version: 1, nodes: [node], connections: [], zoom: 1 });
+    const state = createInitialCanvasState({ version: 2, nodes: [node], connections: [], zoom: 1 });
     expect(parseCanvasDocument(serializeCanvasDocument(state)).nodes[0]).toMatchObject({
       preset: "gemini", title: "Gemini", executable: "gemini",
     });
@@ -45,7 +48,7 @@ describe("canvas state", () => {
 
   it("moves a group by one bounded delta without distorting its layout", () => {
     const initial = createInitialCanvasState({
-      version: 1,
+      version: 2,
       nodes: [
         createCanvasNode("note", { x: 7_990, y: -1_990 }, "edge"),
         createCanvasNode("note", { x: 7_500, y: -1_500 }, "neighbor"),
@@ -71,7 +74,7 @@ describe("canvas state", () => {
     const note = { ...createCanvasNode("note", { x: 400, y: 0 }, "note"), title: "Release", text: "Ship it", projectId: "project-one" };
     const outside = createCanvasNode("note", { x: 0, y: 400 }, "outside");
     const initial = createInitialCanvasState({
-      version: 1, nodes: [terminal, note, outside], zoom: 1,
+      version: 2, nodes: [terminal, note, outside], zoom: 1,
       connections: [
         { id: "internal", sourceNodeId: terminal.id, targetNodeId: note.id },
         { id: "external", sourceNodeId: terminal.id, targetNodeId: outside.id },
@@ -99,7 +102,7 @@ describe("canvas state", () => {
     const note = createCanvasNode("note", { x: 400, y: 0 }, "note");
     const otherProject = { ...createCanvasNode("note", { x: 0, y: 0 }, "other"), projectId: "project-two" };
     const initial = createInitialCanvasState({
-      version: 1, nodes: [terminal, note, otherProject], zoom: 1,
+      version: 2, nodes: [terminal, note, otherProject], zoom: 1,
       connections: [{ id: "edge", sourceNodeId: terminal.id, targetNodeId: note.id }],
     });
     const selected = canvasReducer(initial, { type: "nodes/select", nodeIds: [terminal.id, note.id] });
@@ -138,13 +141,13 @@ describe("canvas state", () => {
       "terminal-codex",
     );
     const initial = createInitialCanvasState({
-      version: 1,
+      version: 2,
       nodes: [terminal],
       connections: [],
       zoom: 1,
     });
     const resized = canvasReducer(initial, {
-      type: "terminal/resize",
+      type: "node/resize",
       nodeId: terminal.id,
       size: { width: 2_000, height: 100 },
     });
@@ -169,6 +172,148 @@ describe("canvas state", () => {
     expect(parseCanvasDocument(serializeCanvasDocument(configured))).toEqual(
       expect.objectContaining({ nodes: configured.nodes }),
     );
+  });
+
+  it("normalizes, persists, and resizes HTTP browser nodes", () => {
+    const browser = createBrowserCanvasNode(
+      { x: 24, y: 32 },
+      "example.com/docs",
+      "browser-docs",
+    );
+    const initial = createInitialCanvasState({
+      version: 2,
+      nodes: [browser],
+      connections: [],
+      zoom: 1,
+    });
+    const navigated = canvasReducer(initial, {
+      type: "browser/navigate",
+      nodeId: browser.id,
+      url: "http://localhost:4173/preview",
+    });
+    const resized = canvasReducer(navigated, {
+      type: "node/resize",
+      nodeId: browser.id,
+      size: { width: 4_000, height: 20 },
+    });
+
+    expect(browser).toMatchObject({
+      kind: "browser",
+      url: "https://example.com/docs",
+      width: 640,
+      height: 420,
+    });
+    expect(resized.nodes[0]).toMatchObject({
+      url: "http://localhost:4173/preview",
+      width: 1_280,
+      height: 320,
+    });
+    expect(parseCanvasDocument(serializeCanvasDocument(resized))).toEqual(
+      expect.objectContaining({ version: 2, nodes: resized.nodes }),
+    );
+  });
+
+  it("rejects unsafe browser addresses without replacing a safe address", () => {
+    const browser = createBrowserCanvasNode(
+      { x: 0, y: 0 },
+      "https://example.com/",
+      "browser-safe",
+    );
+    const initial = createInitialCanvasState({
+      version: 2,
+      nodes: [browser],
+      connections: [],
+      zoom: 1,
+    });
+    const navigated = canvasReducer(initial, {
+      type: "browser/navigate",
+      nodeId: browser.id,
+      url: "https://user:secret@example.com/private",
+    });
+    const parsed = parseCanvasDocument(
+      JSON.stringify({
+        version: 2,
+        nodes: [
+          {
+            ...browser,
+            url: "file:///etc/passwd",
+          },
+        ],
+        connections: [],
+        zoom: 1,
+      }),
+    );
+
+    expect(navigated.nodes[0]).toBe(browser);
+    expect(parsed.nodes[0]).toMatchObject({ url: "" });
+  });
+
+  it("removes fragments and secret-bearing query parameters before persistence", () => {
+    const browser = createBrowserCanvasNode(
+      { x: 0, y: 0 },
+      "https://example.com/search?q=tauri&access_token=secret&oauth_token=oauth&client_secret=client&credentials=credential&pwd=password&X-Amz-Signature=signed#callback",
+      "browser-redacted",
+    );
+
+    expect(browser.url).toBe("https://example.com/search?q=tauri");
+  });
+
+  it("keeps secret-bearing parameters only for transient browser navigation", () => {
+    const address =
+      "https://example.com/callback?tab=activity&access_token=secret#complete";
+
+    expect(normalizeBrowserNavigationUrl(address)).toBe(address);
+    expect(normalizeBrowserUrl(address)).toBe(
+      "https://example.com/callback?tab=activity",
+    );
+  });
+
+  it("migrates version 1 canvas documents without resetting the layout", () => {
+    const parsed = parseCanvasDocument(
+      JSON.stringify({
+        version: 1,
+        nodes: [
+          {
+            id: "note-legacy",
+            kind: "note",
+            title: "Legacy note",
+            text: "Keep me",
+            projectId: "legacy-project",
+            x: 100,
+            y: 200,
+          },
+        ],
+        connections: [],
+        zoom: 0.75,
+        hiddenSessionIds: ["hidden-session"],
+      }),
+    );
+
+    expect(parsed).toMatchObject({
+      version: 2,
+      nodes: [{ id: "note-legacy", text: "Keep me", projectId: "legacy-project" }],
+      zoom: 0.75,
+      hiddenSessionIds: ["hidden-session"],
+    });
+  });
+
+  it("copies a browser and agent together while retaining scope and clearing the live session", () => {
+    const browser = { ...createBrowserCanvasNode({ x: 100, y: 200 }, "https://example.com/?token=secret&tab=code#private", "browser"), projectId: "project" };
+    const terminal = createSessionTerminalCanvasNode({ x: 800, y: 200 }, {
+      id: "session", agentId: "gemini-agent", projectId: "project", name: "Gemini", cwd: "/repo",
+    });
+    const state = createInitialCanvasState({
+      version: 2, nodes: [browser, terminal], zoom: 1,
+      connections: [{ id: "edge", sourceNodeId: browser.id, targetNodeId: terminal.id }],
+      hiddenSessionIds: ["other-session"],
+    });
+    const copied = canvasReducer(state, duplicateCanvasSelection(state, [browser.id, terminal.id]));
+    expect(copied.nodes[2]).toMatchObject({ kind: "browser", projectId: "project", url: "https://example.com/?tab=code", width: browser.width, height: browser.height });
+    expect(copied.nodes[3]).toMatchObject({ kind: "terminal", agentId: "gemini-agent", sessionId: undefined, projectId: "project" });
+    const restored = parseCanvasDocument(serializeCanvasDocument(copied));
+    expect(restored.nodes).toEqual(copied.nodes);
+    expect(restored.hiddenSessionIds).toEqual(["other-session"]);
+    expect(restored.connections).toHaveLength(2);
   });
 
   it("moves, renames, and updates notes without changing other nodes", () => {
@@ -219,7 +364,7 @@ describe("canvas state", () => {
 
   it("connects distinct nodes once and removes their edges with the node", () => {
     const initial = createInitialCanvasState({
-      version: 1,
+      version: 2,
       nodes: [
         createCanvasNode("terminal", { x: 0, y: 0 }, "terminal-a"),
         createCanvasNode("note", { x: 100, y: 100 }, "note-b"),
@@ -271,7 +416,7 @@ describe("canvas state", () => {
       },
     );
     const initial = createInitialCanvasState({
-      version: 1,
+      version: 2,
       nodes: [sessionNode],
       connections: [],
       zoom: 1,
@@ -315,7 +460,7 @@ describe("canvas state", () => {
       },
     );
     const initial = createInitialCanvasState({
-      version: 1,
+      version: 2,
       nodes: [firstNode],
       connections: [],
       zoom: 1,
@@ -360,7 +505,7 @@ describe("canvas state", () => {
       },
     );
     const initial = createInitialCanvasState({
-      version: 1,
+      version: 2,
       nodes: [],
       connections: [],
       zoom: 1,
@@ -385,7 +530,7 @@ describe("canvas state", () => {
 
     const parsed = parseCanvasDocument(
       JSON.stringify({
-        version: 1,
+        version: 2,
         zoom: 9,
         nodes: [
           {
