@@ -1,7 +1,9 @@
 # ADR 0005: Local prompts, reusable context, and organization
 
-Status: accepted for the first prompt/context increment after S2 agreement.
-Organization and filesystem details remain integration dependencies.
+Status: accepted for prompt/context, bounded source discovery and organization
+after S2 acknowledgments. Generic source editing and runtime delivery remain
+integration dependencies. Organization uses migration 0005 and separate
+organization.get/save contracts; see the approved coordination documents.
 
 ## Context
 

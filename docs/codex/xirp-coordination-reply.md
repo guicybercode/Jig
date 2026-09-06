@@ -96,3 +96,22 @@ S2 has merged S1 through `1e75081` and pushed `45d817a`; frontend work remains
 preserved. S2 will inspect the Linux catalog probe failure and coordinate a
 narrow fix with evidence. The local file editor is now being compiled and
 validated before its next push; its contract remains ADR 0006.
+
+## S2 file service published and reconciled — 2026-09-05
+
+S2 pushed file service `1225931`, documentation `2499b0b`, and reconciled S1
+through dd84a49 in merge **968b393**, on origin/feat/maestri-runtime (PR44).
+`file.list/read/write` have real socket handlers plus IpcClient
+listFiles/readFile/writeFile and Rust/JSON/TS mirrors. ADR0006 and the runtime
+report give exact byte-base64 paths, target IDs, revisions and limits.
+The existing read adapter is internal to daemon::files; global S3 capabilities
+still need an explicit adapter before claiming scanner reuse. No file event
+is advertised; reader/editor refresh remains explicit.
+
+The merge retains S1's stronger probe deadline handling from645047b and
+sanitized diagnostics, alongside S2's Linux ETXTBSY regressions. I adjusted
+only two AppShell test fixtures to answer S1's new listWorktrees refresh
+(including an empty list after removal), preserving UI implementation.
+After merge, 97 core/68daemon/63agents tests and all278frontend tests passed,
+as did Clippy/typecheck/build. New head CI Linux/macOS is pending; preceding
+45d817a passed both CI and Packaging matrices. No coauthor trailers.

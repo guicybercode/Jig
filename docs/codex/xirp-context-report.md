@@ -157,3 +157,43 @@ of canvas integration: [desktop](artifacts/xirp/knowledge-inspector-desktop.png)
 Both had no horizontal viewport overflow. Temporary preview files/server removed.
 S1 mounting, real desktop smoke and this new increment's Linux/macOS CI remain
 separate integration evidence.
+
+
+## Organization increment
+
+Backend+typed IPC published as `fce3982`. Migration 0005 adds project/session
+organization tables with cascading metadata FKs. organization.get reads up to
+100 distinct registered targets in request order, without persisting defaults.
+organization.save compares the whole record's revision and atomically saves
+pin/archive flags plus session workflow. Revision 0 means unwritten defaults;
+returning to default flags after a save retains the row and positive revision.
+
+OrganizationPanel receives client(getOrganization/saveOrganization), optional
+currentProject{id,name}, currentSession{id,name,status}, connectionKey and
+onChanged(entry). It preserves per-target drafts and requires explicit Save.
+Conflicts preserve choices; Refresh revision displays the latest saved values
+before another save. Current daemon status remains visible even when workflow
+is Done or archive is selected. S1 should keep the panel mounted while hidden
+and refresh canvas sorting/filtering through onChanged.
+
+Verification: all 199 core/storage/daemon tests passed, including 10 real SQLite
+organization tests and 2 socket tests. The socket acceptance starts /bin/cat
+through SessionManager, changes archive/pin and every workflow value, and
+checks the live session DTO stays unchanged. Restart preserves organization;
+explicit stop/delete remain separate actions and repository files survive.
+Core/storage/daemon all-target clippy, formatting and whitespace passed.
+Independent QA found no concrete backend or UI correctness defect; the batch
+snapshot stress test remains probabilistic, while production reads explicitly
+share one transaction.
+
+Frontend focused 26 tests (panel 9, decoder 6, client 11), typecheck and targeted
+ESLint passed. Isolated Chromium fixtures at 1100px/375px showed visible keyboard
+focus and no horizontal overflow: [desktop](artifacts/xirp/organization-desktop.png),
+[narrow](artifacts/xirp/organization-narrow.png). Temporary preview files/server
+removed. Real canvas mounting/filtering and Linux/macOS CI remain integration
+work; these screenshots are not native desktop acceptance.
+
+Native initial-objective/options/continuity evidence is recorded in
+[xirp-native-capability-evidence.md](xirp-native-capability-evidence.md) and sent
+to S2. Installed flags do not prove successful resume/fork; actual adapter/start
+wiring and trustworthy conversation IDs remain required.
