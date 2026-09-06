@@ -38,6 +38,20 @@ Connected notes and redacted browser addresses can be explicitly inserted as
 labeled text snapshots. They are not live references and do not grant agent
 access to files, browser controls or other terminals.
 
+The **Prompts and context** toolbar button and **Open prompts and context**
+palette action open the local knowledge library. Choose global or project
+scope, save reusable text, and explicitly insert it into the selected
+terminal's draft. Inserting opens the composer without starting a session or
+sending input; review the text and use **Send prompt** separately.
+
+Saved library entries live in the daemon's SQLite database and use revision
+checks to prevent silent overwrite. Offline, the editor can still supply a
+draft snapshot, but list/save operations report the unavailable daemon.
+Unsaved library edits survive closing/reopening its canvas panel and changing
+project scope while the canvas remains mounted. Save them before navigating
+to Settings/Diagnostics or closing the app; those unsaved edits are not yet
+persisted. Once inserted, terminal drafts use the canvas persistence above.
+
 This implements the text/draft/input portion of
 [Maestri's composer](https://www.themaestri.app/en/docs/prompt-composer).
 Live mentions, image/file attachments, SSH delivery, slash-command discovery

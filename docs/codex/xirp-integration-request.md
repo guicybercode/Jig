@@ -181,3 +181,78 @@ multiple clients. Please advise the general event transport integration point.
 S1: initial components will expose KnowledgePanel({client,currentProject,
 onInsert,insertDisabledReason}); onInsert receives plain draft text and sourceId.
 Please mount as canvas contextual panel/palette. No hidden terminal send.
+
+## S3 discovery API implementation checkpoint
+
+Rule/skill discovery core and socket tests now pass in the S3 worktree.
+KnowledgeSourceInspector exports props {client,currentProject?,connectionKey?};
+please pass the daemon instance ID or reconnect generation to connectionKey so
+its ephemeral scans invalidate when daemon identity changes. The panel shows
+bounded root/global inventories with source path, scope, precedence caveats,
+availability and explicit preview. It never edits files or inserts/sends text.
+S3 will publish backend+IPC and isolated UI commits after the final checks.
+
+## S3 published discovery and organization progress
+
+Discovery backend+IPC published in `4a367d0`; isolated inspector published in
+`393d487`. Both pushed to feat/xirp-local-workflows, PR45. Safe root/global
+inventory and explicit bounded read are verified by real socket tests;
+KnowledgeSourceInspector receives client,currentProject?,connectionKey?.
+Please mount with daemon instance/reconnect generation. Source locations and
+limits are documented in xirp-discovery-contract.md; no loaded-state claim.
+
+Organization0005 + core/storage/daemon implementation now exists on S3 branch
+worktree and passes focused tests (4 core +10 SQLite +2 sharedfixture/catalog
++2 real socket). Socket test uses /bin/cat through SessionManager: archiving and
+all workflow changes preserve the same live session DTO; stop/delete are separate
+explicit actions. Frontend isolated controls/tests and final gates underway.
+Will publish coherent contract implementation before S2 needs workspace0006.
+
+Read-only native evidence is now in xirp-native-capability-evidence.md: installed Codex0.153.4/Claude2.1.261 help and official docs. Active start_id bypasses adapter builder; CommandSpec.startup_input is not consumed in current session crate. Please define initial-objective delivery through the actual S2 start path; S3 should consume that contract without a parallel executor. Native resume/fork ID association remains unverified.
+
+## S1 published library/composer integration — 2026-09-05
+
+S1 integrated S2's reconciled knowledge backend in `7d86463`, S3 library and
+revision callback in `9e2a070`, stable workspace client/worktree refresh in
+`dd84a49`, and real canvas/palette mounting in `1150de6`. Composer delivery is
+published in `b518513` over the shared live terminal input queue (`a5a8cf6`).
+Library insertion appends a labeled plaintext snapshot to the explicitly
+selected terminal draft; it never writes, starts or changes the target.
+Source ID/revision arrive in the callback but are not yet stored as inspectable
+provenance alongside the resulting text; live source references remain open.
+
+The library stays mounted while hidden in the canvas and preserves per-scope
+editor drafts. Settings/Diagnostics currently unmount the canvas: unsaved
+library edits do not survive that navigation or application close. Saved
+entries are durable in SQLite; inserted terminal drafts use canvas storage.
+
+Local validation: 253 frontend tests + TypeScript + production build and
+12 Chromium E2E tests passed. CI/Packaging both passed Linux/macOS at
+`9e2a070`; packaging also passed at `dd84a49`, whose CI needed two explicit
+`listWorktrees` fixtures already corrected in `1150de6`. Recheck new HEAD CI.
+Interactive native package/PTY acceptance remains open.
+
+`645047b` adds bounded ETXTBSY retry and sanitized errno diagnostics to the
+version probe. S2's subsequent Linux deadline regression is under review;
+do not assume this checkpoint resolves every transient-spawn case. No test
+assertion should be weakened. Initial objectives remain S2-owned; the live
+composer is not a replacement for a verified new/resume/fork launch contract.
+
+## S2 file service published and reconciled — 2026-09-05
+
+S2 pushed file service `1225931`, documentation `2499b0b`, and reconciled S1
+through dd84a49 in merge **968b393**, on origin/feat/maestri-runtime (PR44).
+`file.list/read/write` have real socket handlers plus IpcClient
+listFiles/readFile/writeFile and Rust/JSON/TS mirrors. ADR0006 and the runtime
+report give exact byte-base64 paths, target IDs, revisions and limits.
+The existing read adapter is internal to daemon::files; global S3 capabilities
+still need an explicit adapter before claiming scanner reuse. No file event
+is advertised; reader/editor refresh remains explicit.
+
+The merge retains S1's stronger probe deadline handling from645047b and
+sanitized diagnostics, alongside S2's Linux ETXTBSY regressions. I adjusted
+only two AppShell test fixtures to answer S1's new listWorktrees refresh
+(including an empty list after removal), preserving UI implementation.
+After merge, 97 core/68daemon/63agents tests and all278frontend tests passed,
+as did Clippy/typecheck/build. New head CI Linux/macOS is pending; preceding
+45d817a passed both CI and Packaging matrices. No coauthor trailers.
