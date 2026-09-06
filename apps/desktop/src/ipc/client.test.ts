@@ -11,6 +11,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: transport.listen }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: transport.openPath }));
 
 import { createTauriIpcClient } from "./client";
+import discoveryFixture from "../../../../protocol/fixtures/knowledge-discovery.json";
 import type { RequestEnvelope } from "./types";
 
 const PROJECT = {
@@ -408,5 +409,44 @@ describe("knowledge IPC transport", () => {
       error: { code: "knowledge_conflict", message: "This entry changed. Reload or save a copy." },
     }));
     await expect(client.saveKnowledge({ ...input, id: entry.id, expectedRevision: 1 })).rejects.toMatchObject({ code: "knowledge_conflict" });
+  });
+});
+
+describe("discovery IPC transport", () => {
+  beforeEach(() => {
+    transport.invoke.mockReset();
+    transport.openPath.mockReset();
+  });
+
+  it("sends opaque scan/source capabilities through the generic daemon bridge", async () => {
+    installWireResponder({ "knowledge.discover": discoveryFixture.scan, "knowledge.read": discoveryFixture.read });
+    const client = createTauriIpcClient();
+    expect(await client.discoverKnowledge({ projectId: PROJECT.id })).toEqual(discoveryFixture.scan);
+    const selection = { scanId: discoveryFixture.scan.scanId, entryId: discoveryFixture.read.entry.entryId };
+    expect(await client.readKnowledge(selection)).toEqual(discoveryFixture.read);
+    expect(capturedRequests().map((request) => ({ method: request.method, payload: request.payload }))).toEqual([
+      { method: "knowledge.discover", payload: { projectId: PROJECT.id } },
+      { method: "knowledge.read", payload: selection },
+    ]);
+    expect(transport.openPath).not.toHaveBeenCalled();
+  });
+
+  it("rejects content returned for a different source capability", async () => {
+    installWireResponder({ "knowledge.read": discoveryFixture.read });
+    await expect(createTauriIpcClient().readKnowledge({
+      scanId: discoveryFixture.scan.scanId,
+      entryId: "0198b6e0-0002-7000-8000-000000000002",
+    })).rejects.toThrow("Discovery read returned another source capability");
+  });
+
+  it("preserves scan expiry errors for explicit rescan recovery", async () => {
+    transport.invoke.mockImplementation(async (_command, { request }) => ({
+      kind: "response", version: 1, requestId: request.requestId, status: "error",
+      error: { code: "knowledge_scan_expired", message: "Rescan sources before reading this item." },
+    }));
+    await expect(createTauriIpcClient().readKnowledge({
+      scanId: discoveryFixture.scan.scanId, entryId: discoveryFixture.read.entry.entryId,
+    })).rejects.toMatchObject({ code: "knowledge_scan_expired" });
+    expect(capturedRequests()).toHaveLength(1);
   });
 });

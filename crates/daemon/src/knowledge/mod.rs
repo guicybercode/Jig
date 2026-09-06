@@ -1,18 +1,44 @@
-//! Local user-authored knowledge; no session or process side effects.
+//! Local knowledge and source discovery; no session or process side effects.
+
+pub(crate) mod discovery;
 
 use cli_master_core::ApiError;
 use cli_master_core::wire::{
-    EmptyResponse, KnowledgeDeleteRequest, KnowledgeListRequest, KnowledgeSaveRequest,
+    EmptyResponse, KnowledgeDeleteRequest, KnowledgeDiscoverRequest, KnowledgeListRequest,
+    KnowledgeReadRequest, KnowledgeSaveRequest,
 };
 use cli_master_storage::Storage;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Handle only the registered knowledge methods through the existing database.
-pub(crate) fn dispatch(method: &str, payload: Value, storage: &Storage) -> Result<Value, ApiError> {
+pub(crate) fn dispatch(
+    method: &str,
+    payload: Value,
+    storage: &Storage,
+    discovery: &Mutex<discovery::DiscoveryService>,
+) -> Result<Value, ApiError> {
     use cli_master_core::wire::method;
     match method {
+        method::KNOWLEDGE_DISCOVER => {
+            let request: KnowledgeDiscoverRequest = decode(payload)?;
+            let project = request
+                .project_id
+                .map(|id| registered_project(storage, id))
+                .transpose()?;
+            let mut service = discovery.lock().map_err(|_| discovery_unavailable())?;
+            encode(service.discover(project.as_ref())?)
+        }
+        method::KNOWLEDGE_READ => {
+            let request: KnowledgeReadRequest = decode(payload)?;
+            let service = discovery.lock().map_err(|_| discovery_unavailable())?;
+            if let Some(project_id) = service.scan_project_id(request.scan_id)? {
+                registered_project(storage, project_id)?;
+            }
+            encode(service.read(&request)?)
+        }
         method::KNOWLEDGE_LIST => {
             let request: KnowledgeListRequest = decode(payload)?;
             encode(
@@ -54,15 +80,38 @@ fn decode<T: DeserializeOwned>(payload: Value) -> Result<T, ApiError> {
     // Serde errors can quote a user value (e.g. an invalid enum variant). Never
     // attach them to errors for a text-bearing knowledge request.
     serde_json::from_value(payload).map_err(|_| {
-        ApiError::new(
-            "invalid_payload",
-            "The saved prompt or context request is invalid.",
-        )
-        .with_action("Check the title, text, scope and revision, then retry.")
+        ApiError::new("invalid_payload", "The local knowledge request is invalid.")
+            .with_action("Check the selected source, scope and revision, then retry.")
     })
 }
 
 fn encode(value: impl serde::Serialize) -> Result<Value, ApiError> {
     serde_json::to_value(value)
         .map_err(|_| ApiError::new("internal_error", "The local response could not be encoded."))
+}
+
+fn registered_project(
+    storage: &Storage,
+    id: cli_master_core::ProjectId,
+) -> Result<cli_master_core::Project, ApiError> {
+    storage
+        .get_project(id)
+        .map_err(|_| {
+            ApiError::new(
+                "knowledge_storage_unavailable",
+                "The registered project could not be checked.",
+            )
+        })?
+        .ok_or_else(|| {
+            ApiError::new("project_not_found", "This project is no longer registered.")
+                .with_action("Choose a registered project and refresh the sources.")
+        })
+}
+
+fn discovery_unavailable() -> ApiError {
+    ApiError::new(
+        "knowledge_discovery_unavailable",
+        "The local source inventory is unavailable.",
+    )
+    .with_action("Reconnect and refresh the sources.")
 }

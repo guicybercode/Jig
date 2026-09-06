@@ -32,7 +32,9 @@
     "diagnostics.get",
     "knowledge.list",
     "knowledge.save",
-    "knowledge.delete"
+    "knowledge.delete",
+    "knowledge.discover",
+    "knowledge.read"
   ],
   "events": [
     "project.updated",
