@@ -30,7 +30,10 @@
     "worktree.list",
     "worktree.prepare_remove",
     "worktree.remove",
-    "diagnostics.get"
+    "diagnostics.get",
+    "knowledge.list",
+    "knowledge.save",
+    "knowledge.delete"
   ],
   "events": [
     "project.updated",

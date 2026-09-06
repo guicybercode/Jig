@@ -9,6 +9,7 @@ mod catalog;
 mod command;
 mod error;
 mod ids;
+pub mod knowledge;
 mod model;
 mod protocol;
 mod redact;

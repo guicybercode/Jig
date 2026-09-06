@@ -379,3 +379,34 @@ function requestFromArgs(value: unknown): RequestEnvelope<unknown> {
   }
   return value.request as RequestEnvelope<unknown>;
 }
+
+// Knowledge uses the same versioned request transport as all domain methods.
+describe("knowledge IPC transport", () => {
+  it("keeps revisions and scope and surfaces conflicts without issuing session writes", async () => {
+    const entry = {
+      id: "0198f000-0000-7000-8000-000000000010", kind: "prompt", projectId: null,
+      title: "Review", body: "Review the selected changes", revision: 1,
+      createdAtMs: 100, updatedAtMs: 100,
+    };
+    transport.invoke.mockReset();
+    installWireResponder({
+      "knowledge.list": { entries: [entry], nextCursor: null },
+      "knowledge.save": entry,
+      "knowledge.delete": {},
+    });
+    const client = createTauriIpcClient();
+    expect(await client.listKnowledge({ projectId: null, query: "review" })).toEqual({ entries: [entry], nextCursor: null });
+    const input = { kind: "prompt" as const, projectId: null, title: entry.title, body: entry.body };
+    expect(await client.saveKnowledge(input)).toEqual(entry);
+    await client.deleteKnowledge({ id: entry.id, expectedRevision: 1 });
+    expect(capturedRequests().map((request) => request.method)).toEqual(["knowledge.list", "knowledge.save", "knowledge.delete"]);
+    expect(capturedRequests()[1].payload).toEqual(input);
+    expect(capturedRequests()[2].payload).toEqual({ id: entry.id, expectedRevision: 1 });
+
+    transport.invoke.mockImplementation(async (_command, { request }) => ({
+      kind: "response", version: 1, requestId: request.requestId, status: "error",
+      error: { code: "knowledge_conflict", message: "This entry changed. Reload or save a copy." },
+    }));
+    await expect(client.saveKnowledge({ ...input, id: entry.id, expectedRevision: 1 })).rejects.toMatchObject({ code: "knowledge_conflict" });
+  });
+});

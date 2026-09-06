@@ -557,6 +557,20 @@ async fn dispatch(
     }
 
     let result = match request.method.as_str() {
+        method::KNOWLEDGE_LIST | method::KNOWLEDGE_SAVE | method::KNOWLEDGE_DELETE => {
+            let state = Arc::clone(state);
+            match tokio::task::spawn_blocking(move || {
+                crate::knowledge::dispatch(&request.method, request.payload, &state.git_storage)
+            })
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => Err(ApiError::new(
+                    "knowledge_operation_failed",
+                    "The local knowledge operation could not complete.",
+                )),
+            }
+        }
         method::SYSTEM_HELLO => encode_response(&state.hello),
         method::STATE_SNAPSHOT => state.projects.snapshot().and_then(|projects| {
             let agents = state.sessions.agents()?;
