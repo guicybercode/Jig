@@ -29,6 +29,11 @@
     "active": true,
     "targets": ["app", "dmg", "appimage"],
     "category": "DeveloperTool",
+    "license": "MIT",
+    "licenseFile": "../../../LICENSE",
+    "resources": {
+      "../../../LICENSE": "licenses/Jig-LICENSE.txt"
+    },
     "shortDescription": "Terminals on a canvas for coding agents",
     "longDescription": "Jig hosts coding-agent CLIs in real terminals with projects and Git worktrees. A local-first desktop app that coordinates Codex, Claude Code, Gemini CLI, OpenCode, and custom executables.",
     "icon": [
