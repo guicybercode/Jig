@@ -14,6 +14,7 @@ mod diagnostics;
 mod error;
 mod events;
 mod git_inspection;
+mod knowledge;
 mod lock;
 mod paths;
 mod preflight;

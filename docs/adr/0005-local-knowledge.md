@@ -1,6 +1,7 @@
 # ADR 0005: Local prompts, reusable context, and organization
 
-Status: proposed; shared contract and migration registration await S2 agreement.
+Status: accepted for the first prompt/context increment after S2 agreement.
+Organization and filesystem details remain integration dependencies.
 
 ## Context
 

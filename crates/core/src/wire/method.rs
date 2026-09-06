@@ -63,6 +63,13 @@ pub const WORKTREE_REMOVE: &str = "worktree.remove";
 /// Read a sanitized local diagnostic snapshot.
 pub const DIAGNOSTICS_GET: &str = "diagnostics.get";
 
+/// List scoped saved prompts/context in bounded pages.
+pub const KNOWLEDGE_LIST: &str = "knowledge.list";
+/// Create or revision-check an explicit saved prompt/context.
+pub const KNOWLEDGE_SAVE: &str = "knowledge.save";
+/// Delete a saved prompt/context after checking its revision.
+pub const KNOWLEDGE_DELETE: &str = "knowledge.delete";
+
 /// Every method implemented by the Beta v1 contract.
 pub const ALL: &[&str] = &[
     SYSTEM_HELLO,
@@ -93,6 +100,9 @@ pub const ALL: &[&str] = &[
     WORKTREE_PREPARE_REMOVE,
     WORKTREE_REMOVE,
     DIAGNOSTICS_GET,
+    KNOWLEDGE_LIST,
+    KNOWLEDGE_SAVE,
+    KNOWLEDGE_DELETE,
 ];
 
 /// Returns whether a dotted method belongs to the Beta v1 contract.

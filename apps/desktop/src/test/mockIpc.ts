@@ -24,6 +24,9 @@ export interface MockIpcClientOptions {
 
 /** An injected IPC fake whose unconfigured application calls fail loudly. */
 export interface MockIpcClient extends IpcClient {
+  readonly listKnowledge: Mock<IpcClient["listKnowledge"]>;
+  readonly saveKnowledge: Mock<IpcClient["saveKnowledge"]>;
+  readonly deleteKnowledge: Mock<IpcClient["deleteKnowledge"]>;
   readonly initialize: Mock<IpcClient["initialize"]>;
   readonly subscribe: Mock<IpcClient["subscribe"]>;
   readonly subscribeTerminal: Mock<IpcClient["subscribeTerminal"]>;
@@ -146,6 +149,9 @@ export function createMockIpcClient(
     getDiagnostics: vi.fn<IpcClient["getDiagnostics"]>(
       handlers.getDiagnostics ?? (() => rejectUnhandled("getDiagnostics")),
     ),
+    listKnowledge: vi.fn<IpcClient["listKnowledge"]>(handlers.listKnowledge ?? (() => rejectUnhandled("listKnowledge"))),
+    saveKnowledge: vi.fn<IpcClient["saveKnowledge"]>(handlers.saveKnowledge ?? (() => rejectUnhandled("saveKnowledge"))),
+    deleteKnowledge: vi.fn<IpcClient["deleteKnowledge"]>(handlers.deleteKnowledge ?? (() => rejectUnhandled("deleteKnowledge"))),
     openPath: vi.fn<IpcClient["openPath"]>(
       handlers.openPath ?? (() => rejectUnhandled("openPath")),
     ),

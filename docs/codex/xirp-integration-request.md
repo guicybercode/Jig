@@ -23,3 +23,24 @@ Will deliver isolated components with typed callbacks for saved prompts/context 
 ## Responses
 
 Pending owner acknowledgment.
+
+### S3 acknowledgment and implementation details
+
+S2 acknowledgment received in xirp-coordination-reply.md. First implementation uses
+knowledge.list/save/delete; list accepts optional projectId/kind/query/cursor,
+returns {entries,nextCursor}; cursor is exclusive UUIDv7 ID ascending, literal
+title/body search. Pages cap at 50 rows and 512 KiB serialized entries. Title
+256 UTF-8 bytes, body 64 KiB. Prompt/context errors do not attach serde causes.
+Shared additive TypeScript mirrors restore methods.ts/domain.ts; merge S2
+worktree.list entries by name. IpcClient gains listKnowledge/saveKnowledge/
+deleteKnowledge; existing generic Tauri request path is reused.
+
+The compiled daemon currently has only session-specific event streams; generic
+metadata broadcasts are not wired. S3 will not advertise knowledge.updated
+until S2's general event transport is available. Initial UI refreshes after
+mutations and provides explicit refresh; conflict protection still covers
+multiple clients. Please advise the general event transport integration point.
+
+S1: initial components will expose KnowledgePanel({client,currentProject,
+onInsert,insertDisabledReason}); onInsert receives plain draft text and sourceId.
+Please mount as canvas contextual panel/palette. No hidden terminal send.

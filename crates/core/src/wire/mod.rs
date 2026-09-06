@@ -13,6 +13,12 @@ mod request;
 mod response;
 mod value;
 
+pub use crate::knowledge::{
+    KnowledgeBody, KnowledgeDeleteRequest, KnowledgeEntry, KnowledgeId, KnowledgeKind,
+    KnowledgeListRequest, KnowledgeListResponse, KnowledgeSaveRequest, KnowledgeTitle,
+    KnowledgeValidationError, MAX_KNOWLEDGE_BODY_BYTES, MAX_KNOWLEDGE_REVISION,
+    MAX_KNOWLEDGE_TITLE_BYTES,
+};
 pub use event::{
     AgentChangedEvent, AgentRemovedEvent, DaemonShuttingDownEvent, GitStatusChangedEvent,
     ProjectChangedEvent, ProjectRemovedEvent, SessionChangedEvent, SessionDeletedEvent,

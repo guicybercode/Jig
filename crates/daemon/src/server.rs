@@ -551,6 +551,9 @@ async fn dispatch(request: RequestEnvelope<Value>, state: &ServerState) -> Respo
     }
 
     let result = match request.method.as_str() {
+        method::KNOWLEDGE_LIST | method::KNOWLEDGE_SAVE | method::KNOWLEDGE_DELETE => {
+            crate::knowledge::dispatch(&request.method, request.payload, &state.git_storage)
+        }
         method::SYSTEM_HELLO => encode_response(&state.hello),
         method::STATE_SNAPSHOT => state.projects.snapshot().and_then(|projects| {
             let agents = state.sessions.agents()?;
