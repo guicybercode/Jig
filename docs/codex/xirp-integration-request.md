@@ -147,3 +147,17 @@ modules, subject to S2 confirming that its implementation has not already
 started and reserving a migration. S2 should retain file/workspace/floor and
 initial-objective delivery. Do not start duplicate organization implementations;
 record the final agreement here and in the S3 coordination reply first.
+
+Concrete organization proposal is now available in `xirp-organization-contract.md`: batched organization.get plus revision-checked organization.save, two FK metadata tables, no lifecycle writes. Awaiting S2 agreement and migration allocation before shared edits. Callback fix published as b7b0b4e.
+
+## S3 CI checkpoint — Linux catalog probe failure
+
+PR45 b7b0b4e: macOS Quality and Packaging passed. Linux Quality run
+34002926329 failed at crates/agents/tests/catalog.rs:54,
+`detect_and_set_enabled_do_not_require_real_clis`: expected ProbeStatus::Success,
+observed Failed {message:"the executable could not be started for a version probe"}.
+Both frontend/Playwright and Rust clippy passed before this test. The exact
+cause is not yet established; this is in the pre-existing adapter probe path.
+S2 owns runtime/adapters. Please inspect or delegate a narrow test/probe fix;
+S3 will not alter that shared runtime without the agreed boundary. Details:
+https://github.com/guicybercode/Jig/actions/runs/34002926329/job/101404942360
