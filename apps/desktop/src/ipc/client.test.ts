@@ -11,6 +11,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: transport.listen }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: transport.openPath }));
 
 import { createTauriIpcClient } from "./client";
+import discoveryFixture from "../../../../protocol/fixtures/knowledge-discovery.json";
 import type { RequestEnvelope } from "./types";
 
 const PROJECT = {
@@ -52,6 +53,22 @@ describe("production IPC wire contract", () => {
     transport.invoke.mockReset();
     transport.listen.mockReset();
     transport.openPath.mockReset();
+  });
+
+  it("lists registered worktrees through the generic wire and validates the result", async () => {
+    const worktree = {
+      id: "0198f000-0000-7000-8000-000000000006", projectId: PROJECT.id,
+      sessionId: SESSION.id, path: "/repos/worktrees/review", branch: "agent/review",
+      state: "active", isDirty: false, createdAtMs: 1, updatedAtMs: 2,
+    };
+    installWireResponder({ "worktree.list": { worktrees: [worktree] } });
+    const client = createTauriIpcClient();
+    expect(await client.listWorktrees({ projectId: PROJECT.id })).toEqual([worktree]);
+    expect(capturedRequests()[0]).toMatchObject({ method: "worktree.list", payload: { projectId: PROJECT.id } });
+    await client.listWorktrees();
+    expect(capturedRequests()[1]).toMatchObject({ method: "worktree.list", payload: {} });
+    installWireResponder({ "worktree.list": { worktrees: [{ ...worktree, isDirty: "false" }] } });
+    await expect(client.listWorktrees()).rejects.toThrow();
   });
 
   it("bootstraps AgentRecord and joins the separate detection response", async () => {
@@ -379,3 +396,73 @@ function requestFromArgs(value: unknown): RequestEnvelope<unknown> {
   }
   return value.request as RequestEnvelope<unknown>;
 }
+
+// Knowledge uses the same versioned request transport as all domain methods.
+describe("knowledge IPC transport", () => {
+  it("keeps revisions and scope and surfaces conflicts without issuing session writes", async () => {
+    const entry = {
+      id: "0198f000-0000-7000-8000-000000000010", kind: "prompt", projectId: null,
+      title: "Review", body: "Review the selected changes", revision: 1,
+      createdAtMs: 100, updatedAtMs: 100,
+    };
+    transport.invoke.mockReset();
+    installWireResponder({
+      "knowledge.list": { entries: [entry], nextCursor: null },
+      "knowledge.save": entry,
+      "knowledge.delete": {},
+    });
+    const client = createTauriIpcClient();
+    expect(await client.listKnowledge({ projectId: null, query: "review" })).toEqual({ entries: [entry], nextCursor: null });
+    const input = { kind: "prompt" as const, projectId: null, title: entry.title, body: entry.body };
+    expect(await client.saveKnowledge(input)).toEqual(entry);
+    await client.deleteKnowledge({ id: entry.id, expectedRevision: 1 });
+    expect(capturedRequests().map((request) => request.method)).toEqual(["knowledge.list", "knowledge.save", "knowledge.delete"]);
+    expect(capturedRequests()[1].payload).toEqual(input);
+    expect(capturedRequests()[2].payload).toEqual({ id: entry.id, expectedRevision: 1 });
+
+    transport.invoke.mockImplementation(async (_command, { request }) => ({
+      kind: "response", version: 1, requestId: request.requestId, status: "error",
+      error: { code: "knowledge_conflict", message: "This entry changed. Reload or save a copy." },
+    }));
+    await expect(client.saveKnowledge({ ...input, id: entry.id, expectedRevision: 1 })).rejects.toMatchObject({ code: "knowledge_conflict" });
+  });
+});
+
+describe("discovery IPC transport", () => {
+  beforeEach(() => {
+    transport.invoke.mockReset();
+    transport.openPath.mockReset();
+  });
+
+  it("sends opaque scan/source capabilities through the generic daemon bridge", async () => {
+    installWireResponder({ "knowledge.discover": discoveryFixture.scan, "knowledge.read": discoveryFixture.read });
+    const client = createTauriIpcClient();
+    expect(await client.discoverKnowledge({ projectId: PROJECT.id })).toEqual(discoveryFixture.scan);
+    const selection = { scanId: discoveryFixture.scan.scanId, entryId: discoveryFixture.read.entry.entryId };
+    expect(await client.readKnowledge(selection)).toEqual(discoveryFixture.read);
+    expect(capturedRequests().map((request) => ({ method: request.method, payload: request.payload }))).toEqual([
+      { method: "knowledge.discover", payload: { projectId: PROJECT.id } },
+      { method: "knowledge.read", payload: selection },
+    ]);
+    expect(transport.openPath).not.toHaveBeenCalled();
+  });
+
+  it("rejects content returned for a different source capability", async () => {
+    installWireResponder({ "knowledge.read": discoveryFixture.read });
+    await expect(createTauriIpcClient().readKnowledge({
+      scanId: discoveryFixture.scan.scanId,
+      entryId: "0198b6e0-0002-7000-8000-000000000002",
+    })).rejects.toThrow("Discovery read returned another source capability");
+  });
+
+  it("preserves scan expiry errors for explicit rescan recovery", async () => {
+    transport.invoke.mockImplementation(async (_command, { request }) => ({
+      kind: "response", version: 1, requestId: request.requestId, status: "error",
+      error: { code: "knowledge_scan_expired", message: "Rescan sources before reading this item." },
+    }));
+    await expect(createTauriIpcClient().readKnowledge({
+      scanId: discoveryFixture.scan.scanId, entryId: discoveryFixture.read.entry.entryId,
+    })).rejects.toMatchObject({ code: "knowledge_scan_expired" });
+    expect(capturedRequests()).toHaveLength(1);
+  });
+});

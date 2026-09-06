@@ -20,6 +20,7 @@ export function AppShell() {
     readCanvasSidebarCollapsed,
   );
   const [sessionFocusRevision, setSessionFocusRevision] = useState(0);
+  const [knowledgeOpenRevision, setKnowledgeOpenRevision] = useState(0);
   const closeNavigationOnDesktop = useCallback(
     () => setNavigationOpen(false),
     [],
@@ -397,6 +398,16 @@ export function AppShell() {
         },
       },
       {
+        id: "knowledge.open",
+        label: "Open prompts and context",
+        description: "Browse saved content and insert a snapshot into a terminal draft.",
+        keywords: ["library", "knowledge", "templates", "XIRP"],
+        onSelect: () => {
+          workspace.setView("canvas");
+          setKnowledgeOpenRevision((revision) => revision + 1);
+        },
+      },
+      {
         id: "view.canvas",
         label: "Open Canvas",
         description: "Arrange terminals and notes in the spatial workspace.",
@@ -480,10 +491,21 @@ export function AppShell() {
       }`}
     >
       <a className="skip-link" href="#workspace">Skip to workspace</a>
-      {workspace.connection.status === "disconnected" && workspace.snapshot ? (
-        <div className="connection-banner" role="alert">
-          <span><strong>Daemon disconnected.</strong> Existing metadata may be stale.</span>
-          <button className="button button--secondary" type="button" onClick={workspace.retry}>Reconnect</button>
+      {workspace.connection.status === "disconnected" ? (
+        <div
+          className="connection-banner"
+          role={workspace.snapshot ? "alert" : "region"}
+          aria-label={workspace.snapshot ? undefined : "Daemon disconnected"}
+        >
+          <span>
+            <strong>Daemon disconnected.</strong>{" "}
+            {workspace.snapshot
+              ? "Existing metadata may be stale."
+              : "Notes and terminal drafts are available offline."}
+          </span>
+          <button className="button button--secondary" type="button" onClick={workspace.retry}>
+            {workspace.snapshot ? "Reconnect" : "Retry Connection"}
+          </button>
         </div>
       ) : null}
       {workspace.operationError ? (
@@ -508,6 +530,7 @@ export function AppShell() {
           ref={navigationRef}
           className="navigation-pane"
           data-open={navigationOpen ? "true" : "false"}
+          data-browser-obstruction="true"
           role={isCompactNavigation ? "dialog" : undefined}
           aria-label={isCompactNavigation ? "Workspace navigation" : undefined}
           aria-modal={isCompactNavigation && navigationOpen ? true : undefined}
@@ -551,8 +574,8 @@ export function AppShell() {
             }}
           />
         </div>
-        {navigationOpen ? <button className="navigation-backdrop" type="button" aria-label="Dismiss navigation" onClick={() => setNavigationOpen(false)} /> : null}
-        <div className="canvas-session-actions" role="toolbar" aria-label="Workspace actions">
+        {navigationOpen ? <button className="navigation-backdrop" data-browser-obstruction="true" type="button" aria-label="Dismiss navigation" onClick={() => setNavigationOpen(false)} /> : null}
+        <div className="canvas-session-actions" data-browser-obstruction="true" role="toolbar" aria-label="Workspace actions">
           <button
             ref={navigationTriggerRef}
             className="canvas-tool canvas-navigation-trigger"
@@ -626,6 +649,9 @@ export function AppShell() {
           worktrees={workspace.worktrees}
           selectedSessionId={workspace.selectedSessionId ?? undefined}
           sessionFocusRevision={sessionFocusRevision}
+          knowledgeOpenRevision={knowledgeOpenRevision}
+          knowledgeClient={workspace.knowledgeClient}
+          knowledgeConnectionKey={`${workspace.connection.status}:${workspace.hello?.instanceId ?? "none"}`}
           onRetry={workspace.retry}
           onOpenCanvas={() => workspace.setView("canvas")}
           onSelectSession={(sessionId) => workspace.selectSession(sessionId)}

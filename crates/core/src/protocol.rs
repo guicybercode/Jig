@@ -278,6 +278,25 @@ mod tests {
         assert_eq!(catalog["protocolVersion"], PROTOCOL_V1);
         assert_eq!(catalog["applicationVersion"], APPLICATION_VERSION);
         assert_eq!(APPLICATION_VERSION, env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            catalog["methods"],
+            serde_json::json!(crate::wire::method::ALL)
+        );
+        assert_eq!(
+            catalog["events"],
+            serde_json::json!(crate::wire::event_name::ALL)
+        );
+    }
+
+    #[test]
+    fn typescript_method_mirror_matches_the_rust_catalog() {
+        let mirror = include_str!("../../../apps/desktop/src/ipc/methods.ts");
+        let (_, array) = mirror.split_once("= ").expect("method array assignment");
+        let (array, _) = array
+            .split_once(" as const;")
+            .expect("readonly method array");
+        let methods: Vec<String> = serde_json::from_str(array).expect("JSON method literals");
+        assert_eq!(methods, crate::wire::method::ALL);
     }
 
     #[test]

@@ -1,11 +1,14 @@
+import type { SessionIsolation } from "../../../ipc/types";
+
 export const CANVAS_STORAGE_KEY = "cli-master.canvas.v1";
-export const CANVAS_DOCUMENT_VERSION = 1;
+export const CANVAS_DOCUMENT_VERSION = 2;
 export const CANVAS_DOCUMENT_UPDATED_EVENT = "cli-master:canvas-document-updated";
 
-export type CanvasNodeKind = "terminal" | "note";
-export type TerminalPreset = "shell" | "codex" | "claude" | "opencode" | "custom";
+export type CanvasNodeKind = "terminal" | "note" | "browser";
+export type TerminalPreset = "shell" | "codex" | "claude" | "gemini" | "opencode" | "custom";
 
 export const DEFAULT_TERMINAL_SIZE = { width: 432, height: 256 } as const;
+export const DEFAULT_BROWSER_SIZE = { width: 640, height: 420 } as const;
 export const NOTE_SIZE = { width: 288, height: 288 } as const;
 
 export interface CanvasPoint {
@@ -24,6 +27,12 @@ interface CanvasNodeBase extends CanvasPoint {
 export interface TerminalCanvasNode extends CanvasNodeBase {
   readonly kind: "terminal";
   readonly sessionId?: string;
+  /** Reference the persisted agent definition without copying its environment. */
+  readonly agentId?: string;
+  /** User-authored composer text, never PTY output or an auto-send instruction. */
+  readonly promptDraft?: string;
+  readonly promptDraftRevision?: number;
+  readonly isolation?: SessionIsolation;
   readonly preset: TerminalPreset;
   readonly executable?: string;
   readonly workingDirectory?: string;
@@ -36,11 +45,19 @@ export interface NoteCanvasNode extends CanvasNodeBase {
   readonly text: string;
 }
 
-export type CanvasNode = TerminalCanvasNode | NoteCanvasNode;
+export interface BrowserCanvasNode extends CanvasNodeBase {
+  readonly kind: "browser";
+  readonly url: string;
+  readonly width: number;
+  readonly height: number;
+}
+
+export type CanvasNode = TerminalCanvasNode | NoteCanvasNode | BrowserCanvasNode;
 
 export interface CanvasTerminalConfiguration {
   readonly title: string;
   readonly preset: TerminalPreset;
+  readonly isolation?: SessionIsolation;
   readonly executable?: string;
   readonly workingDirectory?: string;
 }
@@ -52,7 +69,7 @@ export interface CanvasConnection {
 }
 
 export interface CanvasDocument {
-  readonly version: 1;
+  readonly version: 2;
   readonly nodes: readonly CanvasNode[];
   readonly connections: readonly CanvasConnection[];
   readonly zoom: number;
@@ -63,6 +80,7 @@ export interface CanvasDocument {
 export interface CanvasState extends CanvasDocument {
   readonly hiddenSessionIds: readonly string[];
   readonly selectedNodeId: string | null;
+  readonly selectedNodeIds: readonly string[];
   readonly connectionSourceId: string | null;
 }
 
@@ -71,6 +89,7 @@ export interface CanvasSessionReference {
   readonly projectId: string;
   readonly name: string;
   readonly cwd: string;
+  readonly agentId?: string;
 }
 
 export type CanvasAction =
@@ -92,12 +111,23 @@ export type CanvasAction =
       readonly text: string;
     }
   | {
+      readonly type: "terminal/draft";
+      readonly nodeId: string;
+      readonly text: string;
+    }
+  | {
+      readonly type: "terminal/draft_sent";
+      readonly nodeId: string;
+      readonly text: string;
+      readonly revision: number;
+    }
+  | {
       readonly type: "terminal/configure";
       readonly nodeId: string;
       readonly configuration: CanvasTerminalConfiguration;
     }
   | {
-      readonly type: "terminal/resize";
+      readonly type: "node/resize" | "terminal/resize";
       readonly nodeId: string;
       readonly size: { readonly width: number; readonly height: number };
     }
@@ -116,8 +146,17 @@ export type CanvasAction =
       readonly type: "session/reveal";
       readonly node: TerminalCanvasNode;
     }
+  | {
+      readonly type: "browser/navigate";
+      readonly nodeId: string;
+      readonly url: string;
+    }
   | { readonly type: "node/delete"; readonly nodeId: string }
-  | { readonly type: "node/select"; readonly nodeId: string | null }
+  | { readonly type: "node/select"; readonly nodeId: string | null; readonly additive?: boolean }
+  | { readonly type: "nodes/select"; readonly nodeIds: readonly string[] }
+  | { readonly type: "nodes/move"; readonly nodeIds: readonly string[]; readonly delta: CanvasPoint }
+  | { readonly type: "nodes/delete"; readonly nodeIds: readonly string[] }
+  | { readonly type: "nodes/duplicate"; readonly nodes: readonly CanvasNode[]; readonly connections: readonly CanvasConnection[] }
   | { readonly type: "connection/start"; readonly nodeId: string }
   | { readonly type: "connection/complete"; readonly targetNodeId: string }
   | { readonly type: "connection/cancel" }
@@ -134,8 +173,38 @@ const MIN_TERMINAL_WIDTH = 320;
 const MAX_TERMINAL_WIDTH = 960;
 const MIN_TERMINAL_HEIGHT = 192;
 const MAX_TERMINAL_HEIGHT = 720;
+const MIN_BROWSER_WIDTH = 420;
+const MAX_BROWSER_WIDTH = 1_280;
+const MIN_BROWSER_HEIGHT = 320;
+const MAX_BROWSER_HEIGHT = 900;
 const MAX_EXECUTABLE_LENGTH = 256;
 const MAX_WORKING_DIRECTORY_LENGTH = 1_024;
+const MAX_BROWSER_URL_LENGTH = 2_048;
+const SENSITIVE_BROWSER_QUERY_KEYS = new Set([
+  "accesstoken",
+  "apikey",
+  "authorization",
+  "auth",
+  "clientsecret",
+  "code",
+  "credential",
+  "credentials",
+  "idtoken",
+  "key",
+  "password",
+  "passwd",
+  "policy",
+  "pwd",
+  "refreshtoken",
+  "samlresponse",
+  "secret",
+  "session",
+  "sessionid",
+  "sig",
+  "signature",
+  "state",
+  "token",
+]);
 
 /** Creates the first-launch composition shown before project sessions exist. */
 export function createInitialCanvasDocument(): CanvasDocument {
@@ -178,6 +247,7 @@ export function createInitialCanvasState(
     ...document,
     hiddenSessionIds: document.hiddenSessionIds ?? [],
     selectedNodeId: null,
+    selectedNodeIds: [],
     connectionSourceId: null,
   };
 }
@@ -197,7 +267,32 @@ export function canvasReducer(
         ...state,
         nodes: [...state.nodes, normalizeNode(action.node)],
         selectedNodeId: action.node.id,
+        selectedNodeIds: [action.node.id],
       };
+    case "nodes/select":
+      return selectNodes(state, action.nodeIds);
+    case "nodes/move":
+      return moveNodes(state, action.nodeIds, action.delta);
+    case "nodes/delete":
+      return deleteNodes(state, action.nodeIds);
+    case "nodes/duplicate": {
+      const nodes = action.nodes.map(normalizeNode);
+      if (nodes.length === 0 || new Set(nodes.map((node) => node.id)).size !== nodes.length ||
+          nodes.some((node) => nodeExists(state.nodes, node.id))) {
+        return state;
+      }
+      const nodeIds = new Set(nodes.map((node) => node.id));
+      const connections = action.connections.flatMap((connection) => {
+        const parsed = parseConnection(connection, nodeIds);
+        return parsed ? [parsed] : [];
+      });
+      return selectNodes({
+        ...state,
+        nodes: [...state.nodes, ...nodes],
+        connections: [...state.connections, ...connections],
+        connectionSourceId: null,
+      }, nodes.map((node) => node.id));
+    }
     case "node/move":
       return updateNode(state, action.nodeId, (node) => ({
         ...node,
@@ -215,31 +310,29 @@ export function canvasReducer(
           ? { ...node, text: action.text.slice(0, MAX_NOTE_LENGTH) }
           : node,
       );
+    case "terminal/draft":
+      return updateNode(state, action.nodeId, (node) =>
+        node.kind === "terminal" ? updatePromptDraft(node, action.text) : node,
+      );
+    case "terminal/draft_sent":
+      return updateNode(state, action.nodeId, (node) =>
+        node.kind === "terminal" && (node.promptDraft ?? "") === action.text
+          && (node.promptDraftRevision ?? 0) === action.revision
+          ? updatePromptDraft(node, "") : node,
+      );
     case "terminal/configure":
       return updateNode(state, action.nodeId, (node) =>
         node.kind === "terminal"
           ? configureTerminalNode(node, action.configuration)
           : node,
       );
+    case "node/resize":
+      return updateNode(state, action.nodeId, (node) =>
+        resizeCanvasNode(node, action.size),
+      );
     case "terminal/resize":
       return updateNode(state, action.nodeId, (node) =>
-        node.kind === "terminal"
-          ? {
-              ...node,
-              width: normalizeNumber(
-                action.size.width,
-                node.width,
-                MIN_TERMINAL_WIDTH,
-                MAX_TERMINAL_WIDTH,
-              ),
-              height: normalizeNumber(
-                action.size.height,
-                node.height,
-                MIN_TERMINAL_HEIGHT,
-                MAX_TERMINAL_HEIGHT,
-              ),
-            }
-          : node,
+        node.kind === "terminal" ? resizeCanvasNode(node, action.size) : node,
       );
     case "terminal/attach":
       return updateNode(state, action.nodeId, (node) =>
@@ -259,45 +352,30 @@ export function canvasReducer(
       );
     case "session/reveal":
       return revealSessionNode(state, action.node);
-    case "node/delete": {
-      const deletedNode = state.nodes.find((node) => node.id === action.nodeId);
-      const hiddenSessionIds =
-        deletedNode?.kind === "terminal" && deletedNode.sessionId
-          ? addUnique(state.hiddenSessionIds, deletedNode.sessionId)
-          : state.hiddenSessionIds;
-      return {
-        ...state,
-        nodes: state.nodes.filter((node) => node.id !== action.nodeId),
-        connections: state.connections.filter(
-          (connection) =>
-            connection.sourceNodeId !== action.nodeId &&
-            connection.targetNodeId !== action.nodeId,
-        ),
-        selectedNodeId:
-          state.selectedNodeId === action.nodeId
-            ? null
-            : state.selectedNodeId,
-        connectionSourceId:
-          state.connectionSourceId === action.nodeId
-            ? null
-            : state.connectionSourceId,
-        hiddenSessionIds,
-      };
-    }
+    case "browser/navigate":
+      return updateNode(state, action.nodeId, (node) =>
+        node.kind === "browser"
+          ? navigateBrowserNode(node, action.url)
+          : node,
+      );
+    case "node/delete":
+      return deleteNodes(state, [action.nodeId]);
     case "node/select":
       if (action.nodeId === null) {
-        return state.selectedNodeId === null
-          ? state
-          : { ...state, selectedNodeId: null };
+        return selectNodes(state, []);
       }
-      return nodeExists(state.nodes, action.nodeId)
-        ? { ...state, selectedNodeId: action.nodeId }
-        : state;
+      if (!nodeExists(state.nodes, action.nodeId)) return state;
+      return selectNodes(state, action.additive
+        ? state.selectedNodeIds.includes(action.nodeId)
+          ? state.selectedNodeIds.filter((id) => id !== action.nodeId)
+          : [...state.selectedNodeIds, action.nodeId]
+        : [action.nodeId]);
     case "connection/start":
       return nodeExists(state.nodes, action.nodeId)
         ? {
             ...state,
             selectedNodeId: action.nodeId,
+            selectedNodeIds: [action.nodeId],
             connectionSourceId: action.nodeId,
           }
         : state;
@@ -320,10 +398,12 @@ export function canvasReducer(
   }
 }
 
-export function toCanvasDocument(state: CanvasState): CanvasDocument {
+export function toCanvasDocument(state: CanvasDocument): CanvasDocument {
   return {
     version: CANVAS_DOCUMENT_VERSION,
-    nodes: state.nodes,
+    nodes: state.nodes.map((node) => node.kind === "browser"
+      ? { ...node, url: normalizeBrowserUrl(node.url) }
+      : node),
     connections: state.connections,
     zoom: state.zoom,
     hiddenSessionIds: state.hiddenSessionIds,
@@ -345,6 +425,31 @@ export function serializeCanvasDocument(state: CanvasState): string {
   return JSON.stringify(toCanvasDocument(state));
 }
 
+/** Copies graph metadata, never a running process or its terminal stream. */
+export function duplicateCanvasSelection(
+  state: CanvasState,
+  nodeIds: readonly string[],
+): CanvasAction {
+  const selectedIds = new Set(nodeIds);
+  const originals = state.nodes.filter((node) => selectedIds.has(node.id));
+  const idMap = new Map(originals.map((node) => [node.id, createId(node.kind)]));
+  const delta = boundedMoveDelta(originals, { x: 32, y: 32 });
+  const nodes = originals.map((node): CanvasNode => ({
+    ...node,
+    ...(node.kind === "terminal" ? { sessionId: undefined } : {}),
+    id: idMap.get(node.id)!,
+    title: `${node.title.slice(0, MAX_TITLE_LENGTH - 5)} copy`,
+    x: node.x + delta.x,
+    y: node.y + delta.y,
+  }));
+  const connections = state.connections.flatMap((connection) => {
+    const source = idMap.get(connection.sourceNodeId);
+    const target = idMap.get(connection.targetNodeId);
+    return source && target ? [createConnection(source, target)] : [];
+  });
+  return { type: "nodes/duplicate", nodes, connections };
+}
+
 export function createCanvasNode(
   kind: CanvasNodeKind,
   position: CanvasPoint,
@@ -363,7 +468,26 @@ export function createCanvasNode(
       ...normalizedPosition,
     };
   }
+  if (kind === "browser") {
+    return createBrowserCanvasNode(normalizedPosition, "", id);
+  }
   return createTerminalCanvasNode(normalizedPosition, {}, id);
+}
+
+export function createBrowserCanvasNode(
+  position: CanvasPoint,
+  url = "",
+  id = createId("browser"),
+): BrowserCanvasNode {
+  return {
+    id,
+    kind: "browser",
+    title: "Browser",
+    url: normalizeBrowserUrl(url),
+    x: clamp(position.x, MIN_POSITION, MAX_POSITION),
+    y: clamp(position.y, MIN_POSITION, MAX_POSITION),
+    ...DEFAULT_BROWSER_SIZE,
+  };
 }
 
 export function createTerminalCanvasNode(
@@ -381,6 +505,7 @@ export function createTerminalCanvasNode(
     kind: "terminal",
     title: normalizeTitle(configuration.title, titleForPreset(preset)),
     preset,
+    isolation: configuration.isolation === "new_worktree" ? "new_worktree" : undefined,
     executable,
     workingDirectory: normalizeOptionalText(
       configuration.workingDirectory,
@@ -408,6 +533,7 @@ export function createSessionTerminalCanvasNode(
       `terminal-session-${session.id}`,
     ),
     sessionId: session.id,
+    agentId: session.agentId,
     projectId: session.projectId,
   };
 }
@@ -415,9 +541,74 @@ export function createSessionTerminalCanvasNode(
 export function getCanvasNodeSize(
   node: CanvasNode,
 ): { readonly width: number; readonly height: number } {
-  return node.kind === "terminal"
-    ? { width: node.width, height: node.height }
-    : NOTE_SIZE;
+  return node.kind === "note"
+    ? NOTE_SIZE
+    : { width: node.width, height: node.height };
+}
+
+/** Resolves a user-entered address for transient HTTP(S) navigation. */
+export function normalizeBrowserNavigationUrl(value: unknown): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const trimmed = value.trim();
+  if (
+    !trimmed ||
+    trimmed.length > MAX_BROWSER_URL_LENGTH ||
+    /[\u0000-\u001f\u007f]/.test(trimmed)
+  ) {
+    return "";
+  }
+  const candidate = /^[a-z][a-z\d+.-]*:/i.test(trimmed)
+    ? trimmed
+    : `https://${trimmed}`;
+  try {
+    const url = new URL(candidate);
+    if (
+      (url.protocol !== "https:" && url.protocol !== "http:") ||
+      !url.hostname ||
+      url.username ||
+      url.password
+    ) {
+      return "";
+    }
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+/** Redacts a valid browser address before canvas persistence or handoff. */
+export function normalizeBrowserUrl(value: unknown): string {
+  const navigationUrl = normalizeBrowserNavigationUrl(value);
+  if (!navigationUrl) {
+    return "";
+  }
+  const url = new URL(navigationUrl);
+  url.hash = "";
+  for (const key of [...url.searchParams.keys()]) {
+    if (isSensitiveBrowserQueryKey(key)) {
+      url.searchParams.delete(key);
+    }
+  }
+  return url.toString();
+}
+
+function isSensitiveBrowserQueryKey(value: string): boolean {
+  const key = value.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return (
+    key.startsWith("xamz") ||
+    key.endsWith("token") ||
+    SENSITIVE_BROWSER_QUERY_KEYS.has(key)
+  );
+}
+
+function navigateBrowserNode(
+  node: BrowserCanvasNode,
+  value: unknown,
+): BrowserCanvasNode {
+  const url = normalizeBrowserUrl(value);
+  return url ? { ...node, url } : node;
 }
 
 function reconcileSessionNodes(
@@ -451,7 +642,8 @@ function reconcileSessionNodes(
     if (
       existingNode?.kind === "terminal" &&
       (existingNode.title !== sessionNode.title ||
-        existingNode.projectId !== sessionNode.projectId)
+        existingNode.projectId !== sessionNode.projectId ||
+        existingNode.agentId !== sessionNode.agentId)
     ) {
       nodes = nodes.map((node, index) =>
         index === existingIndex
@@ -459,6 +651,7 @@ function reconcileSessionNodes(
               ...existingNode,
               title: sessionNode.title,
               projectId: sessionNode.projectId,
+              agentId: sessionNode.agentId,
             }
           : node,
       );
@@ -496,6 +689,7 @@ function revealSessionNode(
       (sessionId) => sessionId !== sessionNode.sessionId,
     ),
     selectedNodeId: revealedNode.id,
+    selectedNodeIds: [revealedNode.id],
     connectionSourceId: null,
   };
 }
@@ -522,6 +716,7 @@ function completeConnection(
   return {
     ...state,
     selectedNodeId: targetNodeId,
+    selectedNodeIds: [targetNodeId],
     connectionSourceId: null,
     connections: duplicate
       ? state.connections
@@ -540,18 +735,73 @@ function createConnection(
   };
 }
 
+function selectNodes(state: CanvasState, nodeIds: readonly string[]): CanvasState {
+  const selectedNodeIds = [...new Set(nodeIds)].filter((id) => nodeExists(state.nodes, id));
+  if (stringArraysEqual(selectedNodeIds, state.selectedNodeIds)) return state;
+  return {
+    ...state,
+    selectedNodeIds,
+    selectedNodeId: selectedNodeIds[selectedNodeIds.length - 1] ?? null,
+  };
+}
+
+function boundedMoveDelta(nodes: readonly CanvasNode[], delta: CanvasPoint): CanvasPoint {
+  if (nodes.length === 0 || !Number.isFinite(delta.x) || !Number.isFinite(delta.y)) {
+    return { x: 0, y: 0 };
+  }
+  // Clamp the entire group once so cards keep their relative positions at edges.
+  return nodes.reduce((bounded, node) => ({
+    x: clamp(bounded.x, MIN_POSITION - node.x, MAX_POSITION - node.x),
+    y: clamp(bounded.y, MIN_POSITION - node.y, MAX_POSITION - node.y),
+  }), delta);
+}
+
+function moveNodes(state: CanvasState, nodeIds: readonly string[], delta: CanvasPoint): CanvasState {
+  const ids = new Set(nodeIds);
+  const bounded = boundedMoveDelta(state.nodes.filter((node) => ids.has(node.id)), delta);
+  if (bounded.x === 0 && bounded.y === 0) return state;
+  return {
+    ...state,
+    nodes: state.nodes.map((node) => ids.has(node.id)
+      ? { ...node, x: node.x + bounded.x, y: node.y + bounded.y }
+      : node),
+  };
+}
+
+function deleteNodes(state: CanvasState, nodeIds: readonly string[]): CanvasState {
+  const ids = new Set(nodeIds);
+  const deletedNodes = state.nodes.filter((node) => ids.has(node.id));
+  if (deletedNodes.length === 0) return state;
+  const selectedNodeIds = state.selectedNodeIds.filter((id) => !ids.has(id));
+  return {
+    ...state,
+    nodes: state.nodes.filter((node) => !ids.has(node.id)),
+    connections: state.connections.filter((connection) =>
+      !ids.has(connection.sourceNodeId) && !ids.has(connection.targetNodeId)),
+    selectedNodeIds,
+    selectedNodeId: selectedNodeIds[selectedNodeIds.length - 1] ?? null,
+    connectionSourceId: state.connectionSourceId && ids.has(state.connectionSourceId)
+      ? null : state.connectionSourceId,
+    hiddenSessionIds: [...new Set([
+      ...state.hiddenSessionIds,
+      ...deletedNodes.flatMap((node) => node.kind === "terminal" && node.sessionId ? [node.sessionId] : []),
+    ])],
+  };
+}
+
 function updateNode(
   state: CanvasState,
   nodeId: string,
   update: (node: CanvasNode) => CanvasNode,
 ): CanvasState {
-  if (!state.nodes.some((node) => node.id === nodeId)) {
-    return state;
-  }
+  const current = state.nodes.find((node) => node.id === nodeId);
+  if (!current) return state;
+  const updated = update(current);
+  if (updated === current) return state;
   return {
     ...state,
     nodes: state.nodes.map((node) =>
-      node.id === nodeId ? update(node) : node,
+      node === current ? updated : node,
     ),
   };
 }
@@ -564,7 +814,10 @@ function nodeExists(
 }
 
 function normalizeDocument(value: unknown): CanvasDocument {
-  if (!isRecord(value) || value.version !== CANVAS_DOCUMENT_VERSION) {
+  if (
+    !isRecord(value) ||
+    (value.version !== 1 && value.version !== CANVAS_DOCUMENT_VERSION)
+  ) {
     return createInitialCanvasDocument();
   }
   const nodes = Array.isArray(value.nodes)
@@ -593,8 +846,9 @@ function parseNode(value: unknown): CanvasNode | null {
   if (
     !isRecord(value) ||
     typeof value.id !== "string" ||
-    value.kind !== "terminal" &&
-    value.kind !== "note"
+    (value.kind !== "terminal" &&
+      value.kind !== "note" &&
+      value.kind !== "browser")
   ) {
     return null;
   }
@@ -603,7 +857,14 @@ function parseNode(value: unknown): CanvasNode | null {
     kind: value.kind,
     projectId:
       typeof value.projectId === "string" ? value.projectId : undefined,
-    title: normalizeTitle(value.title, value.kind === "note" ? "Notes" : "Terminal"),
+    title: normalizeTitle(
+      value.title,
+      value.kind === "note"
+        ? "Notes"
+        : value.kind === "browser"
+          ? "Browser"
+          : "Terminal",
+    ),
     x: normalizeNumber(value.x, 0, MIN_POSITION, MAX_POSITION),
     y: normalizeNumber(value.y, 0, MIN_POSITION, MAX_POSITION),
   };
@@ -617,10 +878,30 @@ function parseNode(value: unknown): CanvasNode | null {
           : "",
     };
   }
+  if (value.kind === "browser") {
+    return {
+      ...base,
+      kind: "browser",
+      url: normalizeBrowserUrl(value.url),
+      width: normalizeNumber(
+        value.width,
+        DEFAULT_BROWSER_SIZE.width,
+        MIN_BROWSER_WIDTH,
+        MAX_BROWSER_WIDTH,
+      ),
+      height: normalizeNumber(
+        value.height,
+        DEFAULT_BROWSER_SIZE.height,
+        MIN_BROWSER_HEIGHT,
+        MAX_BROWSER_HEIGHT,
+      ),
+    };
+  }
   return {
     ...base,
     kind: "terminal",
     preset: normalizeTerminalPreset(value.preset),
+    isolation: value.isolation === "new_worktree" ? "new_worktree" : undefined,
     executable: normalizeOptionalText(
       typeof value.executable === "string"
         ? value.executable
@@ -645,6 +926,25 @@ function parseNode(value: unknown): CanvasNode | null {
     ),
     sessionId:
       typeof value.sessionId === "string" ? value.sessionId : undefined,
+    agentId:
+      typeof value.agentId === "string" ? value.agentId : undefined,
+    promptDraft: typeof value.promptDraft === "string" ? value.promptDraft : undefined,
+    promptDraftRevision: typeof value.promptDraft === "string"
+      ? normalizePromptDraftRevision(value.promptDraftRevision) : undefined,
+  };
+}
+
+function normalizePromptDraftRevision(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value)
+    && value >= 0 && value < Number.MAX_SAFE_INTEGER ? value : 0;
+}
+
+function updatePromptDraft(node: TerminalCanvasNode, text: string): TerminalCanvasNode {
+  if ((node.promptDraft ?? "") === text) return node;
+  return {
+    ...node,
+    promptDraft: text,
+    promptDraftRevision: normalizePromptDraftRevision(node.promptDraftRevision) + 1,
   };
 }
 
@@ -657,6 +957,7 @@ function configureTerminalNode(
     ...node,
     title: normalizeTitle(configuration.title, titleForPreset(preset)),
     preset,
+    isolation: configuration.isolation === "new_worktree" ? "new_worktree" : undefined,
     executable: normalizeOptionalText(
       configuration.executable ?? executableForPreset(preset),
       MAX_EXECUTABLE_LENGTH,
@@ -668,9 +969,48 @@ function configureTerminalNode(
   };
 }
 
+function resizeCanvasNode(
+  node: CanvasNode,
+  size: { readonly width: number; readonly height: number },
+): CanvasNode {
+  if (node.kind === "note") {
+    return node;
+  }
+  const limits =
+    node.kind === "browser"
+      ? {
+          minimumWidth: MIN_BROWSER_WIDTH,
+          maximumWidth: MAX_BROWSER_WIDTH,
+          minimumHeight: MIN_BROWSER_HEIGHT,
+          maximumHeight: MAX_BROWSER_HEIGHT,
+        }
+      : {
+          minimumWidth: MIN_TERMINAL_WIDTH,
+          maximumWidth: MAX_TERMINAL_WIDTH,
+          minimumHeight: MIN_TERMINAL_HEIGHT,
+          maximumHeight: MAX_TERMINAL_HEIGHT,
+        };
+  return {
+    ...node,
+    width: normalizeNumber(
+      size.width,
+      node.width,
+      limits.minimumWidth,
+      limits.maximumWidth,
+    ),
+    height: normalizeNumber(
+      size.height,
+      node.height,
+      limits.minimumHeight,
+      limits.maximumHeight,
+    ),
+  };
+}
+
 function normalizeTerminalPreset(value: unknown): TerminalPreset {
   return value === "codex" ||
     value === "claude" ||
+    value === "gemini" ||
     value === "opencode" ||
     value === "custom"
     ? value
@@ -683,6 +1023,8 @@ function executableForPreset(preset: TerminalPreset): string | undefined {
       return "codex";
     case "claude":
       return "claude";
+    case "gemini":
+      return "gemini";
     case "opencode":
       return "opencode";
     case "shell":
@@ -697,6 +1039,8 @@ function titleForPreset(preset: TerminalPreset): string {
       return "Codex";
     case "claude":
       return "Claude";
+    case "gemini":
+      return "Gemini";
     case "opencode":
       return "OpenCode";
     case "shell":
@@ -778,10 +1122,6 @@ function stringArraysEqual(
     left.length === right.length &&
     left.every((value, index) => value === right[index])
   );
-}
-
-function addUnique(values: readonly string[], value: string): readonly string[] {
-  return values.includes(value) ? values : [...values, value];
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {

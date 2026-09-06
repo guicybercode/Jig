@@ -1,0 +1,245 @@
+.canvas-prompt-composer {
+  position: absolute;
+  z-index: 12;
+  top: 5rem;
+  right: 1.25rem;
+  bottom: 5rem;
+  width: min(36rem, calc(100% - 2.5rem));
+  display: flex;
+  align-items: flex-end;
+  pointer-events: none;
+}
+
+.canvas-prompt-composer .prompt-composer {
+  max-height: 100%;
+  pointer-events: auto;
+}
+
+@media (max-width: 48rem) {
+  .canvas-prompt-composer {
+    top: 8rem;
+    right: 0.75rem;
+    bottom: 4.75rem;
+    width: calc(100% - 1.5rem);
+  }
+}
+
+.prompt-composer {
+  width: 100%;
+  min-width: 0;
+  overflow: auto;
+  max-height: min(38rem, 75dvh);
+  border: 1px solid var(--canvas-control-border);
+  border-radius: var(--radius-dialog);
+  padding: var(--space-3);
+  color: var(--canvas-text);
+  background: var(--canvas-card);
+  box-shadow: var(--shadow-dialog);
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+}
+
+.prompt-composer__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.prompt-composer__header > div,
+.prompt-composer form {
+  min-width: 0;
+}
+
+.prompt-composer__header h3,
+.prompt-composer__header p {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0;
+  font-size: inherit;
+  overflow-wrap: anywhere;
+}
+
+.prompt-composer__header p {
+  margin-top: var(--space-1);
+  color: var(--canvas-text-muted);
+  font-size: 0.75rem;
+}
+
+.prompt-composer .icon {
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+}
+
+.prompt-composer button {
+  min-height: 2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  border: 1px solid var(--canvas-control-border);
+  border-radius: var(--radius);
+  padding: var(--space-1) var(--space-2);
+  color: var(--canvas-text);
+  background: var(--canvas-card);
+  font: inherit;
+  cursor: pointer;
+}
+
+.prompt-composer button:hover:not(:disabled),
+.prompt-composer summary:hover {
+  background: var(--color-surface-hover);
+}
+
+.prompt-composer button:active:not(:disabled) {
+  background: var(--color-surface-active);
+}
+
+.prompt-composer button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.prompt-composer :is(button, summary, textarea):focus-visible {
+  outline: 3px solid var(--canvas-focus);
+  outline-offset: 2px;
+}
+
+.prompt-composer .prompt-composer__close {
+  width: 2rem;
+  flex-shrink: 0;
+  border-color: transparent;
+  padding: 0;
+}
+
+.prompt-composer__label {
+  display: block;
+  margin-bottom: var(--space-2);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.prompt-composer__editor {
+  display: block;
+  width: 100%;
+  min-height: 7.5rem;
+  border: 1px solid var(--canvas-control-border);
+  border-radius: var(--radius);
+  padding: var(--space-2);
+  color: var(--canvas-text);
+  background: var(--canvas-card);
+  font: inherit;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.prompt-composer__editor::placeholder {
+  color: var(--canvas-text-muted);
+}
+
+.prompt-composer__context {
+  margin-top: var(--space-2);
+  border: 1px solid var(--canvas-border);
+  border-radius: var(--radius);
+}
+
+.prompt-composer__context summary {
+  min-height: 2rem;
+  padding: var(--space-2);
+  cursor: pointer;
+}
+
+.prompt-composer__context summary .icon {
+  display: inline;
+  vertical-align: text-bottom;
+}
+
+.prompt-composer__context p,
+.prompt-composer__context ul {
+  margin: 0;
+  padding: 0 var(--space-2) var(--space-2);
+}
+
+.prompt-composer__context p {
+  color: var(--canvas-text-muted);
+  font-size: 0.75rem;
+}
+
+.prompt-composer__context ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  list-style: none;
+}
+
+.prompt-composer__context li,
+.prompt-composer__context button {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.prompt-composer__context button span {
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.prompt-composer__disabled,
+.prompt-composer__feedback p {
+  margin: var(--space-2) 0 0;
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.prompt-composer__feedback [role="alert"] {
+  color: var(--color-danger);
+}
+
+.prompt-composer__feedback [role="alert"] button {
+  margin-left: var(--space-2);
+}
+
+.prompt-composer__feedback [role="status"] {
+  color: var(--canvas-text-muted);
+}
+
+.prompt-composer__footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.prompt-composer__footer p {
+  flex: 1 1 15rem;
+  margin: 0;
+  color: var(--canvas-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.prompt-composer__footer p span {
+  display: block;
+  margin-top: var(--space-1);
+}
+
+.prompt-composer kbd {
+  font: inherit;
+}
+
+.prompt-composer .prompt-composer__send {
+  min-height: 2.25rem;
+  border-color: var(--canvas-accent-fill);
+  color: var(--color-on-accent);
+  background: var(--canvas-accent-fill);
+}
+
+.prompt-composer .prompt-composer__send:is(:hover, :active):not(:disabled) {
+  border-color: var(--canvas-accent-ink);
+  background: var(--canvas-accent-ink);
+}

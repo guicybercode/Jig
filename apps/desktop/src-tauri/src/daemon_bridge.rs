@@ -8,11 +8,13 @@ use std::{collections::HashMap, sync::Arc};
 use cli_master_daemon::{DaemonConfig, MAX_FRAME_LENGTH};
 use serde::Serialize;
 use serde_json::{Value, json};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, EventTarget, State, Webview};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::{Mutex, oneshot};
 use tokio::time::{Duration, sleep};
+
+use crate::browser::is_main_webview;
 
 const STARTUP_ATTEMPTS: usize = 30;
 const STARTUP_RETRY_DELAY: Duration = Duration::from_millis(100);
@@ -38,8 +40,10 @@ impl Default for DaemonBridge {
 #[tauri::command]
 pub(crate) async fn daemon_request(
     request: Value,
+    caller: Webview,
     bridge: State<'_, DaemonBridge>,
 ) -> Result<Value, BridgeError> {
+    require_main_caller(&caller)?;
     bridge.request(&request).await
 }
 
@@ -47,9 +51,11 @@ pub(crate) async fn daemon_request(
 #[tauri::command]
 pub(crate) async fn daemon_terminal_subscribe(
     request: Value,
+    caller: Webview,
     app: AppHandle,
     bridge: State<'_, DaemonBridge>,
 ) -> Result<Value, BridgeError> {
+    require_main_caller(&caller)?;
     bridge.subscribe_terminal(&request, app).await
 }
 
@@ -57,8 +63,10 @@ pub(crate) async fn daemon_terminal_subscribe(
 #[tauri::command]
 pub(crate) async fn daemon_terminal_unsubscribe(
     session_id: String,
+    caller: Webview,
     bridge: State<'_, DaemonBridge>,
 ) -> Result<(), BridgeError> {
+    require_main_caller(&caller)?;
     bridge.unsubscribe_terminal(&session_id).await;
     Ok(())
 }
@@ -169,7 +177,10 @@ impl DaemonBridge {
                 let Ok(event) = next else {
                     break;
                 };
-                if app.emit("daemon:event", event).is_err() {
+                if app
+                    .emit_to(EventTarget::webview("main"), "daemon:event", event)
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -181,6 +192,14 @@ impl DaemonBridge {
         if let Some(cancel) = self.terminal_relays.lock().await.remove(session_id) {
             let _ = cancel.send(());
         }
+    }
+}
+
+fn require_main_caller(caller: &Webview) -> Result<(), BridgeError> {
+    if is_main_webview(caller) {
+        Ok(())
+    } else {
+        Err(BridgeError::forbidden())
     }
 }
 
@@ -346,6 +365,15 @@ pub(crate) struct BridgeError {
 }
 
 impl BridgeError {
+    fn forbidden() -> Self {
+        Self {
+            code: "desktop_bridge_forbidden",
+            message: "Only the main application webview may access the daemon bridge.",
+            action: "Return to the main Jig interface and retry the operation.",
+            details: json!({}),
+        }
+    }
+
     fn startup(reason: impl fmt::Display) -> Self {
         Self {
             code: "daemon_start_failed",

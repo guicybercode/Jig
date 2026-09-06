@@ -464,6 +464,15 @@ pub struct GitDiffRequest {
     pub path: Option<GitRelativePath>,
 }
 
+/// Request to list managed worktrees, optionally for one project.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WorktreeListRequest {
+    /// Project filter; omitted to return all managed worktrees.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<ProjectId>,
+}
+
 /// Request to prepare safe managed-worktree removal.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]

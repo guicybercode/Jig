@@ -1,5 +1,6 @@
 import { useId, useRef, useState } from "react";
 import type { FormEvent } from "react";
+import type { SessionIsolation } from "../../../ipc/types";
 
 import { Dialog } from "../../components/Dialog";
 import { Icon } from "../../components/Icon";
@@ -25,6 +26,7 @@ const TERMINAL_PRESETS: readonly TerminalPresetOption[] = [
   { value: "shell", label: "Shell", shortLabel: ">_" },
   { value: "codex", label: "Codex", shortLabel: "Cx", executable: "codex" },
   { value: "claude", label: "Claude", shortLabel: "Cl", executable: "claude" },
+  { value: "gemini", label: "Gemini", shortLabel: "Gm", executable: "gemini" },
   {
     value: "opencode",
     label: "OpenCode",
@@ -44,8 +46,10 @@ export function NewCanvasTerminalDialog({
   const nameId = useId();
   const commandId = useId();
   const directoryId = useId();
+  const isolationId = useId();
   const nameRef = useRef<HTMLInputElement>(null);
   const [preset, setPreset] = useState<TerminalPreset>("shell");
+  const [isolation, setIsolation] = useState<SessionIsolation>("current");
   const [name, setName] = useState("");
   const [executable, setExecutable] = useState("");
   const [workingDirectory, setWorkingDirectory] = useState(
@@ -74,6 +78,7 @@ export function NewCanvasTerminalDialog({
     onCreate({
       title: name.trim() || selectedPreset.label,
       preset,
+      isolation,
       executable: executable.trim() || undefined,
       workingDirectory: workingDirectory.trim() || undefined,
     });
@@ -170,7 +175,22 @@ export function NewCanvasTerminalDialog({
             placeholder="~"
             onChange={(event) => setWorkingDirectory(event.currentTarget.value)}
           />
+          <label htmlFor={isolationId}>Working copy</label>
+          <select
+            id={isolationId}
+            value={isolation}
+            aria-describedby={`${isolationId}-help`}
+            onChange={(event) => setIsolation(event.currentTarget.value === "new_worktree" ? "new_worktree" : "current")}
+          >
+            <option value="current">Use project working copy</option>
+            <option value="new_worktree">Create an isolated Git worktree</option>
+          </select>
         </div>
+        <p id={`${isolationId}-help`} className="canvas-terminal-form__note">
+          {isolation === "new_worktree"
+            ? "Creates a new branch and checkout before starting. Requires a Git repository with a commit; the directory above is resolved relative to the project inside the new checkout."
+            : "Uses the existing project directory. Changes share this working copy with other sessions."}
+        </p>
 
         {error ? (
           <p id={`${commandId}-error`} className="field__error" role="alert">

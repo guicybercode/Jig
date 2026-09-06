@@ -8,6 +8,7 @@
 mod agents;
 mod connection;
 mod error;
+pub mod knowledge;
 mod migrate;
 mod models;
 mod paths;
@@ -31,11 +32,12 @@ use crate::connection::{StorageLocation, maybe_backup_before_migrate};
 
 pub use connection::Storage;
 pub use error::StorageError;
+pub use knowledge::KnowledgeStorageError;
 pub use models::{SessionRuntimeUpdate, StoredAgent, StoredSession, StoredWorktree, WorktreeState};
 pub use recovery::{ReconciliationEvent, ReconciliationReason, RecoveryContext};
 
 /// The newest schema version understood by this crate.
-pub const LATEST_SCHEMA_VERSION: u32 = 3;
+pub const LATEST_SCHEMA_VERSION: u32 = 4;
 
 impl Storage {
     /// Opens and configures a file-backed `SQLite` database.

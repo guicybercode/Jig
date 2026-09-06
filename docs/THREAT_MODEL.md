@@ -13,8 +13,9 @@ and ambiguous destructive operations on Linux and macOS.
 |---|---|
 | Local user | Trusted to select repositories and executables |
 | Agent CLI | Allowed to run; its arguments, environment, and PTY output are sensitive |
-| Desktop webview | Untrusted request source; it uses typed IPC only |
-| Tauri process | Generic transport bridge; it does not own domain state or sessions |
+| Main desktop webview | Trusted application UI, but still an untrusted request source to Rust; it uses typed IPC only |
+| Remote browser webview | Fully untrusted web content; it receives no Tauri capability and cannot own application state |
+| Tauri process | Generic daemon transport plus one ephemeral native browser surface; it does not own domain state or sessions |
 | Daemon | Owns durable coordination, event sequencing, and live session composition |
 | `crates/git` | Owns Git argv, canonical path checks, and clean-only worktree removal |
 | Other OS users | Untrusted; the private socket and directories must exclude them |
@@ -27,9 +28,12 @@ and ambiguous destructive operations on Linux and macOS.
 - session process groups and crash recovery
 - structured errors, logs, diagnostics, and clipboard export
 - SQLite metadata and bounded event replay
+- untrusted HTTP(S) content loaded in the native canvas browser
+- browser URL persistence, native geometry, permissions, and explicit handoff
 
-Remote vendor traffic, sandboxing an intentionally selected CLI, Windows, and
-defending against an already-compromised same-user process are out of scope.
+Security of remote sites and their traffic, sandboxing an intentionally
+selected CLI, Windows, and defending against an already-compromised same-user
+process are out of scope. Jig does not proxy browser or coding-agent traffic.
 
 ## Threats and mitigations
 
@@ -48,6 +52,14 @@ defending against an already-compromised same-user process are out of scope.
 | T11 | Sensitive terminal data entering logs | Daemon and Tauri tracing output is JSON. Session logs contain identifiers, dimensions, state transitions, and redacted process metadata, not PTY bytes or command arguments. Tauri bridge logs method, request ID, frame size, and safe status only. Dynamic application errors and retained diagnostic issues are redacted before logging. | A future debug statement can regress this rule; review logging changes as security-sensitive. |
 | T12 | Unbounded replay or a slow client exhausting memory | Session replay and daemon event queues are bounded. Events are sequenced, lag is reported as a sanitized diagnostic issue, and clients recover from a cursor or fresh snapshot. | A client can miss events beyond the retained window and must resynchronize. |
 | T13 | Crash leaving contradictory durable state | SQLite migrations are explicit. Startup reconciliation changes stale live sessions to `unknown`; recovery does not signal stale PIDs or delete repositories/worktrees. | Metadata may require user-visible reconciliation after an abrupt crash. |
+| T14 | A remote page invokes application or daemon IPC | The generated `AppManifest` enumerates every custom command. The capability targets only `webviews: ["main"]`, has no `remote` scope, and Rust independently requires the bundled main webview for browser and daemon commands. Daemon and browser events target only `main`. | This boundary requires a hostile-page smoke test whenever Tauri, Wry, capabilities, plugins, or commands change. |
+| T15 | A page escapes browser navigation policy | Rust accepts only bounded HTTP(S) URLs without userinfo, blocks the application/dev origins and internal protocol hosts on every redirect, denies new windows and downloads, and disables link previews and devtools. | HTTP pages and remote sites remain hostile. File upload, clipboard, and ordinary page behavior follow the platform web engine; users must review what they disclose. |
+| T16 | Browser URLs leak credentials | Signed or OAuth-bearing navigation URLs remain transient inside the active surface. Canvas persistence and explicit handoffs strip fragments and sensitive query keys; native location events are redacted and never update the durable document. Browser URLs are excluded from logs and diagnostics. | Redaction is a denylist and cannot reliably identify secrets embedded in a path. Users must review addresses before sharing them. |
+| T17 | A native child webview covers trusted controls or captures input during movement | Only one surface may exist. React measures window-relative bounds and fails closed when clipped, obstructed, zoomed, moved, resized, panned, or covered by navigation/dialog chrome. Rust hides existing child surfaces before returning invalid-bounds errors. | Native WebKit does not obey DOM clipping or z-index. Platform smoke tests remain mandatory after layout changes. |
+| T18 | Browser-to-terminal handoff becomes command injection | Handoff requires a user gesture on an explicit canvas connection. The address is sanitized and encoded as one POSIX single-quoted literal. No newline or Enter is sent, so the user must review and submit it. | Insertion occurs at the terminal's current cursor and may combine with existing interactive input; it is convenience text, not a structured agent tool call. |
+| T19 | Remote content obtains camera, microphone, screen, geolocation, or notifications | The child is incognito and receives a document-start, all-frame guard that denies sensitive browser APIs. macOS usage-description keys are intentionally absent. | Wry 0.55 has no cross-platform native permission-deny handler and WKWebView may grant at its delegate layer. A packaged malicious-page test is a release gate; replace the script guard when Tauri exposes native denial. |
+| T20 | Remote storage survives a browser-card lifecycle | Tauri creates the single child with `incognito(true)` and closes it on deactivation or unmount. React persists only redacted requested metadata, never cookies, content, history, or native handles. | WebKit store behavior differs by platform. Packaged tests must verify cookies, cache, local storage, and service workers disappear after close/reopen. |
+| T21 | Browser focus traps keyboard users | Focus enters only after a user activates the page. Escape attempts a denied internal `jig-focus://main/` navigation that only returns native focus to the trusted main webview; it grants no remote IPC. | VoiceOver and Orca focus traversal still require packaged macOS/Linux acceptance testing. |
 
 ## Destructive-operation invariants
 
@@ -79,6 +91,8 @@ The frontend treats that string as the only clipboard-authorized representation.
 
 ## Security review triggers
 
-Revisit this model when adding an IPC method, a new process-spawn path, any
-filesystem mutation, log fields derived from external input, support-bundle
-content, or daemon recovery behavior.
+Revisit this model when adding an IPC method, capability, plugin, browser
+event, webview navigation behavior, remote permission, a new process-spawn
+path, any filesystem mutation, log fields derived from external input,
+support-bundle content, or daemon recovery behavior. Re-run hostile browser
+smoke tests after Tauri/Wry or WebKitGTK minimum-version changes.

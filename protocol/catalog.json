@@ -27,9 +27,15 @@
     "session.unsubscribe",
     "git.status",
     "git.diff",
+    "worktree.list",
     "worktree.prepare_remove",
     "worktree.remove",
-    "diagnostics.get"
+    "diagnostics.get",
+    "knowledge.list",
+    "knowledge.save",
+    "knowledge.delete",
+    "knowledge.discover",
+    "knowledge.read"
   ],
   "events": [
     "project.updated",
