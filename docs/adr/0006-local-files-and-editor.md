@@ -87,7 +87,10 @@ Responses return `pathBase64` as the exact identifier and `displayName` for
 presentation. Escape control/undecodable bytes in display text; never rebuild
 an operation path from that text. Raw names never become HTML or command
 arguments. Non-UTF-8 names are listable and can identify an editable UTF-8
-file on either supported platform.
+file where the underlying filesystem permits such names. APFS can reject
+invalid UTF-8 filenames with EILSEQ before the service is called; Linux socket
+tests exercise those names and pure contract tests cover their wire identity
+on both platforms.
 
 ### Public operations
 
@@ -133,9 +136,9 @@ use higher-resolution metadata internally and never depend on epoch-ms alone.
 
 Use safe APIs from the existing direct daemon dependency `rustix 1.1.4` with
 feature `fs`. Its local source provides `openat`, `statat`, `fstat`, `renameat`,
-`unlinkat`, directory iteration and `fsync`. No new project `unsafe` block,
-shell command, external file utility or platform-specific path syntax is
-needed. `renameat` is the portable directory-relative replacement operation.
+`unlinkat`, directory iteration and `fsync`. Traversal and publication introduce no project `unsafe` block, shell
+command, external file utility or platform-specific path syntax. Darwin ACL
+inspection has the narrowly isolated exception defined below. `renameat` is the portable directory-relative replacement operation.
 [rustix reference](https://docs.rs/rustix/1.1.4/rustix/fs/fn.renameat.html)
 
 Open the validated root as a directory descriptor, then walk each path
@@ -197,6 +200,17 @@ unsupported result before accepting such a save. They must not be silently
 advertised as preserved. Hard-linked files return `file_metadata_unsupported`
 because replace would otherwise break the link relationship.
 
+The initial macOS implementation preserves one explicitly supported extended
+attribute, `com.apple.provenance`. Real files created on the validation host
+receive this attribute automatically, including the service's temporary files.
+Read its bounded value through the pinned descriptors, copy it when needed,
+and verify that the source and destination attribute sets and bytes agree
+before publication. If the source has no such attribute and the destination
+does, reject the save unless exact absence can be established; do not assume
+that a successful removal call proves absence. Reject every other extended
+attribute, oversized value or inspection/copy mismatch. This is a narrow
+preservation exception, not permission to silently discard unknown metadata.
+
 The lock guarantees revision ordering among daemon writers. External editors
 do not honor it. The final comparison followed by POSIX `renameat` leaves a
 small external-write race: it is **optimistic conflict detection**, not a
@@ -211,6 +225,32 @@ is materially different: return `file_durability_uncertain` with
 client to re-read before retrying. Do not pretend rollback occurred or send a
 second implicit write. A daemon crash can leave a uniquely named temporary
 file; startup must not sweep unknown files from project directories.
+
+### Narrow Darwin ACL metadata boundary
+
+The current safe `rustix` interface does not provide Darwin ACL inspection
+through a file descriptor. The safe public exacl API takes a pathname, which
+would lose the pinned-object guarantee; `/dev/fd` is not assumed equivalent.
+A normal macOS text file must remain editable while a file with an extended
+ACL must not lose that ACL during atomic replacement.
+
+Add `crates/file-metadata` solely for the safe public function
+`has_extended_acl(fd: impl AsFd) -> io::Result<bool>`. Its private Darwin
+module contains the minimal audited bindings to `acl_get_fd_np`,
+`acl_get_entry` and `acl_free`. Constants and signatures are verified against
+the installed Apple SDK. The borrowed descriptor is never closed, returned
+ACL storage is owned by an RAII guard, errors preserve errno, and callers
+never receive raw pointers. No subprocess or path reopening is permitted in
+this service. Linux continues to inspect ACL/xattrs through safe rustix APIs.
+
+This crate explicitly denies unsafe code except within that private module,
+and denies unsafe operations within unsafe functions unless individually
+marked. It is the sole exception to inheriting the workspace's unsafe-code
+forbid lint; workspace/core/daemon/session policy remains unchanged. All
+other lints retain the workspace's strictness. The exception enables direct
+inspection rather than weakening the file write policy or rejecting every
+ordinary file on macOS. Test the public safe API with real regular files and
+extended ACLs, and review ownership and each unsafe call before publication.
 
 ### Errors, synchronization and S3 reuse
 

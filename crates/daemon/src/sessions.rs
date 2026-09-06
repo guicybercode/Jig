@@ -24,6 +24,7 @@ use cli_master_session::{
 use cli_master_storage::{SessionRuntimeUpdate, Storage, StorageError, StoredAgent, StoredSession};
 use uuid::Uuid;
 
+mod files;
 mod worktrees;
 
 const INITIAL_COLUMNS: u16 = 100;

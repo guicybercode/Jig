@@ -34,6 +34,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use crate::files::LocalFileService;
 use crate::lock::InstanceLock;
 use crate::projects::ProjectRegistry;
 use crate::sessions::{SessionRegistry, encode_base64};
@@ -76,6 +77,7 @@ struct ServerState {
     diagnostics: DiagnosticsResponse,
     projects: ProjectRegistry,
     sessions: SessionRegistry,
+    files: LocalFileService,
     git_storage: Storage,
     git: Option<Git>,
     event_sequence: AtomicU64,
@@ -158,6 +160,7 @@ impl Daemon {
             })?,
             git_storage,
             git,
+            files: LocalFileService::default(),
             event_sequence: AtomicU64::new(0),
         });
 
@@ -557,6 +560,21 @@ async fn dispatch(
     }
 
     let result = match request.method.as_str() {
+        method::FILE_LIST | method::FILE_READ | method::FILE_WRITE => {
+            let state = Arc::clone(state);
+            tokio::task::spawn_blocking(move || {
+                state
+                    .files
+                    .dispatch(&request.method, request.payload, &state.sessions)
+            })
+            .await
+            .unwrap_or_else(|_| {
+                Err(ApiError::new(
+                    "file_io_error",
+                    "The local file operation could not complete.",
+                ))
+            })
+        }
         method::KNOWLEDGE_LIST | method::KNOWLEDGE_SAVE | method::KNOWLEDGE_DELETE => {
             let state = Arc::clone(state);
             match tokio::task::spawn_blocking(move || {
@@ -590,9 +608,25 @@ async fn dispatch(
         method::PROJECT_RENAME => decode_payload(request.payload)
             .and_then(|payload: ProjectRenameRequest| state.projects.rename(&payload))
             .and_then(encode_response),
-        method::PROJECT_REMOVE => decode_payload(request.payload)
-            .and_then(|payload: ProjectRemoveRequest| state.projects.remove(payload))
-            .and_then(encode_response),
+        method::PROJECT_REMOVE => match decode_payload::<ProjectRemoveRequest>(request.payload) {
+            Ok(payload) => {
+                let state = Arc::clone(state);
+                tokio::task::spawn_blocking(move || {
+                    state
+                        .sessions
+                        .with_metadata_mutation(|| state.projects.remove(payload))
+                        .and_then(encode_response)
+                })
+                .await
+                .unwrap_or_else(|_| {
+                    Err(ApiError::new(
+                        "project_operation_failed",
+                        "The project metadata operation could not complete.",
+                    ))
+                })
+            }
+            Err(error) => Err(error),
+        },
         method::AGENT_LIST => state.sessions.list_agents().and_then(encode_response),
         method::AGENT_DETECT => decode_payload(request.payload)
             .and_then(|payload: AgentDetectRequest| state.sessions.detect_agents(&payload))

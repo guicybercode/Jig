@@ -24,6 +24,9 @@ export interface MockIpcClientOptions {
 
 /** An injected IPC fake whose unconfigured application calls fail loudly. */
 export interface MockIpcClient extends IpcClient {
+  readonly listFiles: Mock<IpcClient["listFiles"]>;
+  readonly readFile: Mock<IpcClient["readFile"]>;
+  readonly writeFile: Mock<IpcClient["writeFile"]>;
   readonly listKnowledge: Mock<IpcClient["listKnowledge"]>;
   readonly saveKnowledge: Mock<IpcClient["saveKnowledge"]>;
   readonly deleteKnowledge: Mock<IpcClient["deleteKnowledge"]>;
@@ -90,6 +93,9 @@ export function createMockIpcClient(
 
   return {
     platform: options.platform ?? "linux",
+    listFiles: vi.fn<IpcClient["listFiles"]>(handlers.listFiles ?? (() => rejectUnhandled("listFiles"))),
+    readFile: vi.fn<IpcClient["readFile"]>(handlers.readFile ?? (() => rejectUnhandled("readFile"))),
+    writeFile: vi.fn<IpcClient["writeFile"]>(handlers.writeFile ?? (() => rejectUnhandled("writeFile"))),
     initialize,
     subscribe,
     subscribeTerminal: vi.fn<IpcClient["subscribeTerminal"]>(

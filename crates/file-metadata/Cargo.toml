@@ -1,0 +1,19 @@
+[package]
+name = "cli-master-file-metadata"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+# ADR 0006: only the private Darwin module may override this denial. The
+# workspace-wide forbid policy remains in force for every other crate.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
