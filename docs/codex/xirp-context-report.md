@@ -80,13 +80,15 @@ had limited free disk space.
 
 Direct typed serde duplicate-field validation is not a promise that duplicate
 keys are rejected after the daemon's intermediate JSON Value decode.
-Linux CI, actual Tauri/canvas consumption and full parity remain unverified.
+Draft [PR 45](https://github.com/guicybercode/Jig/pull/45) targets the canvas
+branch to run Linux/macOS CI. Actual Tauri/canvas consumption and full parity
+remain unverified; CI state must be checked rather than inferred from push.
 
 ## Commits / next integration
 
 - `569449f`: source inventory and integration proposal; pushed.
 - `2f3b7c8`: persisted knowledge contract/SQLite/daemon/typed IPC; pushed.
-- Isolated `KnowledgePanel` is implemented as the next UI commit. Props:
+- `a757f05`: isolated `KnowledgePanel`, 12 behavior tests and visual evidence; pushed. Props:
   `{client,currentProject,onInsert,insertDisabledReason}`; insertion receives
   `{sourceId,kind,title,body}` and must append to an editable composer draft.
   Keep panel mounted if unsaved editor drafts must survive closing its surface.
