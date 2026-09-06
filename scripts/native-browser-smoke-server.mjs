@@ -1,4 +1,5 @@
 import http from "node:http";
+import { pathToFileURL } from "node:url";
 
 const reports = [];
 const MAX_REPORTS = 1_000;
@@ -53,16 +54,18 @@ const server = http.createServer(async (request, response) => {
     .end(hostileFixture());
 });
 
-server.listen(0, "127.0.0.1", () => {
-  const address = server.address();
-  if (!address || typeof address === "string") {
-    throw new Error("native browser smoke server did not bind a TCP port");
-  }
-  process.stdout.write(`SMOKE_URL=http://127.0.0.1:${address.port}/\n`);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  server.listen(0, "127.0.0.1", () => {
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("native browser smoke server did not bind a TCP port");
+    }
+    process.stdout.write(`SMOKE_URL=http://127.0.0.1:${address.port}/\n`);
+  });
 
-process.on("SIGINT", () => server.close(() => process.exit(0)));
-process.on("SIGTERM", () => server.close(() => process.exit(0)));
+  process.on("SIGINT", () => server.close(() => process.exit(0)));
+  process.on("SIGTERM", () => server.close(() => process.exit(0)));
+}
 
 async function readBody(request) {
   let body = "";
@@ -77,7 +80,7 @@ async function readBody(request) {
   return body;
 }
 
-function hostileFixture() {
+export function hostileFixture() {
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -112,12 +115,38 @@ function hostileFixture() {
           });
         } catch (_) {}
       };
-      const withTimeout = (promise, milliseconds = 2500) => Promise.race([
-        promise,
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('timeout')), milliseconds),
-        ),
-      ]);
+      const timeoutError = new Error('timeout');
+      const withTimeout = async (promise, milliseconds = 2500) => {
+        let timer;
+        try {
+          return await Promise.race([
+            promise,
+            new Promise((_, reject) => {
+              timer = setTimeout(() => reject(timeoutError), milliseconds);
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+      };
+      const failedCheck = (entry) => {
+        switch (entry.kind) {
+          case 'ephemeral-state':
+            return entry.previousStorage !== null || entry.serviceWorkers !== 0;
+          case 'tauri-internals':
+            return !entry.available;
+          case 'command-result':
+            return entry.outcome !== 'rejected';
+          case 'permissions':
+            return Object.entries(entry).some(([name, outcome]) =>
+              name !== 'kind' && !['unavailable', 'denied', 'rejected'].includes(outcome),
+            );
+          case 'popup':
+            return !entry.blocked;
+          default:
+            return false;
+        }
+      };
       const invoke = window.__TAURI_INTERNALS__?.invoke;
       const nodeRequest = { request: { nodeId: 'native-browser-smoke' } };
       const commands = [
@@ -159,7 +188,7 @@ function hostileFixture() {
               await report({
                 kind: 'command-result',
                 command,
-                outcome: 'rejected',
+                outcome: error === timeoutError ? 'timeout' : 'rejected',
                 reason: String(error).slice(0, 240),
               });
             }
@@ -180,18 +209,22 @@ function hostileFixture() {
             ));
             permissionResults[method] = 'RESOLVED';
           } catch (error) {
-            permissionResults[method] = String(error);
+            permissionResults[method] = error === timeoutError ? 'timeout' : 'rejected';
           }
         }
-        permissionResults.notification = typeof Notification === 'undefined'
-          ? 'unavailable'
-          : await Notification.requestPermission();
+        try {
+          permissionResults.notification = typeof Notification === 'undefined'
+            ? 'unavailable'
+            : await withTimeout(Notification.requestPermission());
+        } catch (error) {
+          permissionResults.notification = error === timeoutError ? 'timeout' : 'rejected';
+        }
         permissionResults.geolocation = await new Promise((resolve) => {
           if (!navigator.geolocation) return resolve('unavailable');
           const timer = setTimeout(() => resolve('timeout'), 2500);
           navigator.geolocation.getCurrentPosition(
             () => { clearTimeout(timer); resolve('RESOLVED'); },
-            (error) => { clearTimeout(timer); resolve(String(error?.message ?? error)); },
+            () => { clearTimeout(timer); resolve('rejected'); },
           );
         });
         await report({ kind: 'permissions', ...permissionResults });
@@ -202,7 +235,15 @@ function hostileFixture() {
 
         window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
         await report({ kind: 'escape-dispatched' });
-        summary.textContent = 'Completed — inspect reports for any RESOLVED capability.';
+        const failures = results.filter(failedCheck);
+        summary.textContent = failures.length > 0
+          ? 'Smoke failed — inspect failed checks in the reports.'
+          : 'Automated checks passed — native manual checks still required.';
+        await report({
+          kind: 'summary',
+          outcome: failures.length > 0 ? 'failed' : 'passed',
+          failedChecks: failures.map((entry) => entry.kind),
+        });
       })().catch(async (error) => {
         summary.textContent = 'Smoke failed';
         await report({ kind: 'fixture-error', reason: String(error).slice(0, 240) });

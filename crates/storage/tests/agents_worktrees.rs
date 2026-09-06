@@ -336,6 +336,84 @@ struct WorktreeScenario {
     worktree: StoredWorktree,
 }
 
+#[test]
+fn prepared_session_and_worktree_commit_together_or_roll_back() {
+    let scenario = seeded_worktree_scenario();
+    let candidate = session(
+        scenario.first_project_id,
+        scenario.agent_id,
+        SessionStatus::Unknown,
+        None,
+        None,
+    );
+    let mut prepared = worktree(
+        scenario.first_project_id,
+        None,
+        std::path::Path::new("/tmp/prepared-worktree"),
+        "agent/prepared",
+    );
+    scenario.storage.insert_worktree(&prepared).unwrap();
+    scenario
+        .storage
+        .insert_prepared_session_with_worktree(&candidate, prepared.id, CREATED_AT_MS + 1)
+        .unwrap();
+    assert_eq!(
+        scenario.storage.get_session(candidate.id).unwrap(),
+        Some(candidate.clone())
+    );
+    prepared.state = WorktreeState::Active;
+    prepared.session_id = Some(candidate.id);
+    prepared.updated_at_ms = CREATED_AT_MS + 1;
+    assert_eq!(
+        scenario.storage.get_worktree(prepared.id).unwrap(),
+        Some(prepared.clone())
+    );
+
+    let replacement = session(
+        scenario.first_project_id,
+        scenario.agent_id,
+        SessionStatus::Unknown,
+        None,
+        None,
+    );
+    assert!(
+        scenario
+            .storage
+            .insert_prepared_session_with_worktree(&replacement, prepared.id, CREATED_AT_MS + 2)
+            .is_err()
+    );
+    assert!(
+        scenario
+            .storage
+            .get_session(replacement.id)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        scenario.storage.get_worktree(prepared.id).unwrap(),
+        Some(prepared)
+    );
+
+    let invalid = session(
+        scenario.first_project_id,
+        scenario.agent_id,
+        SessionStatus::Unknown,
+        None,
+        None,
+    );
+    assert!(
+        scenario
+            .storage
+            .insert_prepared_session_with_worktree(
+                &invalid,
+                cli_master_core::WorktreeId::new(),
+                CREATED_AT_MS + 2
+            )
+            .is_err()
+    );
+    assert!(scenario.storage.get_session(invalid.id).unwrap().is_none());
+}
+
 fn seeded_worktree_scenario() -> WorktreeScenario {
     let storage = Storage::open_in_memory().expect("database should open");
     storage.migrate().expect("database should migrate");

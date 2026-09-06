@@ -14,6 +14,7 @@ import {
   createTerminalRuntime,
   type TerminalDimensions,
   type TerminalInput,
+  type TerminalInputModes,
   type TerminalRuntime,
   type TerminalRuntimeBindings,
 } from "./terminal-runtime";
@@ -40,6 +41,8 @@ export interface TerminalSurfaceHandle {
   focus(): boolean;
   /** Returns the applied cursor, or null before mount/after unmount. */
   getCursor(): number | null;
+  /** Returns current input modes, or null before mount/after unmount. */
+  getInputModes(): TerminalInputModes | null;
 }
 
 /** Props for the isolated, imperative xterm surface. */
@@ -180,6 +183,7 @@ export function TerminalSurface({
         return true;
       },
       getCursor: () => runtimeRef.current?.getCursor() ?? null,
+      getInputModes: () => runtimeRef.current?.getInputModes() ?? null,
     }),
     [],
   );

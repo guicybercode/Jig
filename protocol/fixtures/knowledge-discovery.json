@@ -1,0 +1,36 @@
+{
+  "scan": {
+    "scanId": "0198b6e0-0000-7000-8000-000000000001",
+    "entries": [
+      {
+        "entryId": "0198b6e0-0001-7000-8000-000000000001",
+        "kind": "skill",
+        "provider": "codex",
+        "scope": "project",
+        "sourcePath": "/workspace/example/.agents/skills/review/SKILL.md",
+        "name": "review",
+        "scopeDirectory": ".",
+        "precedenceHint": "Inventory only; the native CLI decides whether to load this source.",
+        "viaSymlink": false,
+        "availability": "available"
+      }
+    ],
+    "truncated": false,
+    "issues": []
+  },
+  "read": {
+    "entry": {
+      "entryId": "0198b6e0-0001-7000-8000-000000000001",
+      "kind": "skill",
+      "provider": "codex",
+      "scope": "project",
+      "sourcePath": "/workspace/example/.agents/skills/review/SKILL.md",
+      "name": "review",
+      "scopeDirectory": ".",
+      "precedenceHint": "Inventory only; the native CLI decides whether to load this source.",
+      "viaSymlink": false,
+      "availability": "available"
+    },
+    "content": "---\nname: review\n---\nReview the current change.\n"
+  }
+}

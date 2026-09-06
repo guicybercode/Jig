@@ -25,36 +25,8 @@ impl Storage {
     /// Returns an error for invalid metadata, missing project/agent references,
     /// duplicate IDs, or database failures.
     pub fn insert_session(&self, session: &StoredSession) -> Result<(), StorageError> {
-        session.validate()?;
-        let cwd = path_to_sql_value(&session.cwd, "session cwd")?;
         self.with_connection("insert session", |connection| {
-            connection
-                .execute(
-                    "INSERT INTO sessions (
-                    id, project_id, agent_id, name, cwd, status, runtime_pid,
-                    daemon_instance_id, exit_code, error_code, created_at,
-                    updated_at, last_activity_at
-                 ) VALUES (
-                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13
-                 )",
-                    params![
-                        session.id.to_string(),
-                        session.project_id.to_string(),
-                        session.agent_id.to_string(),
-                        session.name,
-                        cwd,
-                        session_status_to_database(session.status),
-                        session.runtime_pid.map(i64::from),
-                        session.daemon_instance_id,
-                        session.exit_code,
-                        session.error_code,
-                        session.created_at_ms,
-                        session.updated_at_ms,
-                        session.last_activity_at_ms,
-                    ],
-                )
-                .map_err(|error| map_write_error(error, "session"))?;
-            Ok(())
+            insert_session_on_connection(connection, session)
         })
     }
 
@@ -268,4 +240,39 @@ fn require_changed(changed: usize, id: SessionId) -> Result<(), StorageError> {
     } else {
         Ok(())
     }
+}
+
+pub(crate) fn insert_session_on_connection(
+    connection: &Connection,
+    session: &StoredSession,
+) -> Result<(), StorageError> {
+    session.validate()?;
+    let cwd = path_to_sql_value(&session.cwd, "session cwd")?;
+    connection
+        .execute(
+            "INSERT INTO sessions (
+                    id, project_id, agent_id, name, cwd, status, runtime_pid,
+                    daemon_instance_id, exit_code, error_code, created_at,
+                    updated_at, last_activity_at
+                 ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13
+                 )",
+            params![
+                session.id.to_string(),
+                session.project_id.to_string(),
+                session.agent_id.to_string(),
+                session.name,
+                cwd,
+                session_status_to_database(session.status),
+                session.runtime_pid.map(i64::from),
+                session.daemon_instance_id,
+                session.exit_code,
+                session.error_code,
+                session.created_at_ms,
+                session.updated_at_ms,
+                session.last_activity_at_ms,
+            ],
+        )
+        .map_err(|error| map_write_error(error, "session"))?;
+    Ok(())
 }

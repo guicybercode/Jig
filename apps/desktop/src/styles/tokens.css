@@ -1,6 +1,6 @@
 :root {
-  color-scheme: dark;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color-scheme: light;
+  font-family: var(--font-sans);
   font-size: 16px;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -8,37 +8,38 @@
   -moz-osx-font-smoothing: grayscale;
   -webkit-text-size-adjust: 100%;
 
-  --color-background: #0b0f14;
-  --color-sidebar: #0f141b;
-  --color-surface: #151b23;
-  --color-surface-raised: #1b2430;
-  --color-inset: #080b10;
-  --color-text: #f1f5f9;
-  --color-text-muted: #a8b3c2;
-  --color-text-disabled: #687386;
-  --color-border: #2b3543;
-  --color-border-strong: #465368;
-  --color-accent: #38bdf8;
-  --color-accent-strong: #7dd3fc;
-  --color-on-accent: #07131a;
-  --color-success: #4ade80;
-  --color-warning: #fbbf24;
-  --color-danger: #fb7185;
-  --color-unknown: #c4b5fd;
-  --color-focus-ring: #bae6fd;
+  --color-background: #fbfbfa;
+  --color-sidebar: #f4f4f2;
+  --color-surface: #ffffff;
+  --color-surface-raised: #fafaf9;
+  --color-inset: #f4f4f2;
+  --color-text: #26282b;
+  --color-text-muted: #6d7075;
+  --color-text-disabled: #85878b;
+  --color-border: #d9dadc;
+  --color-border-strong: #85878b;
+  --color-accent: #c8323c;
+  --color-accent-strong: #9d242d;
+  --color-on-accent: #ffffff;
+  --color-success: #287a45;
+  --color-warning: #7b5b00;
+  --color-danger: #b42335;
+  --color-unknown: #6550a7;
+  --color-focus-ring: #1b63d9;
 
   /* Derived semantic surfaces keep component styles free of status hex values. */
-  --color-surface-hover: #202a36;
-  --color-surface-active: #253243;
-  --color-accent-muted: #102b39;
-  --color-success-muted: #10291b;
-  --color-warning-muted: #30260e;
-  --color-danger-muted: #321820;
-  --color-unknown-muted: #25213b;
-  --color-scrim: rgb(2 6 10 / 78%);
-  --color-scrollbar: #465368;
-  --color-scrollbar-hover: #687386;
+  --color-surface-hover: #eeeeec;
+  --color-surface-active: #e4e4e1;
+  --color-accent-muted: #fff0f1;
+  --color-success-muted: #edf8f0;
+  --color-warning-muted: #fff7df;
+  --color-danger-muted: #fff0f2;
+  --color-unknown-muted: #f2effb;
+  --color-scrim: rgb(34 36 38 / 32%);
+  --color-scrollbar: #85878b;
+  --color-scrollbar-hover: #6d7075;
 
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     "Liberation Mono", monospace;
   --space-1: 0.25rem;
@@ -56,10 +57,9 @@
   --status-height: 2rem;
   --duration-feedback: 140ms;
   --ease-feedback: ease-out;
-  --shadow-dialog: 0 1.5rem 4rem rgb(0 0 0 / 48%);
+  --shadow-dialog: 0 1.5rem 5rem rgb(25 27 29 / 24%);
   --layer-navigation-backdrop: 20;
   --layer-navigation: 30;
-  --layer-dialog: 80;
   --layer-skip-link: 100;
   --layer-dialog: 200;
 }

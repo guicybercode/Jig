@@ -1,6 +1,7 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
+import { IpcError } from "../../ipc/client";
 import type { WorkspaceContextValue } from "./WorkspaceContext";
 import { useWorkspace, WorkspaceProvider } from "./WorkspaceContext";
 import type {
@@ -153,6 +154,149 @@ describe("WorkspaceProvider terminal event isolation", () => {
     });
   });
 });
+
+describe("WorkspaceProvider refreshed worktrees and knowledge", () => {
+  it("selects a new session after committed navigation without allowing an older creation to steal focus", async () => {
+    const first = createSession();
+    const secondProject = { ...createProject(), id: "project-two", name: "Second project" };
+    const second = { ...first, id: "session-two", projectId: secondProject.id };
+    const pendingFirst = deferred<Session>();
+    const bootstrap = createBootstrap(first);
+    const client = createMockIpcClient({
+      bootstrap: { ...bootstrap, snapshot: { ...bootstrap.snapshot, projects: [createProject(), secondProject] } },
+      handlers: { createSession: async () => second },
+    });
+    client.createSession.mockReturnValueOnce(pendingFirst.promise);
+    const onRender = await renderMetadata(client);
+    let pending: Promise<Session>;
+    await act(async () => {
+      pending = latestContext(onRender).createSession({ projectId: first.projectId, agentId: first.agentId, name: "Older creation", isolation: "current" });
+    });
+    act(() => latestContext(onRender).selectProject(secondProject.id));
+    await act(async () => {
+      await latestContext(onRender).createSession({ projectId: second.projectId, agentId: second.agentId, name: "Current creation", isolation: "current" });
+    });
+    expect(latestContext(onRender).selectedSessionId).toBe(second.id);
+    await act(async () => { pendingFirst.resolve(first); await pending; });
+    expect(latestContext(onRender).selectedProjectId).toBe(secondProject.id);
+    expect(latestContext(onRender).selectedSessionId).toBe(second.id);
+    expect(client.startSession).not.toHaveBeenCalled();
+  });
+
+  it("refreshes an isolated creation without starting it or awaiting a metadata event", async () => {
+    const session = { ...createSession(), worktreeId: "worktree-one", status: "unknown" as const };
+    const client = createMockIpcClient({
+      bootstrap: createBootstrap(createSession()),
+      handlers: { createSession: async () => session, listWorktrees: async () => [createWorktree()] },
+    });
+    const onRender = await renderMetadata(client);
+    await act(async () => {
+      expect(await latestContext(onRender).createSession({
+        projectId: session.projectId, agentId: session.agentId, name: session.name, isolation: "new_worktree",
+      })).toBe(session);
+    });
+    await waitFor(() => expect(latestContext(onRender).worktrees).toEqual([createWorktree()]));
+    expect(client.createSession).toHaveBeenCalledOnce();
+    expect(client.startSession).not.toHaveBeenCalled();
+    expect(client.initialize).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the created session and reports a failed refresh without pretending creation failed", async () => {
+    const session = { ...createSession(), worktreeId: "worktree-one", status: "unknown" as const };
+    const client = createMockIpcClient({
+      bootstrap: createBootstrap(createSession()),
+      handlers: {
+        createSession: async () => session,
+        listWorktrees: async () => { throw new IpcError({ code: "storage_busy", message: "Refresh unavailable." }); },
+      },
+    });
+    const onRender = await renderMetadata(client);
+    await act(async () => {
+      expect(await latestContext(onRender).createSession({
+        projectId: session.projectId, agentId: session.agentId, name: session.name, isolation: "new_worktree",
+      })).toBe(session);
+    });
+    await waitFor(() => expect(latestContext(onRender).operationError?.code).toBe("storage_busy"));
+    expect(latestContext(onRender).sessions[0]).toBe(session);
+    expect(client.createSession).toHaveBeenCalledOnce();
+    expect(client.startSession).not.toHaveBeenCalled();
+  });
+
+  it("does not resurrect a removed worktree when an older refresh returns last", async () => {
+    const old = deferred<readonly Worktree[]>();
+    const client = createMockIpcClient({
+      bootstrap: createBootstrap(createSession()),
+      handlers: { listWorktrees: async () => [], removeWorktree: async () => undefined },
+    });
+    client.listWorktrees.mockImplementationOnce(() => old.promise);
+    const onRender = await renderMetadata(client);
+    let pending: Promise<readonly Worktree[]>;
+    await act(async () => { pending = latestContext(onRender).refreshWorktrees(); });
+    await act(async () => {
+      await latestContext(onRender).removeWorktree({ worktreeId: "worktree-one", confirmationToken: "confirmed" });
+    });
+    await waitFor(() => expect(client.listWorktrees).toHaveBeenCalledTimes(2));
+    await act(async () => { old.resolve([createWorktree()]); await pending; });
+    expect(latestContext(onRender).worktrees).toEqual([]);
+  });
+
+  it("ignores an old connection's refresh and filters worktrees from removed projects", async () => {
+    const old = deferred<readonly Worktree[]>();
+    const client = createMockIpcClient({
+      bootstrap: createBootstrap(createSession()),
+      handlers: { listWorktrees: async () => [createWorktree()] },
+    });
+    client.listWorktrees.mockImplementationOnce(() => old.promise);
+    const onRender = await renderMetadata(client);
+    let pending: Promise<readonly Worktree[]>;
+    await act(async () => { pending = latestContext(onRender).refreshWorktrees(); });
+    act(() => latestContext(onRender).retry());
+    await waitFor(() => expect(client.initialize).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(latestContext(onRender).isConnected).toBe(true));
+    await act(async () => { old.resolve([createWorktree()]); await pending; });
+    expect(latestContext(onRender).worktrees).toEqual([]);
+    act(() => client.emit("project.removed", { projectId: "project-one" }));
+    await act(async () => { await latestContext(onRender).refreshWorktrees(); });
+    expect(latestContext(onRender).worktrees).toEqual([]);
+  });
+
+  it("keeps knowledge operations stable, scoped and independent of terminal delivery", async () => {
+    const client = createMockIpcClient({
+      bootstrap: createBootstrap(createSession()),
+      handlers: {
+        listKnowledge: async () => ({ entries: [], nextCursor: null }),
+        deleteKnowledge: async () => { throw new IpcError({ code: "knowledge_conflict", message: "Reload before deleting." }); },
+      },
+    });
+    const onRender = await renderMetadata(client);
+    const knowledge = latestContext(onRender).knowledgeClient;
+    act(() => latestContext(onRender).selectSession("session-one"));
+    expect(latestContext(onRender).knowledgeClient).toBe(knowledge);
+    await act(async () => {
+      await knowledge.listKnowledge({ projectId: "project-one", kind: "prompt" });
+      await expect(knowledge.deleteKnowledge({ id: "entry-one", expectedRevision: 4 })).rejects.toMatchObject({ code: "knowledge_conflict" });
+    });
+    expect(client.listKnowledge).toHaveBeenCalledWith({ projectId: "project-one", kind: "prompt" });
+    expect(client.deleteKnowledge).toHaveBeenCalledWith({ id: "entry-one", expectedRevision: 4 });
+    expect(latestContext(onRender).operationError).toBeNull();
+    expect(client.writeTerminal).not.toHaveBeenCalled();
+    expect(client.startSession).not.toHaveBeenCalled();
+    expect(client.createSession).not.toHaveBeenCalled();
+  });
+});
+
+async function renderMetadata(client: ReturnType<typeof createMockIpcClient>) {
+  const onRender = vi.fn<(value: WorkspaceContextValue) => void>();
+  render(<WorkspaceProvider client={client}><MetadataProbe onRender={onRender} /></WorkspaceProvider>);
+  await waitFor(() => expect(latestContext(onRender).isConnected).toBe(true));
+  return onRender;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
+  return { promise, resolve };
+}
 
 function MetadataProbe({
   onRender,

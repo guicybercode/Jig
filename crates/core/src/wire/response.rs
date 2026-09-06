@@ -235,6 +235,14 @@ pub struct GitDiffResponse {
     pub binary: bool,
 }
 
+/// Durable managed worktrees visible to the local client.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeListResponse {
+    /// Managed worktrees matching the requested project filter.
+    pub worktrees: Vec<Worktree>,
+}
+
 /// Safe reason a worktree cannot currently be removed.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]

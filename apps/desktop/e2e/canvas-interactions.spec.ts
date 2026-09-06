@@ -1,0 +1,289 @@
+import { expect, test, type Locator, type Page } from "@playwright/test";
+
+test.use({
+  viewport: { width: 1440, height: 900 },
+  contextOptions: { reducedMotion: "reduce" },
+});
+
+test.beforeEach(async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("article")).toHaveCount(3);
+});
+
+test("duplicates and removes a pointer-selected group while preserving notes across reloads", async ({ page }) => {
+  const terminal = canvasCard(page, "Terminal 1", "terminal");
+  const note = canvasCard(page, "Notes", "note");
+  await note.getByRole("textbox", { name: "Notes content" }).fill("Release checklist: test Linux and macOS.");
+  await page.getByLabel("Move Terminal 1", { exact: true }).click();
+  await page.getByLabel("Move Notes", { exact: true }).click({ modifiers: ["Shift"] });
+  await expect(terminal).toHaveAccessibleDescription("Selected canvas item");
+  await expect(note).toHaveAccessibleDescription("Selected canvas item");
+  await expect(page.getByRole("status").filter({ hasText: /^2 selected/ })).toBeVisible();
+
+  await page.getByRole("button", { name: "Duplicate selected canvas items" }).click();
+  await expect(page.getByRole("article")).toHaveCount(5);
+  await expect(canvasCard(page, "Terminal 1 copy", "terminal")).toHaveAccessibleDescription("Selected canvas item");
+  await expect(canvasCard(page, "Notes copy", "note").getByRole("textbox")).toHaveValue("Release checklist: test Linux and macOS.");
+  await page.reload();
+  await expect(page.getByRole("article")).toHaveCount(5);
+  await expect(canvasCard(page, "Notes copy", "note").getByRole("textbox")).toHaveValue("Release checklist: test Linux and macOS.");
+
+  await canvasCard(page, "Terminal 1 copy", "terminal").focus();
+  await canvasCard(page, "Notes copy", "note").focus();
+  await page.keyboard.press("Shift+Space");
+  await expect(page.getByRole("status").filter({ hasText: /^2 selected/ })).toBeVisible();
+  await page.getByRole("button", { name: "Remove selected items from canvas", exact: true }).click();
+  await expect(page.getByRole("article")).toHaveCount(3);
+  await page.reload();
+  await expect(canvasCard(page, "Terminal 1 copy", "terminal")).toHaveCount(0);
+  await expect(canvasCard(page, "Notes copy", "note")).toHaveCount(0);
+  await expect(note.getByRole("textbox")).toHaveValue("Release checklist: test Linux and macOS.");
+  await expect(terminal).toBeVisible();
+});
+
+test("moves a keyboard-selected group with arrows and pointer drag without changing its spacing", async ({ page }) => {
+  const first = canvasCard(page, "Terminal 1", "terminal");
+  const second = canvasCard(page, "Terminal 2", "terminal");
+  const note = canvasCard(page, "Notes", "note");
+  await first.focus();
+  await second.focus();
+  await page.keyboard.press("Shift+Space");
+  await expect(first).toHaveAccessibleDescription("Selected canvas item");
+  await expect(second).toHaveAccessibleDescription("Selected canvas item");
+
+  const initial = await positions([first, second, note]);
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Alt+ArrowDown");
+  await expect.poll(() => positions([first, second, note])).toEqual([
+    { x: initial[0]!.x + 8, y: initial[0]!.y + 1 },
+    { x: initial[1]!.x + 8, y: initial[1]!.y + 1 },
+    initial[2],
+  ]);
+
+  const header = page.getByLabel("Move Terminal 2", { exact: true });
+  await header.scrollIntoViewIfNeeded();
+  const bounds = await header.boundingBox();
+  expect(bounds).not.toBeNull();
+  const start = { x: bounds!.x + 100, y: bounds!.y + bounds!.height / 2 };
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(start.x + 64, start.y + 40, { steps: 4 });
+  await page.mouse.up();
+  await expect.poll(() => positions([first, second, note])).toEqual([
+    { x: initial[0]!.x + 72, y: initial[0]!.y + 41 },
+    { x: initial[1]!.x + 72, y: initial[1]!.y + 41 },
+    initial[2],
+  ]);
+  await expect(page.getByRole("status").filter({ hasText: /^2 selected/ })).toBeVisible();
+
+  await page.keyboard.press("Shift+Space");
+  await expect(first).toHaveAccessibleDescription("Selected canvas item");
+  await expect(second).not.toHaveAccessibleDescription("Selected canvas item");
+});
+
+test("search filters results without replacing terminal cards and focuses the chosen note", async ({ page }, testInfo) => {
+  const terminal = canvasCard(page, "Terminal 1", "terminal");
+  const note = canvasCard(page, "Notes", "note");
+  await note.getByRole("textbox").fill("Investigate the orange release checklist");
+  const terminalElement = await terminal.elementHandle();
+  expect(terminalElement).not.toBeNull();
+  await page.getByRole("main").focus();
+  await page.keyboard.press("ControlOrMeta+f");
+  const search = page.getByRole("searchbox", { name: "Search canvas items" });
+  const panel = page.getByRole("region", { name: "Canvas items", exact: true });
+  await expect(search).toBeFocused();
+  await search.fill("ORANGE checklist");
+  await expect(panel.getByRole("status")).toHaveText("1 of 3 items");
+  await expect(panel.getByRole("list", { name: "Canvas search results" }).getByRole("button")).toHaveCount(1);
+  await expect(page.getByRole("article")).toHaveCount(3);
+  expect(await terminalElement!.evaluate((element) => element.isConnected)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("canvas-desktop-search.png") });
+
+  await search.press("ArrowDown");
+  await expect(panel.getByRole("button", { name: /Notes Investigate/ })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(panel).toHaveCount(0);
+  await expect(note).toBeFocused();
+  await expect(note).toBeInViewport();
+
+  await page.getByRole("button", { name: "Show canvas items", exact: true }).click();
+  await search.fill("no-such-canvas-item");
+  await expect(panel.getByRole("status")).toHaveText("0 of 3 items");
+  await expect(panel.getByText(/No matching items/)).toBeVisible();
+  await search.press("Escape");
+  await expect(page.getByRole("button", { name: "Show canvas items", exact: true })).toBeFocused();
+  expect(await terminalElement!.evaluate((element) => element.isConnected)).toBe(true);
+});
+
+test("editing a note keeps selection and delete shortcuts inside its text field", async ({ page }) => {
+  await page.getByRole("button", { name: "Select all canvas items" }).click();
+  const note = canvasCard(page, "Notes", "note");
+  const editor = note.getByRole("textbox");
+  const initial = await positions([note]);
+  await editor.fill("Replace this note");
+  await editor.press("ControlOrMeta+a");
+  await editor.press("Backspace");
+  await expect(editor).toHaveValue("");
+  await expect(page.getByRole("article")).toHaveCount(3);
+  await expect(page.getByRole("status").filter({ hasText: /^3 selected/ })).toBeVisible();
+  await editor.fill("abc");
+  await editor.press("ArrowLeft");
+  await editor.press("Delete");
+  await expect(editor).toHaveValue("ab");
+  await expect.poll(() => positions([note])).toEqual(initial);
+  await expect(page.getByRole("article")).toHaveCount(3);
+});
+
+test("creates and finds a Gemini draft in a compact window", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 640, height: 800 });
+  await expect.poll(async () => (await page.getByRole("main").boundingBox())?.width).toBe(640);
+  await page.getByRole("button", { name: "Add terminal card" }).click();
+  const dialog = page.getByRole("dialog", { name: "New Terminal", exact: true });
+  await dialog.getByRole("radio", { name: "Gemini", exact: true }).check();
+  await expect(dialog.getByRole("textbox", { name: "Terminal name", exact: true })).toHaveValue("Gemini");
+  await expect(dialog.getByRole("textbox", { name: "Command", exact: true })).toHaveValue("gemini");
+  await dialog.getByRole("textbox", { name: "Working directory", exact: true }).fill("/workspace/gemini-review");
+  await dialog.getByRole("button", { name: "Create terminal", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("article")).toHaveCount(4);
+
+  for (const width of [360, 640]) {
+    await page.setViewportSize({ width, height: 800 });
+    await expect.poll(async () => (await page.getByRole("main").boundingBox())?.width).toBe(width);
+    await expect.poll(async () => {
+      const status = await page.getByRole("status").filter({ hasText: /^1 selected/ }).boundingBox();
+      const context = await page.getByRole("main").getByText("Workspace", { exact: true }).boundingBox();
+      return status !== null && context !== null && status.y + status.height <= context.y;
+    }).toBe(true);
+  }
+
+  await page.getByRole("button", { name: "Show canvas items", exact: true }).click();
+  const search = page.getByRole("searchbox", { name: "Search canvas items" });
+  await search.fill("gemini-review");
+  const panel = page.getByRole("region", { name: "Canvas items", exact: true });
+  await expect(panel.getByRole("status")).toHaveText("1 of 4 items");
+  await expect(panel).toBeInViewport({ ratio: 1 });
+  await page.screenshot({ path: testInfo.outputPath("canvas-compact-search.png") });
+  await search.press("Enter");
+  const gemini = canvasCard(page, "Gemini", "terminal");
+  await expect(gemini).toBeFocused();
+  await expect(gemini).toBeInViewport({ ratio: 1 });
+  await page.reload();
+  await expect(gemini).toHaveCount(1);
+});
+
+test("keeps separate composer drafts across terminal switches, Escape and reload while offline", async ({ page }, testInfo) => {
+  const first = canvasCard(page, "Terminal 1", "terminal");
+  const second = canvasCard(page, "Terminal 2", "terminal");
+  const note = canvasCard(page, "Notes", "note");
+  await note.getByRole("textbox").fill("Verify Linux and macOS before release.");
+  await first.getByRole("button", { name: "Open Prompt Composer for Terminal 1" }).click();
+  const editor = page.getByRole("textbox", { name: "Prompt for Terminal 1", exact: true });
+  await expect(editor).toBeFocused();
+  await editor.fill("Review the changes.");
+  await page.getByText("Insert context", { exact: false }).click();
+  await page.getByRole("button", { name: "Insert context from Notes", exact: true }).click();
+  const draft = "Review the changes.\n\nContext snapshot: Notes\nVerify Linux and macOS before release.\n";
+  await expect(editor).toHaveValue(draft);
+  await expect(page.getByRole("button", { name: "Send prompt", exact: true })).toBeDisabled();
+  await editor.press("Escape");
+  await expect(editor).toHaveCount(0);
+
+  await second.getByRole("button", { name: "Open Prompt Composer for Terminal 2" }).click();
+  const secondEditor = page.getByRole("textbox", { name: "Prompt for Terminal 2", exact: true });
+  await expect(secondEditor).toHaveValue("");
+  await secondEditor.fill("A different investigation.");
+  await secondEditor.press("Escape");
+  await page.reload();
+
+  await first.getByRole("button", { name: "Open Prompt Composer for Terminal 1" }).click();
+  await expect(editor).toHaveValue(draft);
+  await page.screenshot({ path: testInfo.outputPath("canvas-prompt-composer-desktop.png") });
+  await editor.press("Escape");
+  await second.getByRole("button", { name: "Open Prompt Composer for Terminal 2" }).click();
+  await expect(secondEditor).toHaveValue("A different investigation.");
+  await expect(page.getByRole("article")).toHaveCount(3);
+});
+
+test("keeps the compact composer visible and text-editing shortcuts inside its draft", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 640, height: 800 });
+  await canvasCard(page, "Terminal 1", "terminal").getByRole("button", { name: "Open Prompt Composer for Terminal 1" }).click();
+  const editor = page.getByRole("textbox", { name: "Prompt for Terminal 1", exact: true });
+  await editor.fill("Replace this prompt");
+  await editor.press("ControlOrMeta+a");
+  await editor.press("Backspace");
+  await expect(editor).toHaveValue("");
+  await expect(page.getByRole("article")).toHaveCount(3);
+  await editor.fill("First line");
+  await editor.press("Shift+Enter");
+  await editor.pressSequentially("Second line");
+  await expect(editor).toHaveValue("First line\nSecond line");
+  await expect(editor).toBeInViewport({ ratio: 1 });
+  await expect(page.getByRole("button", { name: "Close Prompt Composer", exact: true })).toBeInViewport({ ratio: 1 });
+  await page.screenshot({ path: testInfo.outputPath("canvas-prompt-composer-compact.png") });
+  await editor.press("ControlOrMeta+Shift+p");
+  await expect(editor).toHaveCount(0);
+  await page.getByRole("button", { name: "Toggle Prompt Composer", exact: true }).click();
+  await expect(editor).toHaveValue("First line\nSecond line");
+});
+
+test("uses the local knowledge editor as an explicit draft source while offline", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 640, height: 800 });
+  await canvasCard(page, "Terminal 1", "terminal").getByRole("button", { name: "Open Prompt Composer for Terminal 1" }).click();
+  await page.getByRole("textbox", { name: "Prompt for Terminal 1", exact: true }).fill("Start with this draft.");
+  await page.getByRole("button", { name: "Close Prompt Composer", exact: true }).click();
+  await page.getByRole("button", { name: "Open prompts and context", exact: true }).click();
+  const library = page.getByRole("region", { name: "Knowledge library", exact: true });
+  await expect(library).toBeVisible();
+  await library.getByRole("textbox", { name: "Title", exact: true }).fill("Review checklist");
+  await library.getByRole("textbox", { name: "Content", exact: true }).fill("Inspect the Linux and macOS acceptance evidence.");
+  await library.getByRole("button", { name: "Close knowledge library", exact: true }).click();
+  await page.getByRole("button", { name: "Open prompts and context", exact: true }).click();
+  await expect(library.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Review checklist");
+  await library.getByRole("button", { name: "Insert into draft", exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath("canvas-knowledge-compact.png") });
+  await library.getByRole("button", { name: "Insert into draft", exact: true }).click();
+  const editor = page.getByRole("textbox", { name: "Prompt for Terminal 1", exact: true });
+  const expected = "Start with this draft.\n\nKnowledge snapshot: Review checklist\nInspect the Linux and macOS acceptance evidence.\n";
+  await expect(editor).toHaveValue(expected);
+  await expect(page.getByRole("button", { name: "Send prompt", exact: true })).toBeDisabled();
+  await page.reload();
+  await canvasCard(page, "Terminal 1", "terminal").getByRole("button", { name: "Open Prompt Composer for Terminal 1" }).click();
+  await expect(editor).toHaveValue(expected);
+});
+
+test("opens the compact source inspector without losing unsaved library text while offline", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.getByRole("button", { name: "Open prompts and context", exact: true }).click();
+  const library = page.getByRole("region", { name: "Knowledge library", exact: true });
+  await library.getByRole("textbox", { name: "Title", exact: true }).fill("Keep this local draft");
+  await library.getByRole("textbox", { name: "Content", exact: true }).fill("Do not send or overwrite this text.");
+  await library.getByRole("button", { name: "Rules & skills", exact: true }).click();
+  const inspector = library.getByRole("region", { name: "Rules & skills", exact: true });
+  await expect(inspector).toBeVisible();
+  await expect(inspector.getByRole("alert")).toHaveText(/The local daemon could not be reached/);
+  await expect(inspector.getByText(/Native CLI loading remains unverified/)).toBeVisible();
+  await expect(library).toBeInViewport({ ratio: 1 });
+  expect(await library.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("canvas-source-inspector-compact.png") });
+  await library.getByRole("button", { name: "Close knowledge library", exact: true }).click();
+  await page.getByRole("button", { name: "Open prompts and context", exact: true }).click();
+  await expect(inspector.getByRole("searchbox")).toBeFocused();
+  await library.getByRole("button", { name: "Saved prompts & context", exact: true }).click();
+  await expect(library.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Keep this local draft");
+  await expect(library.getByRole("textbox", { name: "Content", exact: true })).toHaveValue("Do not send or overwrite this text.");
+  await expect(page.getByRole("article")).toHaveCount(3);
+});
+
+/** Resolves a canvas card through its user-facing accessible name. */
+function canvasCard(page: Page, title: string, kind: "terminal" | "note") {
+  return page.getByRole("article", { name: `${title}, ${kind} canvas item`, exact: true });
+}
+
+/** Reads rendered positions independently of canvas scrolling and zoom. */
+async function positions(cards: readonly Locator[]) {
+  return Promise.all(cards.map((card) => card.evaluate((element) => {
+    const matrix = new DOMMatrix(getComputedStyle(element).transform);
+    return { x: matrix.m41, y: matrix.m42 };
+  })));
+}

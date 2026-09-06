@@ -14,8 +14,6 @@ export interface GlobalShortcutOptions {
   readonly onOpenCommandPalette?: () => void;
   /** Handles Command/Control+T. */
   readonly onNewSession?: () => void;
-  /** Handles Command/Control+Shift+G. */
-  readonly onOpenGrid?: () => void;
   /** Handles Command/Control+1 through 9 using a one-based session number. */
   readonly onFocusSession?: (sessionNumber: SessionShortcutNumber) => void;
 }
@@ -28,7 +26,6 @@ export function useGlobalShortcuts({
   platform,
   onOpenCommandPalette,
   onNewSession,
-  onOpenGrid,
   onFocusSession,
 }: GlobalShortcutOptions): void {
   const shortcutPlatform = platform ?? detectShortcutPlatform();
@@ -63,12 +60,6 @@ export function useGlobalShortcuts({
         return;
       }
 
-      if (event.shiftKey && key === "g" && onOpenGrid) {
-        event.preventDefault();
-        onOpenGrid();
-        return;
-      }
-
       if (!event.shiftKey && onFocusSession) {
         const sessionNumber = getSessionShortcutNumber(event.key);
         if (sessionNumber) {
@@ -85,7 +76,6 @@ export function useGlobalShortcuts({
     onFocusSession,
     onNewSession,
     onOpenCommandPalette,
-    onOpenGrid,
     shortcutPlatform,
   ]);
 }
