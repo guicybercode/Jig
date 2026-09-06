@@ -1998,7 +1998,14 @@
   }
 
   .canvas-context {
-    top: 8.5rem;
+    top: 10rem;
+    right: 1rem;
+  }
+
+  .canvas-context h1 {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .canvas-context__meta {
@@ -2019,11 +2026,15 @@
   }
 
   .canvas-connect-notice {
-    top: 12rem;
+    top: 13rem;
   }
 }
 
 @media (max-width: 47.99rem) {
+  .app-shell__body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .app-shell .navigation-pane {
     width: min(20rem, calc(100vw - 3rem));
     grid-template-rows: auto minmax(0, 1fr);
