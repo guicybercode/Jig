@@ -1,4 +1,5 @@
-import type { ComponentProps } from "react";
+import { useImperativeHandle, useState } from "react";
+import type { ComponentProps, Ref } from "react";
 import {
   act,
   fireEvent,
@@ -13,7 +14,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IpcError } from "../../../ipc/client";
 import type { Session, Worktree } from "../../../ipc/types";
 import type { BrowserRuntime } from "../browser/browser-runtime";
-import type { LiveTerminalTransport } from "../terminal/LiveTerminal";
+import type {
+  LiveTerminalInputHandle,
+  LiveTerminalTransport,
+} from "../terminal/LiveTerminal";
 import {
   CANVAS_STORAGE_KEY,
   parseCanvasDocument,
@@ -25,9 +29,21 @@ import {
 import { CanvasWorkspace } from "./CanvasWorkspace";
 
 vi.mock("../terminal/LiveTerminal", () => ({
-  LiveTerminal: ({ session }: { readonly session: Session }) => (
-    <div data-testid={`live-terminal-${session.id}`} />
-  ),
+  LiveTerminal: ({ session, inputRef, writeTerminal }: {
+    readonly session: Session;
+    readonly inputRef?: Ref<LiveTerminalInputHandle>;
+    readonly writeTerminal: LiveTerminalTransport["writeTerminal"];
+  }) => {
+    useImperativeHandle(inputRef, () => ({
+      writeInput: async (encode) => {
+        await writeTerminal(session.id, encode({
+          bracketedPasteMode: true,
+          applicationCursorKeysMode: false,
+        }));
+      },
+    }), [session.id, writeTerminal]);
+    return <div data-testid={`live-terminal-${session.id}`} />;
+  },
 }));
 
 const PROJECT = {
@@ -136,6 +152,278 @@ describe("CanvasWorkspace", () => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  describe("Prompt Composer", () => {
+    it("delivers a multiline draft through the attached terminal transport", async () => {
+      const user = userEvent.setup();
+      const writeTerminal = vi.fn<LiveTerminalTransport["writeTerminal"]>().mockResolvedValue(undefined);
+      seedCanvasDocument([TERMINAL_NODE]);
+      const { props } = renderProjectCanvas({ sessions: [LIVE_SESSION], writeTerminal });
+      const trigger = screen.getByRole("button", { name: "Open Prompt Composer for Terminal 1" });
+      await user.click(trigger);
+      expect(trigger).toHaveAttribute("aria-expanded", "true");
+      const composer = screen.getByRole("region", { name: "Prompt Composer" });
+      const editor = within(composer).getByRole("textbox", { name: "Prompt for Terminal 1" });
+      expect(editor).toHaveFocus();
+      await user.type(editor, "  Review Linux{Shift>}{Enter}{/Shift}and macOS  ");
+      await user.click(within(composer).getByRole("button", { name: "Send prompt" }));
+
+      expect(writeTerminal).toHaveBeenCalledExactlyOnceWith(
+        LIVE_SESSION.id,
+        new TextEncoder().encode("\x1b[200~  Review Linux\rand macOS  \x1b[201~\r"),
+      );
+      expect(editor).toHaveValue("");
+      expect(readPromptDraft(TERMINAL_NODE.id)).toBe("");
+      expect(props.onCreateSession).not.toHaveBeenCalled();
+      expect(props.onStartSession).not.toHaveBeenCalled();
+    });
+
+    it.each(["disconnected", "stopped", "unattached"] as const)(
+      "allows drafting but never starts or writes a %s terminal",
+      async (availability) => {
+        const user = userEvent.setup();
+        seedCanvasDocument([{
+          ...TERMINAL_NODE,
+          sessionId: availability === "unattached" ? undefined : LIVE_SESSION.id,
+        }]);
+        const { props } = renderProjectCanvas({
+          isConnected: availability !== "disconnected",
+          sessions: availability === "unattached" ? [] : [{
+            ...LIVE_SESSION,
+            status: availability === "stopped" ? "exited" : "running",
+          }],
+        });
+        await user.click(screen.getByRole("button", { name: "Open Prompt Composer for Terminal 1" }));
+        const editor = screen.getByRole("textbox", { name: "Prompt for Terminal 1" });
+        await user.keyboard("{Enter}{ArrowUp}");
+        await user.type(editor, "Continue when ready{Enter}");
+
+        expect(editor).toHaveValue("Continue when ready");
+        expect(screen.getByRole("button", { name: "Send prompt" })).toBeDisabled();
+        expect(readPromptDraft(TERMINAL_NODE.id)).toBe("Continue when ready");
+        expect(props.writeTerminal).not.toHaveBeenCalled();
+        expect(props.onCreateSession).not.toHaveBeenCalled();
+        expect(props.onStartSession).not.toHaveBeenCalled();
+      },
+    );
+
+    it("restores the same terminal's offline draft after workspace reload", async () => {
+      const user = userEvent.setup();
+      seedCanvasDocument([TERMINAL_NODE]);
+      const first = renderProjectCanvas({ isConnected: false });
+      await user.click(screen.getByRole("button", { name: "Open Prompt Composer for Terminal 1" }));
+      await user.type(screen.getByRole("textbox", { name: "Prompt for Terminal 1" }), "Revisar a implantação");
+      await waitFor(() => expect(readPromptDraft(TERMINAL_NODE.id)).toBe("Revisar a implantação"));
+      first.unmount();
+
+      const second = renderProjectCanvas({ isConnected: false });
+      await user.click(screen.getByRole("button", { name: "Open Prompt Composer for Terminal 1" }));
+      expect(screen.getByRole("textbox", { name: "Prompt for Terminal 1" })).toHaveValue("Revisar a implantação");
+      expect(first.props.writeTerminal).not.toHaveBeenCalled();
+      expect(second.props.writeTerminal).not.toHaveBeenCalled();
+      expect(second.props.onStartSession).not.toHaveBeenCalled();
+    });
+
+    it.each([false, true])(
+      "keeps pending delivery isolated across close/reopen (revised draft: %s)",
+      async (reviseDraft) => {
+        const user = userEvent.setup();
+        const delivery = deferredPromptDelivery();
+        const writeTerminal = vi.fn<LiveTerminalTransport["writeTerminal"]>().mockReturnValue(delivery.promise);
+        seedCanvasDocument([TERMINAL_NODE]);
+        renderProjectCanvas({ sessions: [LIVE_SESSION], writeTerminal });
+        const trigger = screen.getByRole("button", { name: "Open Prompt Composer for Terminal 1" });
+        await user.click(trigger);
+        await user.type(screen.getByRole("textbox", { name: "Prompt for Terminal 1" }), "Repeat{Enter}");
+        await user.click(screen.getByRole("button", { name: "Close Prompt Composer" }));
+        await user.click(trigger);
+        const editor = screen.getByRole("textbox", { name: "Prompt for Terminal 1" });
+        expect(editor).toHaveValue("Repeat");
+        await user.keyboard("{Enter}");
+        expect(writeTerminal).toHaveBeenCalledTimes(1);
+        if (reviseDraft) {
+          await user.clear(editor);
+          await user.type(editor, "Repeat");
+        }
+        await user.click(screen.getByRole("button", { name: "Close Prompt Composer" }));
+        await act(async () => delivery.complete());
+        expect(screen.queryByRole("region", { name: "Prompt Composer" })).not.toBeInTheDocument();
+        await user.click(trigger);
+
+        expect(screen.getByRole("textbox", { name: "Prompt for Terminal 1" })).toHaveValue(reviseDraft ? "Repeat" : "");
+        expect(readPromptDraft(TERMINAL_NODE.id)).toBe(reviseDraft ? "Repeat" : "");
+        expect(writeTerminal).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it("follows the primary terminal without letting the previous delivery erase its draft", async () => {
+      const user = userEvent.setup();
+      const delivery = deferredPromptDelivery();
+      const secondSession = { ...LIVE_SESSION, id: "0198f000-0000-7000-8000-000000000011", name: "Terminal 2" };
+      const secondNode = { ...TERMINAL_NODE, id: "terminal-second", title: "Terminal 2", sessionId: secondSession.id };
+      const writeTerminal = vi.fn<LiveTerminalTransport["writeTerminal"]>()
+        .mockReturnValueOnce(delivery.promise).mockResolvedValue(undefined);
+      seedCanvasDocument([TERMINAL_NODE, secondNode, NOTE_NODE]);
+      renderProjectCanvas({ sessions: [LIVE_SESSION, secondSession], writeTerminal });
+      await user.click(screen.getByRole("button", { name: "Open Prompt Composer for Terminal 1" }));
+      await user.type(screen.getByRole("textbox", { name: "Prompt for Terminal 1" }), "First request{Enter}");
+      await user.click(screen.getByRole("article", { name: "Terminal 2, terminal canvas item" }));
+      const secondEditor = screen.getByRole("textbox", { name: "Prompt for Terminal 2" });
+      await user.type(secondEditor, "Second request");
+      await act(async () => delivery.complete());
+      expect(secondEditor).toHaveValue("Second request");
+      expect(readPromptDraft(TERMINAL_NODE.id)).toBe("");
+      await user.keyboard("{Enter}");
+
+      expect(writeTerminal).toHaveBeenNthCalledWith(1, LIVE_SESSION.id, new TextEncoder().encode("\x1b[200~First request\x1b[201~\r"));
+      expect(writeTerminal).toHaveBeenNthCalledWith(2, secondSession.id, new TextEncoder().encode("\x1b[200~Second request\x1b[201~\r"));
+      await user.click(screen.getByRole("article", { name: "Notes, note canvas item" }));
+      expect(screen.queryByRole("region", { name: "Prompt Composer" })).not.toBeInTheDocument();
+    });
+
+    it("hides the composer on project changes and completes only the original project's draft", async () => {
+      const user = userEvent.setup();
+      const delivery = deferredPromptDelivery();
+      const otherSession = {
+        ...LIVE_SESSION,
+        id: "0198f000-0000-7000-8000-000000000011",
+        projectId: OTHER_PROJECT.id,
+        name: "Other terminal",
+        cwd: OTHER_PROJECT.path,
+      };
+      const otherNode = {
+        ...TERMINAL_NODE, id: "terminal-other", title: "Other terminal",
+        projectId: OTHER_PROJECT.id, sessionId: otherSession.id,
+      };
+      const writeTerminal = vi.fn<LiveTerminalTransport["writeTerminal"]>().mockReturnValue(delivery.promise);
+      seedCanvasDocument([{ ...TERMINAL_NODE, projectId: PROJECT.id }, otherNode]);
+      const props = createProjectCanvasProps({
+        projects: [PROJECT, OTHER_PROJECT], sessions: [LIVE_SESSION, otherSession], writeTerminal,
+      });
+      function ProjectSwitcher() {
+        const [project, setProject] = useState<typeof PROJECT | typeof OTHER_PROJECT>(PROJECT);
+        return <>
+          <button type="button" onClick={() => setProject(OTHER_PROJECT)}>Switch project</button>
+          <CanvasWorkspace {...props} project={project} />
+        </>;
+      }
+      render(<ProjectSwitcher />);
+      await user.click(screen.getByRole("button", { name: "Open Prompt Composer for Terminal 1" }));
+      await user.type(screen.getByRole("textbox", { name: "Prompt for Terminal 1" }), "For Jig{Enter}");
+      await user.click(screen.getByRole("button", { name: "Switch project" }));
+      expect(screen.queryByRole("region", { name: "Prompt Composer" })).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Open Prompt Composer for Other terminal" }));
+      const editor = screen.getByRole("textbox", { name: "Prompt for Other terminal" });
+      await user.type(editor, "Private draft");
+      await act(async () => delivery.complete());
+
+      expect(editor).toHaveValue("Private draft");
+      expect(readPromptDraft(otherNode.id)).toBe("Private draft");
+      expect(readPromptDraft(TERMINAL_NODE.id)).toBe("");
+      expect(writeTerminal).toHaveBeenCalledExactlyOnceWith(LIVE_SESSION.id, new TextEncoder().encode("\x1b[200~For Jig\x1b[201~\r"));
+    });
+
+    it.each(["ctrlKey", "metaKey"] as const)("guards the %s shortcut and Enter against repeat and IME confirmation", async (modifier) => {
+      const user = userEvent.setup();
+      const writeTerminal = vi.fn<LiveTerminalTransport["writeTerminal"]>().mockResolvedValue(undefined);
+      seedCanvasDocument([TERMINAL_NODE]);
+      renderProjectCanvas({ sessions: [LIVE_SESSION], writeTerminal });
+      const terminal = screen.getByRole("article", { name: "Terminal 1, terminal canvas item" });
+      await user.click(terminal);
+      const shortcut = { key: "P", shiftKey: true, [modifier]: true };
+      fireEvent.keyDown(terminal, { ...shortcut, repeat: true });
+      fireEvent.keyDown(terminal, { ...shortcut, isComposing: true });
+      expect(screen.queryByRole("region", { name: "Prompt Composer" })).not.toBeInTheDocument();
+      fireEvent.keyDown(terminal, shortcut);
+      const editor = screen.getByRole("textbox", { name: "Prompt for Terminal 1" });
+      await user.type(editor, "Intentional request");
+      fireEvent.compositionStart(editor);
+      fireEvent.keyDown(editor, shortcut);
+      expect(editor).toBeVisible();
+      fireEvent.compositionEnd(editor);
+      fireEvent.keyDown(editor, { key: "Enter", repeat: true });
+      fireEvent.keyDown(editor, { key: "Enter", isComposing: true });
+      fireEvent.keyDown(editor, { key: "Enter", keyCode: 229 });
+      expect(writeTerminal).not.toHaveBeenCalled();
+      expect(editor).toHaveValue("Intentional request");
+      await user.keyboard("{Enter}");
+      expect(writeTerminal).toHaveBeenCalledExactlyOnceWith(LIVE_SESSION.id, new TextEncoder().encode("\x1b[200~Intentional request\x1b[201~\r"));
+      fireEvent.keyDown(editor, shortcut);
+      expect(screen.queryByRole("region", { name: "Prompt Composer" })).not.toBeInTheDocument();
+      const toolbarTrigger = screen.getByRole("button", { name: "Toggle Prompt Composer" });
+      await user.click(toolbarTrigger);
+      expect(screen.getByRole("textbox", { name: "Prompt for Terminal 1" })).toHaveValue("");
+      await user.keyboard("{Escape}");
+      expect(toolbarTrigger).toHaveFocus();
+      fireEvent.keyDown(toolbarTrigger, shortcut);
+      expect(screen.getByRole("textbox", { name: "Prompt for Terminal 1" })).toHaveFocus();
+    });
+
+    it("forwards intentional empty-editor keys as terminal input", async () => {
+      const user = userEvent.setup();
+      const writeTerminal = vi.fn<LiveTerminalTransport["writeTerminal"]>().mockResolvedValue(undefined);
+      seedCanvasDocument([TERMINAL_NODE]);
+      renderProjectCanvas({ sessions: [LIVE_SESSION], writeTerminal });
+      await user.click(screen.getByRole("button", { name: "Open Prompt Composer for Terminal 1" }));
+      for (const key of ["Enter", "Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]) {
+        await user.keyboard(`{${key}}`);
+      }
+      expect(writeTerminal.mock.calls.map(([sessionId, bytes]) => [sessionId, new TextDecoder().decode(bytes)])).toEqual(
+        ["\r", "\t", "\x1b[A", "\x1b[B", "\x1b[D", "\x1b[C"].map((text) => [LIVE_SESSION.id, text]),
+      );
+      expect(screen.getByRole("textbox", { name: "Prompt for Terminal 1" })).toHaveValue("");
+    });
+
+    it("inserts only connected context snapshots and sends them only on explicit submission", async () => {
+      const user = userEvent.setup();
+      const writeTerminal = vi.fn<LiveTerminalTransport["writeTerminal"]>().mockResolvedValue(undefined);
+      seedCanvasDocument([
+        TERMINAL_NODE, NOTE_NODE, { ...BROWSER_NODE, url: "docs.example.com/guide" },
+        { ...NOTE_NODE, id: "unconnected-note", title: "Unconnected", text: "Not selected as context" },
+      ], [
+        { id: "terminal-note", sourceNodeId: TERMINAL_NODE.id, targetNodeId: NOTE_NODE.id },
+        { id: "browser-terminal", sourceNodeId: BROWSER_NODE.id, targetNodeId: TERMINAL_NODE.id },
+      ]);
+      const { props } = renderProjectCanvas({ sessions: [LIVE_SESSION], writeTerminal });
+      await user.click(screen.getByRole("button", { name: "Open Prompt Composer for Terminal 1" }));
+      const composer = screen.getByRole("region", { name: "Prompt Composer" });
+      await user.click(within(composer).getByText(/Insert context/));
+      expect(within(composer).queryByRole("button", { name: "Insert context from Unconnected" })).not.toBeInTheDocument();
+      await user.click(within(composer).getByRole("button", { name: "Insert context from Notes" }));
+      await user.click(within(composer).getByRole("button", { name: "Insert context from Browser URL" }));
+      const editor = within(composer).getByRole("textbox", { name: "Prompt for Terminal 1" });
+      const draft = (editor as HTMLTextAreaElement).value;
+      expect(draft).toContain("Context snapshot: Notes\nReview the integration\n");
+      expect(draft).toContain("Context snapshot: Browser URL\nhttps://docs.example.com/guide\n");
+      fireEvent.change(within(screen.getByRole("article", { name: "Notes, note canvas item" })).getByRole("textbox"), {
+        target: { value: "Changed after insertion" },
+      });
+      expect(editor).toHaveValue(draft);
+      expect(writeTerminal).not.toHaveBeenCalled();
+      expect(props.onCreateSession).not.toHaveBeenCalled();
+      expect(props.onStartSession).not.toHaveBeenCalled();
+      await user.click(within(composer).getByRole("button", { name: "Send prompt" }));
+      expect(writeTerminal).toHaveBeenCalledExactlyOnceWith(LIVE_SESSION.id, new TextEncoder().encode(`\x1b[200~${draft.replace(/\n/g, "\r")}\x1b[201~\r`));
+    });
+
+    it("preserves a rejected transport write for an explicit retry", async () => {
+      const user = userEvent.setup();
+      const writeTerminal = vi.fn<LiveTerminalTransport["writeTerminal"]>()
+        .mockRejectedValueOnce(new Error("Socket disconnected")).mockResolvedValue(undefined);
+      seedCanvasDocument([TERMINAL_NODE]);
+      renderProjectCanvas({ sessions: [LIVE_SESSION], writeTerminal });
+      await user.click(screen.getByRole("button", { name: "Open Prompt Composer for Terminal 1" }));
+      const editor = screen.getByRole("textbox", { name: "Prompt for Terminal 1" });
+      await user.type(editor, "Keep for retry{Enter}");
+      expect(screen.getByRole("alert")).toHaveTextContent("Could not send the prompt");
+      expect(editor).toHaveValue("Keep for retry");
+      expect(readPromptDraft(TERMINAL_NODE.id)).toBe("Keep for retry");
+      await user.click(screen.getByRole("button", { name: "Try again" }));
+      expect(writeTerminal).toHaveBeenCalledTimes(2);
+      expect(writeTerminal).toHaveBeenLastCalledWith(LIVE_SESSION.id, new TextEncoder().encode("\x1b[200~Keep for retry\x1b[201~\r"));
+      expect(editor).toHaveValue("");
+    });
   });
 
   it("renders the first-launch terminal and note composition", () => {
@@ -1914,7 +2202,14 @@ function renderCanvas(
 function renderProjectCanvas(
   overrides: Partial<ComponentProps<typeof CanvasWorkspace>> = {},
 ) {
-  const props: ComponentProps<typeof CanvasWorkspace> = {
+  const props = createProjectCanvasProps(overrides);
+  return { ...render(<CanvasWorkspace {...props} />), props };
+}
+
+function createProjectCanvasProps(
+  overrides: Partial<ComponentProps<typeof CanvasWorkspace>> = {},
+): ComponentProps<typeof CanvasWorkspace> {
+  return {
     isConnected: true,
     projects: [PROJECT],
     project: PROJECT,
@@ -1938,13 +2233,24 @@ function renderProjectCanvas(
     resizeTerminal: vi.fn(),
     ...overrides,
   };
-  return { ...render(<CanvasWorkspace {...props} />), props };
 }
 
 function readCanvasDocument(): CanvasDocument {
   const document = parseCanvasDocument(localStorage.getItem(CANVAS_STORAGE_KEY));
   if (!document) throw new Error("Expected a persisted canvas document.");
   return document;
+}
+
+function readPromptDraft(nodeId: string): string {
+  const node = readCanvasDocument().nodes.find((candidate) => candidate.id === nodeId);
+  if (node?.kind !== "terminal") throw new Error(`Expected terminal ${nodeId}.`);
+  return node.promptDraft ?? "";
+}
+
+function deferredPromptDelivery() {
+  let complete: () => void = () => {};
+  const promise = new Promise<void>((resolve) => { complete = resolve; });
+  return { promise, complete };
 }
 
 function connectionEndpointX(container: HTMLElement): number {
