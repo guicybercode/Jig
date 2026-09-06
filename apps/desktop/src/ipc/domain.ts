@@ -1,6 +1,6 @@
 /** Additive daemon contracts. Existing UI DTOs remain owned by types.ts. */
 export type * from "./types";
-import type { Worktree } from "./types";
+import type { GitTarget, Worktree } from "./types";
 
 /** List managed worktrees; omission includes every registered project. */
 export interface WorktreeListRequest {
@@ -54,6 +54,68 @@ export interface KnowledgeSaveRequest {
 export interface KnowledgeDeleteRequest {
   readonly id: string;
   readonly expectedRevision: number;
+}
+
+/** Registered project directory, session cwd, or managed worktree root. */
+export type FileTarget = GitTarget | {
+  readonly kind: "worktree";
+  readonly worktreeId: string;
+};
+/** Canonical padded base64 of relative Unix path bytes; empty means list root. */
+export type FilePath = string;
+/** Opaque v1 SHA-256 revision; preserve exactly as returned by the daemon. */
+export type FileRevision = string;
+
+export interface FileEntry {
+  readonly pathBase64: FilePath;
+  readonly displayName: string;
+  readonly kind: "file" | "directory" | "symlink" | "other";
+  readonly sizeBytes?: number;
+  readonly modifiedAtMs?: number;
+}
+
+export interface FileListRequest {
+  readonly target: FileTarget;
+  readonly pathBase64: FilePath;
+  readonly limit?: number;
+  readonly afterNameBase64?: string;
+}
+
+export interface FileListResponse {
+  readonly entries: readonly FileEntry[];
+  readonly nextAfterNameBase64?: string;
+  readonly observedAtMs: number;
+}
+
+export interface FileReadRequest {
+  readonly target: FileTarget;
+  readonly pathBase64: FilePath;
+}
+
+/** Text is bounded to 128 KiB UTF-8 including any BOM; line endings are preserved. */
+export interface FileReadResponse {
+  readonly pathBase64: FilePath;
+  readonly text: string;
+  readonly revision: FileRevision;
+  readonly sizeBytes: number;
+  readonly modifiedAtMs?: number;
+  readonly observedAtMs: number;
+}
+
+/** Existing regular text files only; stale revisions leave the buffer unsaved. */
+export interface FileWriteRequest {
+  readonly target: FileTarget;
+  readonly pathBase64: FilePath;
+  readonly text: string;
+  readonly expectedRevision: FileRevision;
+}
+
+export interface FileWriteResponse {
+  readonly pathBase64: FilePath;
+  readonly revision: FileRevision;
+  readonly sizeBytes: number;
+  readonly modifiedAtMs?: number;
+  readonly writtenAtMs: number;
 }
 
 /** Mirrors core::knowledge::discovery; discovery never establishes native activation. */

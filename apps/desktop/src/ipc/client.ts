@@ -1,6 +1,15 @@
 import { decodeKnowledgeEntry, decodeKnowledgePage } from "./knowledge-schema";
 import { decodeKnowledgeDiscoverResponse, decodeKnowledgeReadResponse } from "./discovery-schema";
 import type { KnowledgeEntry, KnowledgeListRequest, KnowledgeListResponse, KnowledgeSaveRequest, KnowledgeDeleteRequest, KnowledgeDiscoverRequest, KnowledgeDiscoverResponse, KnowledgeReadRequest, KnowledgeReadResponse, WorktreeListRequest } from "./domain";
+import type {
+  FileListRequest,
+  FileListResponse,
+  FileReadRequest,
+  FileReadResponse,
+  FileWriteRequest,
+  FileWriteResponse,
+} from "./domain";
+import { decodeFileListResponse, decodeFileReadResponse, decodeFileWriteResponse } from "./file-schema";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openPath } from "@tauri-apps/plugin-opener";
@@ -64,6 +73,9 @@ export interface TerminalResizeInput {
 /** The sole frontend interface to daemon and native desktop capabilities. */
 export interface IpcClient {
   readonly platform: AppPlatform;
+  listFiles(input: FileListRequest): Promise<FileListResponse>;
+  readFile(input: FileReadRequest): Promise<FileReadResponse>;
+  writeFile(input: FileWriteRequest): Promise<FileWriteResponse>;
   listKnowledge(input: KnowledgeListRequest): Promise<KnowledgeListResponse>;
   saveKnowledge(input: KnowledgeSaveRequest): Promise<KnowledgeEntry>;
   deleteKnowledge(input: KnowledgeDeleteRequest): Promise<void>;
@@ -145,6 +157,18 @@ export function toIpcError(error: unknown): IpcError {
 
 class TauriIpcClient implements IpcClient {
   readonly platform = detectPlatform();
+
+  async listFiles(input: FileListRequest): Promise<FileListResponse> {
+    return this.fileRequest("file.list", input, (value) => decodeFileListResponse(value, input));
+  }
+
+  async readFile(input: FileReadRequest): Promise<FileReadResponse> {
+    return this.fileRequest("file.read", input, (value) => decodeFileReadResponse(value, input));
+  }
+
+  async writeFile(input: FileWriteRequest): Promise<FileWriteResponse> {
+    return this.fileRequest("file.write", input, (value) => decodeFileWriteResponse(value, input));
+  }
 
   async listKnowledge(input: KnowledgeListRequest): Promise<KnowledgeListResponse> {
     return decodeKnowledgePage(await this.request("knowledge.list", input));
@@ -332,6 +356,14 @@ class TauriIpcClient implements IpcClient {
           reason: error instanceof Error ? error.message : String(error),
         },
       });
+    }
+  }
+
+  private async fileRequest<T>(method: string, payload: unknown, decode: (value: unknown) => T): Promise<T> {
+    try {
+      return decode(await this.request(method, payload));
+    } catch (error) {
+      throw toIpcError(error);
     }
   }
 

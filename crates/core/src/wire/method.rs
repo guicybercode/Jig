@@ -62,6 +62,13 @@ pub const WORKTREE_PREPARE_REMOVE: &str = "worktree.prepare_remove";
 /// Remove a managed worktree after token-bound state confirmation.
 pub const WORKTREE_REMOVE: &str = "worktree.remove";
 
+/// List a bounded directory under a registered file target.
+pub const FILE_LIST: &str = "file.list";
+/// Read bounded UTF-8 text with an opaque revision.
+pub const FILE_READ: &str = "file.read";
+/// Atomically save an existing text file after checking its revision.
+pub const FILE_WRITE: &str = "file.write";
+
 /// Read a sanitized local diagnostic snapshot.
 pub const DIAGNOSTICS_GET: &str = "diagnostics.get";
 
@@ -106,6 +113,9 @@ pub const ALL: &[&str] = &[
     WORKTREE_LIST,
     WORKTREE_PREPARE_REMOVE,
     WORKTREE_REMOVE,
+    FILE_LIST,
+    FILE_READ,
+    FILE_WRITE,
     DIAGNOSTICS_GET,
     KNOWLEDGE_LIST,
     KNOWLEDGE_SAVE,
