@@ -124,25 +124,36 @@ fn spawn_with_retry(command: &mut Command, deadline: Instant) -> io::Result<Chil
     retry_spawn(|| command.spawn(), deadline)
 }
 
-fn retry_spawn<T>(mut spawn: impl FnMut() -> io::Result<T>, deadline: Instant) -> io::Result<T> {
+fn retry_spawn<T>(spawn: impl FnMut() -> io::Result<T>, deadline: Instant) -> io::Result<T> {
+    retry_spawn_with_timing(spawn, deadline, Instant::now, thread::sleep)
+}
+
+fn retry_spawn_with_timing<T>(
+    mut spawn: impl FnMut() -> io::Result<T>,
+    deadline: Instant,
+    mut now: impl FnMut() -> Instant,
+    mut sleep: impl FnMut(Duration),
+) -> io::Result<T> {
     let mut last_error = None;
     for attempt in 0..MAX_SPAWN_ATTEMPTS {
-        if Instant::now() >= deadline {
-            return Err(last_error.unwrap_or_else(|| io::Error::from(io::ErrorKind::TimedOut)));
+        if now() >= deadline {
+            return Err(io::Error::from(io::ErrorKind::TimedOut));
         }
         match spawn() {
             Ok(child) => return Ok(child),
             Err(error) if is_transient_spawn_error(&error) => {
-                if attempt + 1 == MAX_SPAWN_ATTEMPTS {
-                    return Err(error);
-                }
-                let remaining = deadline.saturating_duration_since(Instant::now());
+                let remaining = deadline.saturating_duration_since(now());
                 if remaining.is_zero() {
+                    return Err(io::Error::from(io::ErrorKind::TimedOut));
+                }
+                // Preserve the last OS error only when attempts, not time,
+                // are exhausted. The caller maps TimedOut to the wire status.
+                if attempt + 1 == MAX_SPAWN_ATTEMPTS {
                     return Err(error);
                 }
                 last_error = Some(error);
                 let backoff = SPAWN_RETRY_BASE.saturating_mul(attempt + 1);
-                thread::sleep(backoff.min(remaining));
+                sleep(backoff.min(remaining));
             }
             Err(error) => return Err(error),
         }
@@ -390,6 +401,68 @@ mod tests {
             error.raw_os_error(),
             Some(nix::errno::Errno::ETXTBSY as i32)
         );
+    }
+
+    #[test]
+    fn busy_executable_deadline_after_backoff_is_timeout_not_the_last_os_error() {
+        let started = Instant::now();
+        let clock = std::cell::Cell::new(started);
+        let deadline = started + Duration::from_millis(60);
+        let mut attempts = 0;
+        let mut sleeps = Vec::new();
+
+        let error = retry_spawn_with_timing::<()>(
+            || {
+                attempts += 1;
+                Err(io::Error::from_raw_os_error(
+                    nix::errno::Errno::ETXTBSY as i32,
+                ))
+            },
+            deadline,
+            || clock.get(),
+            |duration| {
+                sleeps.push(duration);
+                clock.set(clock.get() + duration);
+            },
+        )
+        .expect_err("a busy executable must not outlive the probe deadline");
+
+        assert_eq!(attempts, 3);
+        assert_eq!(sleeps, [15, 30, 15].map(Duration::from_millis));
+        assert_eq!(clock.get(), deadline);
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(error.raw_os_error(), None);
+    }
+
+    #[test]
+    fn busy_executable_consuming_the_deadline_during_spawn_reports_timeout() {
+        for deadline_attempt in [1, MAX_SPAWN_ATTEMPTS] {
+            let started = Instant::now();
+            let clock = std::cell::Cell::new(started);
+            let deadline = started + Duration::from_secs(2);
+            let mut attempts = 0;
+
+            let error = retry_spawn_with_timing::<()>(
+                || {
+                    attempts += 1;
+                    if attempts == deadline_attempt {
+                        clock.set(deadline);
+                    }
+                    Err(io::Error::from_raw_os_error(
+                        nix::errno::Errno::ETXTBSY as i32,
+                    ))
+                },
+                deadline,
+                || clock.get(),
+                |duration| clock.set(clock.get() + duration),
+            )
+            .expect_err("deadline expiry takes precedence over the attempt limit");
+
+            assert_eq!(attempts, deadline_attempt);
+            assert_eq!(clock.get(), deadline);
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            assert_eq!(error.raw_os_error(), None);
+        }
     }
 
     #[test]
