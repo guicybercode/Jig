@@ -1,5 +1,5 @@
 import { act, renderHook } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   CANVAS_DOCUMENT_UPDATED_EVENT,
@@ -10,6 +10,43 @@ import { useCanvasState } from "./useCanvasState";
 describe("useCanvasState", () => {
   beforeEach(() => {
     localStorage.clear();
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("does not save or publish another document for transient selection changes", () => {
+    const write = vi.spyOn(Storage.prototype, "setItem");
+    const publish = vi.spyOn(globalThis, "dispatchEvent");
+    const { result } = renderHook(() => useCanvasState());
+    write.mockClear();
+    publish.mockClear();
+
+    act(() => result.current.dispatch({
+      type: "nodes/select", nodeIds: ["terminal-primary", "note-first"],
+    }));
+    act(() => result.current.dispatch({ type: "connection/start", nodeId: "terminal-primary" }));
+    act(() => result.current.dispatch({ type: "connection/cancel" }));
+
+    expect(write).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    act(() => result.current.dispatch({ type: "note/update", nodeId: "note-first", text: "Changed" }));
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports failed saves while retaining edits and recovers on the next successful save", () => {
+    const write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("Storage full", "QuotaExceededError");
+    });
+    const { result } = renderHook(() => useCanvasState());
+    expect(result.current.persistenceAvailable).toBe(false);
+    act(() => result.current.dispatch({ type: "note/update", nodeId: "note-first", text: "Keep my draft" }));
+    expect(result.current.state.nodes.find((node) => node.id === "note-first")).toMatchObject({ text: "Keep my draft" });
+    expect(result.current.persistenceAvailable).toBe(false);
+
+    write.mockRestore();
+    act(() => result.current.dispatch({ type: "zoom/set", zoom: 1.2 }));
+    expect(result.current.persistenceAvailable).toBe(true);
+    expect(localStorage.getItem(CANVAS_STORAGE_KEY)).toContain("Keep my draft");
   });
 
   it("hydrates the first-launch graph and persists durable mutations", () => {
