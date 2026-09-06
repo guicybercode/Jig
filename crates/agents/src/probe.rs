@@ -93,7 +93,7 @@ pub enum LaunchTestStatus {
     },
     /// The version probe did not exit before the timeout.
     Timeout,
-    /// The process could not be started.
+    /// The probe could not complete because of an I/O or process error.
     Failed {
         /// Safe explanation that does not include captured output.
         message: String,
@@ -196,14 +196,21 @@ fn probe_resolved_executable(executable: &Path, options: ProbeOptions) -> Execut
                 warning,
             }
         }
-        Err(_) => ExecutableTestReport {
+        Err(error) => ExecutableTestReport {
             installed: true,
             resolved_path: Some(executable.to_path_buf()),
             version: None,
             launch_test: LaunchTestStatus::Failed {
-                message: "the executable could not be started for a version probe".to_owned(),
+                // Error display text may include paths or other caller data.
+                // Retain only the classification and numeric OS error, without
+                // assuming whether spawn, wait, or output collection failed.
+                message: format!(
+                    "the version probe failed (kind={:?}, errno={:?})",
+                    error.kind(),
+                    error.raw_os_error()
+                ),
             },
-            warning: Some("The file is executable but could not be spawned.".to_owned()),
+            warning: Some("The executable was found, but the version probe failed.".to_owned()),
         },
     }
 }

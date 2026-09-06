@@ -145,6 +145,10 @@ fn is_transient_spawn_error(error: &io::Error) -> bool {
         error.kind(),
         io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
     ) || matches!(error.raw_os_error(), Some(11 | 35))
+        // A concurrent child can briefly inherit a newly written executable's
+        // writer until exec closes CLOEXEC descriptors. Keep the same bounded
+        // retry budget when the kernel reports the executable is still busy.
+        || error.raw_os_error() == Some(nix::errno::Errno::ETXTBSY as i32)
 }
 
 fn wait_with_timeout(child: &mut Child, deadline: Instant) -> io::Result<(bool, Option<i32>)> {
@@ -300,6 +304,9 @@ mod tests {
         )));
         assert!(is_transient_spawn_error(&io::Error::from(
             io::ErrorKind::Interrupted
+        )));
+        assert!(is_transient_spawn_error(&io::Error::from_raw_os_error(
+            nix::errno::Errno::ETXTBSY as i32
         )));
         assert!(!is_transient_spawn_error(&io::Error::from(
             io::ErrorKind::PermissionDenied
