@@ -228,6 +228,7 @@ export function useKnowledgeLibrary({
     try {
       onInsert({
         sourceId: draft.original?.id ?? null,
+        sourceRevision: draft.original?.revision ?? null,
         kind: draft.kind,
         title: trimKnowledgeText(draft.title),
         body: draft.body,

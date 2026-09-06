@@ -17,9 +17,18 @@ export type { KnowledgeKind } from "../../../ipc/domain";
 
 /** Plain text the host can append to a session draft after an explicit click. */
 export interface KnowledgeInsertion {
+  /** Saved item used as the editor's base, or null for a never-saved draft. */
   readonly sourceId: string | null;
+  /**
+   * Revision used as the editor's base; null exactly when sourceId is null.
+   * This is provenance, not a claim that the inserted draft matches that revision:
+   * title and body include the user's unsaved edits.
+   */
+  readonly sourceRevision: number | null;
   readonly kind: KnowledgeKind;
+  /** Current draft title, which can differ from the source revision. */
   readonly title: string;
+  /** Exact current draft body, which can differ from the source revision. */
   readonly body: string;
 }
 

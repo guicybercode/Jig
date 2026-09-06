@@ -45,9 +45,48 @@ describe("KnowledgePanel", () => {
     expect(client.writeTerminal).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "Insert into draft" }));
-    expect(onInsert).toHaveBeenCalledWith({ sourceId: saved.id, kind: "context", title: saved.title, body: saved.body });
+    expect(onInsert).toHaveBeenCalledWith({ sourceId: saved.id, sourceRevision: saved.revision, kind: "context", title: saved.title, body: saved.body });
     expect(screen.getByText("Inserted into the session draft.")).toBeVisible();
     expect(client.writeTerminal).not.toHaveBeenCalled();
+  });
+
+  it("inserts unsaved edits with the revision they were based on, even after a newer list response", async () => {
+    const user = userEvent.setup();
+    const original = entry();
+    const onInsert = vi.fn();
+    const client = createMockIpcClient();
+    client.listKnowledge.mockResolvedValueOnce({ entries: [original], nextCursor: null });
+    client.listKnowledge.mockResolvedValue({ entries: [entry({ revision: 4, body: "Changed elsewhere" })], nextCursor: null });
+    render(<KnowledgePanel client={client} onInsert={onInsert} />);
+    await user.click(await screen.findByRole("button", { name: original.title }));
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Edited review" } });
+    fireEvent.change(screen.getByLabelText("Content"), { target: { value: "Unsaved content\n" } });
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(client.listKnowledge).toHaveBeenCalledTimes(2));
+    await user.click(screen.getByRole("button", { name: "Insert into draft" }));
+    expect(onInsert).toHaveBeenCalledWith({
+      sourceId: original.id, sourceRevision: 3, kind: "prompt",
+      title: "Edited review", body: "Unsaved content\n",
+    });
+    expect(client.saveKnowledge).not.toHaveBeenCalled();
+    expect(client.writeTerminal).not.toHaveBeenCalled();
+    expect(client.startSession).not.toHaveBeenCalled();
+  });
+
+  it("inserts a never-saved draft with neither a source ID nor a source revision", async () => {
+    const user = userEvent.setup();
+    const onInsert = vi.fn();
+    const client = createMockIpcClient({ handlers: { listKnowledge: async () => ({ entries: [], nextCursor: null }) } });
+    render(<KnowledgePanel client={client} onInsert={onInsert} />);
+    await user.type(screen.getByLabelText("Title"), "New draft");
+    await user.type(screen.getByLabelText("Content"), "New text");
+    await user.click(screen.getByRole("button", { name: "Insert into draft" }));
+    expect(onInsert).toHaveBeenCalledWith({
+      sourceId: null, sourceRevision: null, kind: "prompt", title: "New draft", body: "New text",
+    });
+    expect(client.saveKnowledge).not.toHaveBeenCalled();
+    expect(client.writeTerminal).not.toHaveBeenCalled();
+    expect(client.startSession).not.toHaveBeenCalled();
   });
 
   it("preserves item and new-project drafts when selecting items, refreshing, or changing project", async () => {
