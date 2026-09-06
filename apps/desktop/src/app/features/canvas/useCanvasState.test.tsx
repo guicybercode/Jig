@@ -14,7 +14,7 @@ describe("useCanvasState", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("does not save or publish another document for transient selection changes", () => {
-    const write = vi.spyOn(Storage.prototype, "setItem");
+    const write = spyOnStorageWrites();
     const publish = vi.spyOn(globalThis, "dispatchEvent");
     const { result } = renderHook(() => useCanvasState());
     write.mockClear();
@@ -34,7 +34,7 @@ describe("useCanvasState", () => {
   });
 
   it("reports failed saves while retaining edits and recovers on the next successful save", () => {
-    const write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    const write = spyOnStorageWrites().mockImplementation(() => {
       throw new DOMException("Storage full", "QuotaExceededError");
     });
     const { result } = renderHook(() => useCanvasState());
@@ -103,3 +103,11 @@ describe("useCanvasState", () => {
     ]);
   });
 });
+
+function spyOnStorageWrites() {
+  // Node 25's fallback owns its methods; jsdom Storage exposes them on its prototype.
+  const owner = Object.prototype.hasOwnProperty.call(localStorage, "setItem")
+    ? localStorage
+    : Storage.prototype;
+  return vi.spyOn(owner, "setItem");
+}

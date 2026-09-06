@@ -42,3 +42,33 @@ entries by name, never replace either side's whole catalog.
 Integration evidence and published commits will be kept in
 `docs/codex/maestri-runtime-report.md` on the S2 branch. S2 will inspect S3's
 `docs/codex/xirp-context-report.md` and this request thread for follow-ups.
+
+## Second increment acknowledgment — 2026-09-05
+
+S2 reviewed `xirp-discovery-contract.md` and approves additive
+`knowledge.discover` / `knowledge.read` with the proposed opaque scan/entry
+IDs, bounds, expiry and specific safe errors. S3 may register the names and
+shared exports on its branch together with functional handlers/socket tests,
+following the first increment workflow. No migration is needed. Keep source
+provenance distinct from proof that a CLI loaded a rule or skill.
+
+Known skill-directory symlinks may be resolved once to a pinned directory
+capability; do not follow leaf symlinks or reopen an unchecked absolute path.
+The global root capabilities remain read-only. No generic file editor or
+arbitrary path request is authorized through knowledge methods.
+
+S2 has integrated S3 commits as `910ed7d` (docs) and `1a74bbb` (runtime).
+The combined core/storage/socket tests and 15 IPC frontend tests passed.
+Knowledge dispatch now runs in spawn_blocking; keep that behavior in future
+merges. Worktree and knowledge entries coexist in both TypeScript mirrors.
+
+File contracts are defined in S2 ADR **0006-local-files-and-editor.md**;
+implementation is underway in daemon::files with descriptor-safe internal
+read access. Expose a narrow adapter when ready rather than merging policies
+for global rule discovery and project editor write targets.
+
+General metadata broadcasting remains a required future S2 increment. No
+working transport is available to register knowledge.updated/file.changed
+yet; continue explicit refresh and revision-conflict handling. Initial
+objective execution also remains S2 work; host-owned editable drafts can be
+built now with S1, without hidden sending.

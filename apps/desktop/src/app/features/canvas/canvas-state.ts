@@ -3,7 +3,7 @@ export const CANVAS_DOCUMENT_VERSION = 1;
 export const CANVAS_DOCUMENT_UPDATED_EVENT = "cli-master:canvas-document-updated";
 
 export type CanvasNodeKind = "terminal" | "note";
-export type TerminalPreset = "shell" | "codex" | "claude" | "opencode" | "custom";
+export type TerminalPreset = "shell" | "codex" | "claude" | "gemini" | "opencode" | "custom";
 
 export const DEFAULT_TERMINAL_SIZE = { width: 432, height: 256 } as const;
 export const NOTE_SIZE = { width: 288, height: 288 } as const;
@@ -770,6 +770,7 @@ function configureTerminalNode(
 function normalizeTerminalPreset(value: unknown): TerminalPreset {
   return value === "codex" ||
     value === "claude" ||
+    value === "gemini" ||
     value === "opencode" ||
     value === "custom"
     ? value
@@ -782,6 +783,8 @@ function executableForPreset(preset: TerminalPreset): string | undefined {
       return "codex";
     case "claude":
       return "claude";
+    case "gemini":
+      return "gemini";
     case "opencode":
       return "opencode";
     case "shell":
@@ -796,6 +799,8 @@ function titleForPreset(preset: TerminalPreset): string {
       return "Codex";
     case "claude":
       return "Claude";
+    case "gemini":
+      return "Gemini";
     case "opencode":
       return "OpenCode";
     case "shell":

@@ -279,6 +279,193 @@ describe("CanvasWorkspace", () => {
     expect(container.querySelector(".canvas-node--selected")).toBe(terminal);
   });
 
+  it("toggles group selection with Shift+click and Shift+Space without child focus collapsing it", async () => {
+    const user = userEvent.setup();
+    renderCanvas();
+    const terminal = screen.getByRole("article", { name: "Terminal 1, terminal canvas item" });
+    const other = screen.getByRole("article", { name: "Terminal 2, terminal canvas item" });
+    const note = screen.getByRole("article", { name: "Notes, note canvas item" });
+    await user.click(terminal);
+    await user.keyboard("{Shift>}");
+    await user.click(within(other).getByLabelText("Move Terminal 2"));
+    await user.keyboard("{/Shift}");
+    expect(terminal).toHaveAttribute("data-selected", "true");
+    expect(other).toHaveAttribute("data-selected", "true");
+    expect(screen.getByText(/2 selected/)).toBeVisible();
+    await user.click(within(terminal).getByRole("region", { name: "Terminal surface for Terminal 1" }));
+    expect(screen.getByText(/2 selected/)).toBeVisible();
+    await user.click(screen.getByRole("textbox", { name: "Notes content" }));
+    expect(note).not.toHaveAttribute("data-selected");
+    expect(screen.getByText(/2 selected/)).toBeVisible();
+    note.focus();
+    await user.keyboard("{Shift>} {/Shift}");
+    expect(screen.getByText(/3 selected/)).toBeVisible();
+    await user.keyboard("{Shift>}");
+    await user.click(other);
+    await user.keyboard("{/Shift}");
+    expect(other).not.toHaveAttribute("data-selected");
+    expect(screen.getByText(/2 selected/)).toBeVisible();
+  });
+
+  it("moves the selected group by keyboard and drag while preserving relative spacing", async () => {
+    const user = userEvent.setup();
+    renderCanvas();
+    const terminal = screen.getByRole("article", { name: "Terminal 1, terminal canvas item" });
+    const other = screen.getByRole("article", { name: "Terminal 2, terminal canvas item" });
+    await user.click(terminal);
+    await user.keyboard("{Shift>}");
+    await user.click(other);
+    await user.keyboard("{/Shift}{ArrowRight}");
+    await waitFor(() => {
+      expect(readNodePosition("terminal-primary")).toEqual({ x: 178, y: 210 });
+      expect(readNodePosition("terminal-secondary")).toEqual({ x: 568, y: 90 });
+    });
+    const header = within(terminal).getByLabelText("Move Terminal 1");
+    fireEvent.pointerDown(header, { button: 0, pointerId: 7, clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(header, { pointerId: 7, clientX: 120, clientY: 130 });
+    fireEvent.pointerMove(header, { pointerId: 7, clientX: 132, clientY: 140 });
+    fireEvent.pointerUp(header, { pointerId: 7 });
+    await waitFor(() => {
+      expect(readNodePosition("terminal-primary")).toEqual({ x: 210, y: 250 });
+      expect(readNodePosition("terminal-secondary")).toEqual({ x: 600, y: 130 });
+      expect(readNodePosition("note-first")).toEqual({ x: 600, y: 390 });
+    });
+    expect(screen.getByText(/2 selected/)).toBeVisible();
+  });
+
+  it("selects, duplicates, and removes groups with shortcuts without daemon mutations", async () => {
+    const user = userEvent.setup();
+    const { props } = renderCanvas();
+    const viewport = screen.getByLabelText("Pannable canvas");
+    viewport.focus();
+    await user.keyboard("{Control>}a{/Control}{Control>}d{/Control}");
+    expect(screen.getAllByRole("article")).toHaveLength(6);
+    expect(screen.getByText(/3 selected/)).toBeVisible();
+    expect(screen.getByRole("article", { name: "Notes copy, note canvas item" })).toHaveFocus();
+    await waitFor(() => expect(readCanvasDocument()?.connections).toHaveLength(4));
+    await user.keyboard("{Delete}");
+    expect(screen.getAllByRole("article")).toHaveLength(3);
+    expect(viewport).toHaveFocus();
+    expect(props.onCreateCustomAgent).not.toHaveBeenCalled();
+    expect(props.onCreateSession).not.toHaveBeenCalled();
+    expect(props.onStartSession).not.toHaveBeenCalled();
+    expect(props.onStopSession).not.toHaveBeenCalled();
+    expect(props.onDeleteSession).not.toHaveBeenCalled();
+    expect(props.onRemoveWorktree).not.toHaveBeenCalled();
+  });
+
+  it("leaves group shortcuts inside editors, terminal surfaces, and buttons to those controls", async () => {
+    const user = userEvent.setup();
+    renderCanvas();
+    await user.click(screen.getByRole("button", { name: "Select all canvas items" }));
+    const note = screen.getByRole("textbox", { name: "Notes content" });
+    const terminal = screen.getByRole("region", { name: "Terminal surface for Terminal 1" });
+    const button = screen.getByRole("button", { name: "Duplicate selected canvas items" });
+    for (const target of [note, terminal, button]) {
+      expect(fireEvent.keyDown(target, { key: "d", ctrlKey: true })).toBe(true);
+      expect(fireEvent.keyDown(target, { key: "a", metaKey: true })).toBe(true);
+      expect(fireEvent.keyDown(target, { key: "Backspace" })).toBe(true);
+    }
+    expect(screen.getAllByRole("article")).toHaveLength(3);
+    expect(screen.getByText(/3 selected/)).toBeVisible();
+  });
+
+  it("copies the exact attached agent and starts it only when explicitly requested", async () => {
+    const user = userEvent.setup();
+    const agent = {
+      ...SHELL_AGENT,
+      displayName: "Review Codex",
+      command: { executable: "/opt/bin/codex", args: ["--model", "review"], env: { CUSTOM_TOKEN: "must-not-persist" } },
+    };
+    const { props } = renderProjectCanvas({ agents: [agent], sessions: [STOPPED_SESSION], worktrees: [MANAGED_WORKTREE] });
+    await user.click(screen.getByRole("article", { name: "Review agent, terminal canvas item" }));
+    await user.click(screen.getByRole("button", { name: "Duplicate selected canvas items" }));
+    const copied = screen.getByRole("article", { name: "Review agent copy, terminal canvas item" });
+    expect(within(copied).getByText("Review Codex draft")).toBeVisible();
+    expect(copied).not.toHaveAttribute("data-canvas-session-id");
+    expect(props.onCreateSession).not.toHaveBeenCalled();
+    expect(props.onStartSession).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(readCanvasDocument()?.nodes).toContainEqual(expect.objectContaining({ title: "Review agent copy", agentId: agent.id }));
+      expect(localStorage.getItem(CANVAS_STORAGE_KEY)).not.toContain("must-not-persist");
+    });
+    await user.click(within(copied).getByRole("button", { name: "Start terminal" }));
+    expect(props.onCreateSession).toHaveBeenCalledWith({
+      projectId: PROJECT.id,
+      name: "Review agent copy",
+      agentId: agent.id,
+      isolation: "current",
+      relativeDirectory: ".worktrees/review",
+    });
+    expect(props.onCreateCustomAgent).not.toHaveBeenCalled();
+    expect(props.onStartSession).toHaveBeenCalledWith(STOPPED_SESSION.id);
+  });
+
+  it.each(["missing", "disabled"])("refuses to replace a %s saved agent with a shell", async (availability) => {
+    const user = userEvent.setup();
+    const { props } = renderProjectCanvas({
+      agents: availability === "missing" ? [] : [{ ...SHELL_AGENT, enabled: false }],
+      sessions: [STOPPED_SESSION],
+    });
+    await user.click(screen.getByRole("article", { name: "Review agent, terminal canvas item" }));
+    await user.click(screen.getByRole("button", { name: "Duplicate selected canvas items" }));
+    const copied = screen.getByRole("article", { name: "Review agent copy, terminal canvas item" });
+    await user.click(within(copied).getByRole("button", { name: "Start terminal" }));
+    expect(within(copied).getByText(/The original agent is (unavailable|disabled)/)).toBeVisible();
+    expect(props.onCreateSession).not.toHaveBeenCalled();
+    expect(props.onCreateCustomAgent).not.toHaveBeenCalled();
+    expect(props.onStartSession).not.toHaveBeenCalled();
+  });
+
+  it("scopes group actions to the current project and prunes selection after switching", async () => {
+    const user = userEvent.setup();
+    const otherSession = { ...STOPPED_SESSION, id: "other-session", projectId: OTHER_PROJECT.id, name: "Other agent" };
+    const { props, rerender } = renderProjectCanvas({ sessions: [STOPPED_SESSION, otherSession], projects: [PROJECT, OTHER_PROJECT] });
+    await user.click(screen.getByRole("article", { name: "Review agent, terminal canvas item" }));
+    rerender(<CanvasWorkspace {...props} project={OTHER_PROJECT} />);
+    expect(screen.queryByText(/1 selected/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Select all canvas items" }));
+    await user.click(screen.getByRole("button", { name: "Remove selected items from canvas" }));
+    expect(screen.queryByRole("article")).not.toBeInTheDocument();
+    rerender(<CanvasWorkspace {...props} />);
+    expect(screen.getByRole("article", { name: "Review agent, terminal canvas item" })).toBeVisible();
+    await waitFor(() => {
+      expect(readCanvasDocument()?.hiddenSessionIds).toContain(otherSession.id);
+      expect(readCanvasDocument()?.hiddenSessionIds).not.toContain(STOPPED_SESSION.id);
+    });
+    expect(props.onStopSession).not.toHaveBeenCalled();
+    expect(props.onDeleteSession).not.toHaveBeenCalled();
+  });
+
+  it("searches metadata, focuses results, and keeps live terminals mounted while filtering", async () => {
+    const user = userEvent.setup();
+    const { props } = renderProjectCanvas({ sessions: [{ ...STOPPED_SESSION, status: "running" }] });
+    const terminal = screen.getByTestId(`live-terminal-${STOPPED_SESSION.id}`);
+    const viewport = screen.getByLabelText("Pannable canvas");
+    const scrollTo = vi.fn();
+    Object.defineProperty(viewport, "scrollTo", { configurable: true, value: scrollTo });
+    viewport.focus();
+    await user.keyboard("{Meta>}f{/Meta}");
+    const search = screen.getByRole("searchbox", { name: "Search canvas items" });
+    expect(search).toHaveFocus();
+    await user.type(search, "agent/review");
+    const panel = screen.getByRole("region", { name: "Canvas items" });
+    expect(within(panel).getByText("1 of 4 items")).toBeVisible();
+    expect(screen.getByTestId(`live-terminal-${STOPPED_SESSION.id}`)).toBe(terminal);
+    await user.keyboard("{ArrowDown}{Enter}");
+    expect(screen.queryByRole("region", { name: "Canvas items" })).not.toBeInTheDocument();
+    expect(screen.getByRole("article", { name: "Review agent, terminal canvas item" })).toHaveFocus();
+    expect(scrollTo).toHaveBeenCalledOnce();
+    expect(props.onSelectSession).toHaveBeenCalledWith(STOPPED_SESSION.id);
+    await user.click(screen.getByRole("button", { name: "Show canvas items" }));
+    await user.type(screen.getByRole("searchbox"), "no-such-item");
+    expect(screen.getByText(/No matching items/)).toBeVisible();
+    expect(screen.getByTestId(`live-terminal-${STOPPED_SESSION.id}`)).toBe(terminal);
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("button", { name: "Show canvas items" })).toHaveFocus();
+    expect(props.onStopSession).not.toHaveBeenCalled();
+  });
+
   it("resizes a terminal by keyboard and pointer", async () => {
     const user = userEvent.setup();
     renderCanvas();
@@ -651,6 +838,41 @@ describe("CanvasWorkspace", () => {
       ).not.toBeInTheDocument();
     });
     expect(onDeleteSession).not.toHaveBeenCalled();
+  });
+
+  it("preserves dismissed sessions during offline edits and connected reconciliation", async () => {
+    localStorage.setItem(CANVAS_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      nodes: [],
+      connections: [],
+      zoom: 1,
+      hiddenSessionIds: [STOPPED_SESSION.id],
+    }));
+    const user = userEvent.setup();
+    const { props, rerender } = renderCanvas({ isConnected: false });
+
+    await user.click(screen.getByRole("button", { name: "Add note" }));
+    await waitFor(() => {
+      expect(readCanvasDocument().nodes).toHaveLength(1);
+      expect(readCanvasDocument().hiddenSessionIds).toContain(STOPPED_SESSION.id);
+    });
+
+    rerender(<CanvasWorkspace
+      {...props}
+      isConnected
+      project={PROJECT}
+      projects={[PROJECT]}
+      agents={[SHELL_AGENT]}
+      sessions={[STOPPED_SESSION]}
+    />);
+
+    expect(screen.queryByRole("article", {
+      name: "Review agent, terminal canvas item",
+    })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Notes content" })).toBeVisible();
+    expect(readCanvasDocument().hiddenSessionIds).toContain(STOPPED_SESSION.id);
+    expect(props.onDeleteSession).not.toHaveBeenCalled();
+    expect(props.onStopSession).not.toHaveBeenCalled();
   });
 
   it("reconciles project sessions again after resetting the canvas document", async () => {
