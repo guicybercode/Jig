@@ -25,6 +25,7 @@ import {
   createInitialCanvasDocument,
   createSessionTerminalCanvasNode,
   createTerminalCanvasNode,
+  duplicateCanvasSelection,
   getCanvasNodeSize,
   type CanvasTerminalConfiguration,
   type CanvasNode,
@@ -32,6 +33,7 @@ import {
   type TerminalCanvasNode,
 } from "./canvas-state";
 import { CanvasConnections } from "./CanvasConnections";
+import { CanvasElementSearch } from "./CanvasElementSearch";
 import {
   CANVAS_ORIGIN_X,
   CANVAS_ORIGIN_Y,
@@ -111,6 +113,8 @@ export function CanvasWorkspace({
   const viewportInitializedRef = useRef(false);
   const nodeElementsRef = useRef(new Map<string, HTMLElement>());
   const handledFocusRequestRef = useRef<CanvasSessionFocusRequest | null>(null);
+  const focusSelectionRef = useRef(false);
+  const layersTriggerRef = useRef<HTMLButtonElement>(null);
   const panRef = useRef<{
     readonly pointerId: number;
     readonly clientX: number;
@@ -194,6 +198,9 @@ export function CanvasWorkspace({
   const selectedNode = visibleNodes.find(
     (node) => node.id === state.selectedNodeId,
   );
+  const selectedNodeIds = state.selectedNodeIds.filter((id) =>
+    visibleNodeIds.has(id),
+  );
   const selectedConnections = selectedNode
     ? visibleConnections.flatMap((connection) => {
         const otherNodeId =
@@ -261,11 +268,11 @@ export function CanvasWorkspace({
   }, [dispatch, projectSessions, sessionCanvasTopologyKey, sessions]);
 
   useLayoutEffect(() => {
-    if (
-      state.selectedNodeId !== null &&
-      !visibleNodeIds.has(state.selectedNodeId)
-    ) {
-      dispatch({ type: "node/select", nodeId: null });
+    const remainingSelection = state.selectedNodeIds.filter((id) =>
+      visibleNodeIds.has(id),
+    );
+    if (remainingSelection.length !== state.selectedNodeIds.length) {
+      dispatch({ type: "nodes/select", nodeIds: remainingSelection });
     }
     if (
       state.connectionSourceId !== null &&
@@ -276,9 +283,18 @@ export function CanvasWorkspace({
   }, [
     dispatch,
     state.connectionSourceId,
-    state.selectedNodeId,
+    state.selectedNodeIds,
     visibleNodeIds,
   ]);
+
+  useLayoutEffect(() => {
+    if (focusSelectionRef.current && state.selectedNodeId) {
+      focusSelectionRef.current = false;
+      nodeElementsRef.current
+        .get(state.selectedNodeId)
+        ?.focus({ preventScroll: true });
+    }
+  }, [state.selectedNodeId]);
 
   useLayoutEffect(() => {
     if (!selectedSessionId) {
@@ -455,6 +471,52 @@ export function CanvasWorkspace({
     dispatch({ type: "zoom/set", zoom: Number(zoom.toFixed(2)) });
   }
 
+  function selectAllNodes() {
+    onSelectSession(null);
+    dispatch({
+      type: "nodes/select",
+      nodeIds: visibleNodes.map((node) => node.id),
+    });
+  }
+
+  function duplicateSelectedNodes() {
+    if (selectedNodeIds.length === 0) return;
+    onSelectSession(null);
+    focusSelectionRef.current = true;
+    dispatch(duplicateCanvasSelection(state, selectedNodeIds));
+  }
+
+  function removeSelectedNodes() {
+    if (selectedNodeIds.length === 0) return;
+    onSelectSession(null);
+    dispatch({ type: "nodes/delete", nodeIds: selectedNodeIds });
+    viewportRef.current?.focus({ preventScroll: true });
+  }
+
+  function selectNode(node: CanvasNode, additive = false, fromFocus = false) {
+    if (fromFocus && state.selectedNodeIds.length > 0) return;
+    const sessionId = node.kind === "terminal" ? node.sessionId : undefined;
+    // A selection made here is already focused; do not treat its echo from
+    // AppShell as a sidebar navigation request that would collapse the group.
+    handledFocusRequestRef.current = sessionId
+      ? { sessionId, revision: sessionFocusRevision }
+      : null;
+    if (additive || !state.selectedNodeIds.includes(node.id)) {
+      dispatch({ type: "node/select", nodeId: node.id, additive });
+    } else if (state.selectedNodeId !== node.id) {
+      dispatch({
+        type: "nodes/select",
+        nodeIds: [...state.selectedNodeIds.filter((id) => id !== node.id), node.id],
+      });
+    }
+    onSelectSession(sessionId ?? null);
+  }
+
+  function closeLayers() {
+    setLayersOpen(false);
+    layersTriggerRef.current?.focus();
+  }
+
   function fitCanvasToItems() {
     const viewport = viewportRef.current;
     if (!viewport || storedVisibleNodes.length === 0) {
@@ -545,6 +607,27 @@ export function CanvasWorkspace({
       className="canvas-workspace"
       tabIndex={-1}
       aria-labelledby="canvas-workspace-title"
+      onKeyDown={(event) => {
+        if (event.defaultPrevented || isCanvasEditingTarget(event.target)) {
+          return;
+        }
+        const command = event.metaKey || event.ctrlKey;
+        if (command && event.key.toLowerCase() === "f") {
+          event.preventDefault();
+          setLayersOpen(true);
+        } else if (command && event.key.toLowerCase() === "a") {
+          event.preventDefault();
+          selectAllNodes();
+        } else if (command && event.key.toLowerCase() === "d") {
+          event.preventDefault();
+          duplicateSelectedNodes();
+        } else if (event.key === "Delete" || event.key === "Backspace") {
+          event.preventDefault();
+          removeSelectedNodes();
+        } else if (event.key === "Escape") {
+          dispatch({ type: "node/select", nodeId: null });
+        }
+      }}
     >
       <div className="canvas-context" aria-live="polite">
         <span className="canvas-context__eyebrow">Workspace</span>
@@ -604,15 +687,34 @@ export function CanvasWorkspace({
         <button
           className="canvas-tool"
           type="button"
-          aria-label="Remove selected item from canvas"
-          title="Remove the selected card without deleting session metadata"
-          disabled={!selectedNode}
-          onClick={() => {
-            if (selectedNode) {
-              onSelectSession(null);
-              dispatch({ type: "node/delete", nodeId: selectedNode.id });
-            }
-          }}
+          aria-label="Select all canvas items"
+          title="Select all canvas items (⌘/Ctrl+A)"
+          disabled={visibleNodes.length === 0}
+          onClick={selectAllNodes}
+        >
+          <Icon name="layers" />
+        </button>
+        <button
+          className="canvas-tool"
+          type="button"
+          aria-label="Duplicate selected canvas items"
+          title="Duplicate selected cards (⌘/Ctrl+D); sessions start manually"
+          disabled={selectedNodeIds.length === 0}
+          onClick={duplicateSelectedNodes}
+        >
+          <Icon name="copy" />
+        </button>
+        <button
+          className="canvas-tool"
+          type="button"
+          aria-label={
+            selectedNodeIds.length > 1
+              ? "Remove selected items from canvas"
+              : "Remove selected item from canvas"
+          }
+          title="Remove selected cards (Delete); sessions keep running"
+          disabled={selectedNodeIds.length === 0}
+          onClick={removeSelectedNodes}
         >
           <Icon name="trash" />
         </button>
@@ -628,6 +730,12 @@ export function CanvasWorkspace({
           <Icon name="refresh" />
         </button>
       </div>
+
+      <p className="canvas-selection-status" role="status">
+        {selectedNodeIds.length > 0
+          ? `${selectedNodeIds.length} selected · Shift+click to add or remove`
+          : "Shift+click to select multiple items"}
+      </p>
 
       {visibleConnectionSourceId ? (
         <div className="canvas-connect-notice" role="status">
@@ -647,7 +755,7 @@ export function CanvasWorkspace({
         className="canvas-viewport"
         tabIndex={0}
         aria-label="Pannable canvas"
-        aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
+        aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight Control+a Meta+a Control+d Meta+d Control+f Meta+f Delete Backspace"
         onKeyDown={(event) => {
           if (event.defaultPrevented || event.currentTarget !== event.target) {
             return;
@@ -656,8 +764,16 @@ export function CanvasWorkspace({
           const movement = keyboardMovement(event.key, step);
           if (movement) {
             event.preventDefault();
-            event.currentTarget.scrollLeft += movement.x;
-            event.currentTarget.scrollTop += movement.y;
+            if (selectedNodeIds.length > 0) {
+              dispatch({
+                type: "nodes/move",
+                nodeIds: selectedNodeIds,
+                delta: keyboardMovement(event.key, event.altKey ? 1 : 8) ?? movement,
+              });
+            } else {
+              event.currentTarget.scrollLeft += movement.x;
+              event.currentTarget.scrollTop += movement.y;
+            }
           }
         }}
         onPointerDown={(event) => {
@@ -739,19 +855,22 @@ export function CanvasWorkspace({
                     : undefined
                 }
                 session={session}
+                agent={agents.find(
+                  (agent) => agent.id === (session?.agentId ??
+                    (node.kind === "terminal" ? node.agentId : undefined)),
+                )}
                 worktree={worktree}
                 isConnected={isConnected}
-                selected={state.selectedNodeId === node.id}
+                selected={selectedNodeIds.includes(node.id)}
                 connectionSource={visibleConnectionSourceId}
                 connectionCount={visibleConnections.filter(
                   (connection) =>
                     connection.sourceNodeId === node.id ||
                     connection.targetNodeId === node.id,
                 ).length}
-                onSelect={() => {
-                  dispatch({ type: "node/select", nodeId: node.id });
-                  onSelectSession(session?.id ?? null);
-                }}
+                onSelect={(additive, fromFocus) =>
+                  selectNode(node, additive, fromFocus)
+                }
                 onConnect={() => {
                   if (
                     visibleConnectionSourceId &&
@@ -775,8 +894,14 @@ export function CanvasWorkspace({
                   dispatch({ type: "node/delete", nodeId: node.id });
                 }}
                 zoom={state.zoom}
-                onMove={(position) =>
-                  dispatch({ type: "node/move", nodeId: node.id, position })
+                onMove={(delta) =>
+                  dispatch({
+                    type: "nodes/move",
+                    nodeIds: selectedNodeIds.includes(node.id)
+                      ? selectedNodeIds
+                      : [node.id],
+                    delta,
+                  })
                 }
                 onResize={(size) =>
                   dispatch({ type: "terminal/resize", nodeId: node.id, size })
@@ -816,36 +941,14 @@ export function CanvasWorkspace({
       </div>
 
       {layersOpen ? (
-        <section
-          id="canvas-layers-panel"
-          className="canvas-layers-panel"
-          aria-labelledby="canvas-layers-title"
-        >
-          <header>
-            <div>
-              <span>Workspace</span>
-              <h2 id="canvas-layers-title">Canvas items</h2>
-            </div>
-            <span>{visibleNodes.length}</span>
-          </header>
-          <ul>
-            {visibleNodes.map((node) => (
-              <li key={node.id}>
-                <button type="button" onClick={() => focusNode(node)}>
-                  <Icon name={node.kind === "terminal" ? "terminal" : "note"} />
-                  <span>{node.title}</span>
-                  <small>
-                    {visibleConnections.filter(
-                      (connection) =>
-                        connection.sourceNodeId === node.id ||
-                        connection.targetNodeId === node.id,
-                    ).length} connections
-                  </small>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
+        <CanvasElementSearch
+          key={project?.id ?? "shared"}
+          nodes={visibleNodes}
+          sessions={terminalSessions}
+          agents={agents}
+          onFocusNode={focusNode}
+          onClose={closeLayers}
+        />
       ) : null}
 
       {selectedNode && selectedConnections.length > 0 && !layersOpen ? (
@@ -889,6 +992,7 @@ export function CanvasWorkspace({
         aria-label="Canvas view controls"
       >
         <button
+          ref={layersTriggerRef}
           type="button"
           aria-label="Show canvas items"
           aria-expanded={layersOpen}
@@ -954,17 +1058,18 @@ interface CanvasNodeCardProps {
     readonly height: number;
   };
   readonly session?: Session;
+  readonly agent?: AgentRecord;
   readonly worktree?: Worktree;
   readonly isConnected: boolean;
   readonly selected: boolean;
   readonly connectionSource: string | null;
   readonly connectionCount: number;
   readonly zoom: number;
-  readonly onSelect: () => void;
+  readonly onSelect: (additive?: boolean, fromFocus?: boolean) => void;
   readonly onConnect: () => void;
   readonly onCancelConnection: () => void;
   readonly onDelete: () => void;
-  readonly onMove: (position: { readonly x: number; readonly y: number }) => void;
+  readonly onMove: (delta: { readonly x: number; readonly y: number }) => void;
   readonly onResize: (size: {
     readonly width: number;
     readonly height: number;
@@ -989,6 +1094,7 @@ function CanvasNodeCard({
   node,
   storedTerminalSize,
   session,
+  agent,
   worktree,
   isConnected,
   selected,
@@ -1020,9 +1126,8 @@ function CanvasNodeCard({
     readonly pointerId: number;
     readonly clientX: number;
     readonly clientY: number;
-    readonly nodeX: number;
-    readonly nodeY: number;
   } | null>(null);
+  const pointerSelectingRef = useRef(false);
   const resizeRef = useRef<{
     readonly pointerId: number;
     readonly clientX: number;
@@ -1057,8 +1162,17 @@ function CanvasNodeCard({
       data-canvas-session-id={session?.id}
       data-selected={selected ? "true" : undefined}
       aria-describedby={selected ? `${node.id}-selection-status` : undefined}
-      aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
-      onFocus={onSelect}
+      aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight Shift+Space"
+      onFocus={(event) => {
+        if (event.currentTarget === event.target && !pointerSelectingRef.current) {
+          onSelect(false, true);
+        } else if (
+          event.target instanceof Element &&
+          event.target.closest("[data-terminal-root]")
+        ) {
+          onSelect();
+        }
+      }}
       onKeyDown={(event) => {
         if (event.currentTarget !== event.target) {
           return;
@@ -1067,7 +1181,11 @@ function CanvasNodeCard({
         const movement = keyboardMovement(event.key, step);
         if (movement) {
           event.preventDefault();
-          onMove({ x: node.x + movement.x, y: node.y + movement.y });
+          onSelect();
+          onMove(movement);
+        } else if (event.key === " " && event.shiftKey) {
+          event.preventDefault();
+          onSelect(true);
         } else if (event.key === "Escape" && connectionSource) {
           event.preventDefault();
           onCancelConnection();
@@ -1075,7 +1193,23 @@ function CanvasNodeCard({
       }}
       onPointerDown={(event) => {
         event.stopPropagation();
-        onSelect();
+        if (event.button !== 0) return;
+        if (
+          event.target instanceof Element &&
+          event.target.closest("[data-terminal-root]")
+        ) {
+          onSelect();
+          return;
+        }
+        if (isCanvasEditingTarget(event.target)) return;
+        pointerSelectingRef.current = true;
+        onSelect(event.shiftKey);
+      }}
+      onPointerUp={() => {
+        pointerSelectingRef.current = false;
+      }}
+      onPointerCancel={() => {
+        pointerSelectingRef.current = false;
       }}
     >
       {selected ? (
@@ -1088,20 +1222,22 @@ function CanvasNodeCard({
         aria-label={`Move ${node.title}`}
         onPointerDown={(event) => {
           if (
-            event.target instanceof Element &&
-            event.target.closest("button, summary")
+            event.button !== 0 ||
+            (event.target instanceof Element &&
+              event.target.closest("button, summary"))
           ) {
             return;
           }
           event.preventDefault();
           event.stopPropagation();
-          onSelect();
+          pointerSelectingRef.current = true;
+          onSelect(event.shiftKey);
+          event.currentTarget.closest("article")?.focus({ preventScroll: true });
+          if (event.shiftKey) return;
           dragRef.current = {
             pointerId: event.pointerId,
             clientX: event.clientX,
             clientY: event.clientY,
-            nodeX: node.x,
-            nodeY: node.y,
           };
           event.currentTarget.setPointerCapture?.(event.pointerId);
         }}
@@ -1111,9 +1247,14 @@ function CanvasNodeCard({
             return;
           }
           onMove({
-            x: drag.nodeX + (event.clientX - drag.clientX) / zoom,
-            y: drag.nodeY + (event.clientY - drag.clientY) / zoom,
+            x: (event.clientX - drag.clientX) / zoom,
+            y: (event.clientY - drag.clientY) / zoom,
           });
+          dragRef.current = {
+            pointerId: event.pointerId,
+            clientX: event.clientX,
+            clientY: event.clientY,
+          };
         }}
         onPointerUp={(event) => {
           if (dragRef.current?.pointerId === event.pointerId) {
@@ -1197,6 +1338,7 @@ function CanvasNodeCard({
         <>
           <TerminalNodeBody
             node={node}
+            agent={agent}
             session={session}
             onStart={onStartTerminal}
             pending={terminalPending}
@@ -1726,6 +1868,7 @@ function keyboardResize(
 
 function TerminalNodeBody({
   node,
+  agent,
   session,
   onStart,
   pending,
@@ -1734,6 +1877,7 @@ function TerminalNodeBody({
   transport,
 }: {
   readonly node: TerminalCanvasNode;
+  readonly agent?: AgentRecord;
   readonly session?: Session;
   readonly onStart: () => void;
   readonly pending: boolean;
@@ -1758,7 +1902,7 @@ function TerminalNodeBody({
           </>
         ) : (
           <span className="canvas-terminal__draft">
-            <Icon name="terminal" /> {node.executable ?? "Shell"} draft
+            <Icon name="terminal" /> {agent?.displayName ?? node.executable ?? (node.agentId ? "Saved agent" : "Shell")} draft
           </span>
         )}
       </div>
@@ -1774,7 +1918,7 @@ function TerminalNodeBody({
               startDisabledReason ??
               (session
                 ? "This terminal is stopped. Start it to attach a fresh live PTY."
-                : `${node.executable ?? "A login shell"} is ready to start in this project.`)}
+                : `${agent?.displayName ?? node.executable ?? (node.agentId ? "The saved agent" : "A login shell")} is ready to start in this project.`)}
           </p>
           <div className="canvas-terminal__body-actions">
             <button
@@ -1804,6 +1948,16 @@ async function resolveTerminalAgent(
     input: CreateCustomAgentInput,
   ) => Promise<AgentRecord>,
 ): Promise<AgentRecord> {
+  if (node.agentId) {
+    const savedAgent = agents.find((agent) => agent.id === node.agentId);
+    if (!savedAgent) {
+      throw new Error("The original agent is unavailable. Restore it before starting this copy.");
+    }
+    if (!savedAgent.enabled) {
+      throw new Error("The original agent is disabled. Enable it before starting this copy.");
+    }
+    return savedAgent;
+  }
   if (node.preset === "custom") {
     if (!node.executable) {
       throw new Error("Choose an executable before starting this terminal.");
@@ -1876,5 +2030,14 @@ function NoteNodeBody({
         onPointerDown={(event) => event.stopPropagation()}
       />
     </label>
+  );
+}
+
+function isCanvasEditingTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof Element &&
+    target.closest(
+      "input, textarea, select, button, a, summary, [contenteditable]:not([contenteditable='false']), [role='textbox'], [data-terminal-root], .xterm, [role='dialog']",
+    ) !== null
   );
 }
