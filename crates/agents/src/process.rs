@@ -46,7 +46,10 @@ pub(crate) fn run_limited(
 
     let start = Instant::now();
     let deadline = start + timeout;
-    let mut child = spawn_with_retry(&mut command, deadline)?;
+    let mut child = match spawn_with_retry(&mut command, deadline) {
+        Err(error) if error.kind() == io::ErrorKind::TimedOut => return Ok(timeout_output()),
+        result => result?,
+    };
     if Instant::now() >= deadline {
         terminate_process_group(&mut child);
         return Ok(timeout_output());
@@ -118,21 +121,39 @@ pub(crate) fn run_limited(
 }
 
 fn spawn_with_retry(command: &mut Command, deadline: Instant) -> io::Result<Child> {
+    retry_spawn(|| command.spawn(), deadline)
+}
+
+fn retry_spawn<T>(spawn: impl FnMut() -> io::Result<T>, deadline: Instant) -> io::Result<T> {
+    retry_spawn_with_timing(spawn, deadline, Instant::now, thread::sleep)
+}
+
+fn retry_spawn_with_timing<T>(
+    mut spawn: impl FnMut() -> io::Result<T>,
+    deadline: Instant,
+    mut now: impl FnMut() -> Instant,
+    mut sleep: impl FnMut(Duration),
+) -> io::Result<T> {
     let mut last_error = None;
     for attempt in 0..MAX_SPAWN_ATTEMPTS {
-        match command.spawn() {
+        if now() >= deadline {
+            return Err(io::Error::from(io::ErrorKind::TimedOut));
+        }
+        match spawn() {
             Ok(child) => return Ok(child),
             Err(error) if is_transient_spawn_error(&error) => {
-                if attempt + 1 == MAX_SPAWN_ATTEMPTS {
-                    return Err(error);
-                }
-                let remaining = deadline.saturating_duration_since(Instant::now());
+                let remaining = deadline.saturating_duration_since(now());
                 if remaining.is_zero() {
+                    return Err(io::Error::from(io::ErrorKind::TimedOut));
+                }
+                // Preserve the last OS error only when attempts, not time,
+                // are exhausted. The caller maps TimedOut to the wire status.
+                if attempt + 1 == MAX_SPAWN_ATTEMPTS {
                     return Err(error);
                 }
                 last_error = Some(error);
                 let backoff = SPAWN_RETRY_BASE.saturating_mul(attempt + 1);
-                thread::sleep(backoff.min(remaining));
+                sleep(backoff.min(remaining));
             }
             Err(error) => return Err(error),
         }
@@ -141,10 +162,20 @@ fn spawn_with_retry(command: &mut Command, deadline: Instant) -> io::Result<Chil
 }
 
 fn is_transient_spawn_error(error: &io::Error) -> bool {
+    use nix::errno::Errno;
+
+    // execve(2) reports ETXTBSY while an executable is open for writing.
+    // A retry may succeed once its writer closes it, but remains deadline- and
+    // attempt-bounded. Resolve errno constants for this OS, not another Unix.
     matches!(
         error.kind(),
         io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-    ) || matches!(error.raw_os_error(), Some(11 | 35))
+    ) || error.raw_os_error().is_some_and(|code| {
+        matches!(
+            Errno::from_raw(code),
+            Errno::EAGAIN | Errno::EINTR | Errno::ETXTBSY
+        )
+    })
 }
 
 fn wait_with_timeout(child: &mut Child, deadline: Instant) -> io::Result<(bool, Option<i32>)> {
@@ -295,6 +326,8 @@ mod tests {
 
     #[test]
     fn classifies_only_transient_spawn_failures_for_retry() {
+        use nix::errno::Errno;
+
         assert!(is_transient_spawn_error(&io::Error::from(
             io::ErrorKind::WouldBlock
         )));
@@ -304,5 +337,165 @@ mod tests {
         assert!(!is_transient_spawn_error(&io::Error::from(
             io::ErrorKind::PermissionDenied
         )));
+        for code in [Errno::EAGAIN, Errno::EINTR, Errno::ETXTBSY] {
+            assert!(is_transient_spawn_error(&io::Error::from_raw_os_error(
+                code as i32
+            )));
+        }
+        for code in [
+            Errno::EACCES,
+            Errno::ENOENT,
+            Errno::ENOEXEC,
+            Errno::EIO,
+            Errno::EDEADLK,
+        ] {
+            assert!(!is_transient_spawn_error(&io::Error::from_raw_os_error(
+                code as i32
+            )));
+        }
+    }
+
+    #[test]
+    fn transient_spawn_failure_can_recover_before_launching_a_real_child() {
+        let mut attempts = 0;
+        let mut command = Command::new("/usr/bin/true");
+        let mut child = retry_spawn(
+            || {
+                attempts += 1;
+                if attempts == 1 {
+                    return Err(io::Error::from_raw_os_error(
+                        nix::errno::Errno::ETXTBSY as i32,
+                    ));
+                }
+                command.spawn()
+            },
+            Instant::now() + Duration::from_secs(2),
+        )
+        .expect("a transient failure should allow the subsequent real spawn");
+
+        assert!(
+            child
+                .wait()
+                .expect("short-lived child should exit")
+                .success()
+        );
+        assert!((2..=MAX_SPAWN_ATTEMPTS).contains(&attempts));
+    }
+
+    #[test]
+    fn persistent_transient_spawn_failure_stops_at_the_attempt_limit() {
+        let mut attempts = 0;
+        let error = retry_spawn::<()>(
+            || {
+                attempts += 1;
+                Err(io::Error::from_raw_os_error(
+                    nix::errno::Errno::ETXTBSY as i32,
+                ))
+            },
+            Instant::now() + Duration::from_secs(5),
+        )
+        .expect_err("persistent text-busy errors must not retry forever");
+
+        assert_eq!(attempts, MAX_SPAWN_ATTEMPTS);
+        assert_eq!(
+            error.raw_os_error(),
+            Some(nix::errno::Errno::ETXTBSY as i32)
+        );
+    }
+
+    #[test]
+    fn busy_executable_deadline_after_backoff_is_timeout_not_the_last_os_error() {
+        let started = Instant::now();
+        let clock = std::cell::Cell::new(started);
+        let deadline = started + Duration::from_millis(60);
+        let mut attempts = 0;
+        let mut sleeps = Vec::new();
+
+        let error = retry_spawn_with_timing::<()>(
+            || {
+                attempts += 1;
+                Err(io::Error::from_raw_os_error(
+                    nix::errno::Errno::ETXTBSY as i32,
+                ))
+            },
+            deadline,
+            || clock.get(),
+            |duration| {
+                sleeps.push(duration);
+                clock.set(clock.get() + duration);
+            },
+        )
+        .expect_err("a busy executable must not outlive the probe deadline");
+
+        assert_eq!(attempts, 3);
+        assert_eq!(sleeps, [15, 30, 15].map(Duration::from_millis));
+        assert_eq!(clock.get(), deadline);
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(error.raw_os_error(), None);
+    }
+
+    #[test]
+    fn busy_executable_consuming_the_deadline_during_spawn_reports_timeout() {
+        for deadline_attempt in [1, MAX_SPAWN_ATTEMPTS] {
+            let started = Instant::now();
+            let clock = std::cell::Cell::new(started);
+            let deadline = started + Duration::from_secs(2);
+            let mut attempts = 0;
+
+            let error = retry_spawn_with_timing::<()>(
+                || {
+                    attempts += 1;
+                    if attempts == deadline_attempt {
+                        clock.set(deadline);
+                    }
+                    Err(io::Error::from_raw_os_error(
+                        nix::errno::Errno::ETXTBSY as i32,
+                    ))
+                },
+                deadline,
+                || clock.get(),
+                |duration| clock.set(clock.get() + duration),
+            )
+            .expect_err("deadline expiry takes precedence over the attempt limit");
+
+            assert_eq!(attempts, deadline_attempt);
+            assert_eq!(clock.get(), deadline);
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            assert_eq!(error.raw_os_error(), None);
+        }
+    }
+
+    #[test]
+    fn permanent_spawn_failure_is_not_retried() {
+        let mut attempts = 0;
+        let error = retry_spawn::<()>(
+            || {
+                attempts += 1;
+                Err(io::Error::from(io::ErrorKind::PermissionDenied))
+            },
+            Instant::now() + Duration::from_secs(5),
+        )
+        .expect_err("permissions require correction, not retry");
+
+        assert_eq!(attempts, 1);
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn an_expired_deadline_never_attempts_a_spawn() {
+        let mut attempts = 0;
+        let result = retry_spawn(
+            || {
+                attempts += 1;
+                Ok(())
+            },
+            Instant::now(),
+        );
+
+        assert_eq!(attempts, 0);
+        assert_eq!(
+            result.expect_err("deadline is exhausted").kind(),
+            io::ErrorKind::TimedOut
+        );
     }
 }

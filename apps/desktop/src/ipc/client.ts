@@ -1,3 +1,6 @@
+import { decodeKnowledgeEntry, decodeKnowledgePage } from "./knowledge-schema";
+import { decodeKnowledgeDiscoverResponse, decodeKnowledgeReadResponse } from "./discovery-schema";
+import type { KnowledgeEntry, KnowledgeListRequest, KnowledgeListResponse, KnowledgeSaveRequest, KnowledgeDeleteRequest, KnowledgeDiscoverRequest, KnowledgeDiscoverResponse, KnowledgeReadRequest, KnowledgeReadResponse, WorktreeListRequest } from "./domain";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openPath } from "@tauri-apps/plugin-opener";
@@ -38,6 +41,7 @@ import type {
   ResponseEnvelope,
   Session,
   SessionIdInput,
+  Worktree,
   WorktreeRemovalPreparation,
 } from "./types";
 
@@ -60,6 +64,11 @@ export interface TerminalResizeInput {
 /** The sole frontend interface to daemon and native desktop capabilities. */
 export interface IpcClient {
   readonly platform: AppPlatform;
+  listKnowledge(input: KnowledgeListRequest): Promise<KnowledgeListResponse>;
+  saveKnowledge(input: KnowledgeSaveRequest): Promise<KnowledgeEntry>;
+  deleteKnowledge(input: KnowledgeDeleteRequest): Promise<void>;
+  discoverKnowledge(input: KnowledgeDiscoverRequest): Promise<KnowledgeDiscoverResponse>;
+  readKnowledge(input: KnowledgeReadRequest): Promise<KnowledgeReadResponse>;
   initialize(): Promise<BootstrapResult>;
   subscribe(
     handler: IpcEventHandler,
@@ -83,6 +92,7 @@ export interface IpcClient {
   renameSession(input: RenameSessionInput): Promise<Session>;
   deleteSession(input: SessionIdInput): Promise<void>;
   getGitStatus(target: GitTarget): Promise<GitStatus>;
+  listWorktrees(input?: WorktreeListRequest): Promise<readonly Worktree[]>;
   prepareWorktreeRemoval(worktreeId: string): Promise<WorktreeRemovalPreparation>;
   removeWorktree(input: RemoveWorktreeInput): Promise<void>;
   getDiagnostics(): Promise<DiagnosticsSnapshot>;
@@ -135,6 +145,30 @@ export function toIpcError(error: unknown): IpcError {
 
 class TauriIpcClient implements IpcClient {
   readonly platform = detectPlatform();
+
+  async listKnowledge(input: KnowledgeListRequest): Promise<KnowledgeListResponse> {
+    return decodeKnowledgePage(await this.request("knowledge.list", input));
+  }
+
+  async saveKnowledge(input: KnowledgeSaveRequest): Promise<KnowledgeEntry> {
+    return decodeKnowledgeEntry(await this.request("knowledge.save", input));
+  }
+
+  async deleteKnowledge(input: KnowledgeDeleteRequest): Promise<void> {
+    await this.request("knowledge.delete", input);
+  }
+
+  async discoverKnowledge(input: KnowledgeDiscoverRequest): Promise<KnowledgeDiscoverResponse> {
+    return decodeKnowledgeDiscoverResponse(await this.request("knowledge.discover", input));
+  }
+
+  async readKnowledge(input: KnowledgeReadRequest): Promise<KnowledgeReadResponse> {
+    const response = decodeKnowledgeReadResponse(await this.request("knowledge.read", input));
+    if (response.entry.entryId !== input.entryId) {
+      throw new IpcContractError("Discovery read returned another source capability");
+    }
+    return response;
+  }
 
   async initialize(): Promise<BootstrapResult> {
     const hello = decodeHello(await this.request("system.hello", {}));
@@ -263,6 +297,11 @@ class TauriIpcClient implements IpcClient {
 
   async getGitStatus(target: GitTarget): Promise<GitStatus> {
     return decodeGitStatus(await this.request("git.status", { target }));
+  }
+
+  async listWorktrees(input: WorktreeListRequest = {}): Promise<readonly Worktree[]> {
+    const response = requireRecord(await this.request("worktree.list", input), "worktree list");
+    return requireArray(response.worktrees, "worktree list.worktrees").map(decodeWorktree);
   }
 
   async prepareWorktreeRemoval(

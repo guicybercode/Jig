@@ -33,6 +33,12 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../migrations/0003_recovery_metadata.sql"),
         destructive: false,
     },
+    Migration {
+        version: 4,
+        name: "knowledge_documents",
+        sql: include_str!("../migrations/0004_knowledge_documents.sql"),
+        destructive: false,
+    },
 ];
 
 const REQUIRED_TABLES: &[(&str, &[&str])] = &[
@@ -91,6 +97,19 @@ const REQUIRED_TABLES: &[(&str, &[&str])] = &[
         ],
     ),
     ("settings", &["key", "value_json", "updated_at"]),
+    (
+        "knowledge_documents",
+        &[
+            "id",
+            "kind",
+            "project_id",
+            "title",
+            "body",
+            "revision",
+            "created_at_ms",
+            "updated_at_ms",
+        ],
+    ),
     ("schema_migrations", &["version", "name", "applied_at"]),
 ];
 
@@ -103,6 +122,8 @@ const REQUIRED_INDEXES: &[&str] = &[
     "sessions_by_agent",
     "sessions_by_daemon_status",
     "custom_agents_by_updated",
+    "knowledge_by_scope_id",
+    "knowledge_by_scope_kind_id",
 ];
 
 const REQUIRED_TRIGGERS: &[&str] = &[

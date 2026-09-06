@@ -13,6 +13,18 @@ mod request;
 mod response;
 mod value;
 
+pub use crate::knowledge::discovery::{
+    KnowledgeDiscoverRequest, KnowledgeDiscoverResponse, KnowledgeDiscoveryIssue,
+    KnowledgeProvider, KnowledgeReadRequest, KnowledgeReadResponse, KnowledgeScanId,
+    KnowledgeSourceAvailability, KnowledgeSourceEntry, KnowledgeSourceId, KnowledgeSourceKind,
+    KnowledgeSourceScope,
+};
+pub use crate::knowledge::{
+    KnowledgeBody, KnowledgeDeleteRequest, KnowledgeEntry, KnowledgeId, KnowledgeKind,
+    KnowledgeListRequest, KnowledgeListResponse, KnowledgeSaveRequest, KnowledgeTitle,
+    KnowledgeValidationError, MAX_KNOWLEDGE_BODY_BYTES, MAX_KNOWLEDGE_REVISION,
+    MAX_KNOWLEDGE_TITLE_BYTES,
+};
 pub use event::{
     AgentChangedEvent, AgentRemovedEvent, DaemonShuttingDownEvent, GitStatusChangedEvent,
     ProjectChangedEvent, ProjectRemovedEvent, SessionChangedEvent, SessionDeletedEvent,
@@ -26,7 +38,7 @@ pub use request::{
     GitTarget, ProjectAddRequest, ProjectRemoveRequest, ProjectRenameRequest, SessionCreateRequest,
     SessionDeleteRequest, SessionIsolation, SessionListRequest, SessionRenameRequest,
     SessionResizeRequest, SessionRestartRequest, SessionStartRequest, SessionStopRequest,
-    SessionSubscribeRequest, SessionUnsubscribeRequest, SessionWriteRequest,
+    SessionSubscribeRequest, SessionUnsubscribeRequest, SessionWriteRequest, WorktreeListRequest,
     WorktreePrepareRemoveRequest, WorktreeRemoveRequest, validate_agent_command,
 };
 pub use response::{
@@ -37,7 +49,7 @@ pub use response::{
     ProjectListResponse, ProjectRemoveResponse, ProjectRenameResponse, SessionCreateResponse,
     SessionDeleteResponse, SessionListResponse, SessionRenameResponse, SessionResizeResponse,
     SessionRestartResponse, SessionStartResponse, SessionStopResponse, SessionSubscribeResponse,
-    SessionUnsubscribeResponse, SessionWriteResponse, StateSnapshotResponse,
+    SessionUnsubscribeResponse, SessionWriteResponse, StateSnapshotResponse, WorktreeListResponse,
     WorktreePrepareRemoveResponse, WorktreeRemovalBlocker, WorktreeRemoveResponse,
 };
 pub use value::{

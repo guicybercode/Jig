@@ -55,6 +55,8 @@ pub const GIT_STATUS: &str = "git.status";
 /// Read a bounded textual diff for a registered project, session, or worktree.
 pub const GIT_DIFF: &str = "git.diff";
 
+/// List managed worktrees, optionally constrained to a project.
+pub const WORKTREE_LIST: &str = "worktree.list";
 /// Inspect whether a managed worktree can be safely removed.
 pub const WORKTREE_PREPARE_REMOVE: &str = "worktree.prepare_remove";
 /// Remove a managed worktree after token-bound state confirmation.
@@ -62,6 +64,17 @@ pub const WORKTREE_REMOVE: &str = "worktree.remove";
 
 /// Read a sanitized local diagnostic snapshot.
 pub const DIAGNOSTICS_GET: &str = "diagnostics.get";
+
+/// List scoped saved prompts/context in bounded pages.
+pub const KNOWLEDGE_LIST: &str = "knowledge.list";
+/// Create or revision-check an explicit saved prompt/context.
+pub const KNOWLEDGE_SAVE: &str = "knowledge.save";
+/// Delete a saved prompt/context after checking its revision.
+pub const KNOWLEDGE_DELETE: &str = "knowledge.delete";
+/// Inventory known local rule and skill locations without reading content.
+pub const KNOWLEDGE_DISCOVER: &str = "knowledge.discover";
+/// Read a bounded source selected by an expiring discovery capability.
+pub const KNOWLEDGE_READ: &str = "knowledge.read";
 
 /// Every method implemented by the Beta v1 contract.
 pub const ALL: &[&str] = &[
@@ -90,9 +103,15 @@ pub const ALL: &[&str] = &[
     SESSION_UNSUBSCRIBE,
     GIT_STATUS,
     GIT_DIFF,
+    WORKTREE_LIST,
     WORKTREE_PREPARE_REMOVE,
     WORKTREE_REMOVE,
     DIAGNOSTICS_GET,
+    KNOWLEDGE_LIST,
+    KNOWLEDGE_SAVE,
+    KNOWLEDGE_DELETE,
+    KNOWLEDGE_DISCOVER,
+    KNOWLEDGE_READ,
 ];
 
 /// Returns whether a dotted method belongs to the Beta v1 contract.

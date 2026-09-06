@@ -37,19 +37,17 @@ wins:
 
 ### Linux
 
-Packaged AppImage and future `.deb` layouts should place `cli-masterd` next to
-the `CLI Master` executable, typically `usr/bin/cli-masterd` beside
-`usr/bin/cli-master` (or the renamed product binary). The same-directory rule
-covers that layout. `bundle.externalBin` is not configured yet; adding it
-requires the file to exist at `tauri build` time.
+Packaged AppImage layouts place `cli-masterd` next to the Jig desktop
+executable. The same-directory rule covers that layout. `bundle.externalBin`
+stages the daemon for `tauri build`.
 
 ### macOS
 
 The application bundle should contain:
 
 ```text
-CLI Master.app/Contents/MacOS/CLI Master
-CLI Master.app/Contents/MacOS/cli-masterd
+Jig.app/Contents/MacOS/cli-master-desktop
+Jig.app/Contents/MacOS/cli-masterd
 ```
 
 `current_exe()` is the `MacOS` directory, so the sibling lookup finds the

@@ -71,9 +71,9 @@ fn stop_force_kills_a_process_that_ignores_graceful_signals() {
 
 #[test]
 fn force_kill_reaps_without_waiting_for_the_supervisor_interval() {
+    let supervisor_interval = Duration::from_secs(2);
     let config = SessionManagerConfig {
-        supervisor_interval: Duration::from_secs(2),
-        kill_wait: Duration::from_millis(50),
+        supervisor_interval,
         ..test_config()
     };
     let runtime = TestRuntime::with_config(config);
@@ -83,8 +83,12 @@ fn force_kill_reaps_without_waiting_for_the_supervisor_interval() {
 
     let started = Instant::now();
     let snapshot = runtime.manager.kill(session_id).unwrap();
+    let elapsed = started.elapsed();
 
-    assert!(started.elapsed() < Duration::from_millis(500));
+    assert!(
+        elapsed < supervisor_interval,
+        "force kill took {elapsed:?}, so it may have waited for the supervisor"
+    );
     assert_eq!(snapshot.status, SessionStatus::Exited);
     let (terminal_transitions, exit_events) = count_terminal_events(&mut events);
     assert_eq!(terminal_transitions, 1);

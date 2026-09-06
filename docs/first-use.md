@@ -30,19 +30,17 @@ creates Application Support, Caches, and Logs folders. Modes are `0700`.
 
 ## 3. Open the desktop app
 
-Launch the AppImage or `CLI Master.app`. The window is the control center.
+Launch the AppImage or `Jig.app`. The window is the control center.
 The session daemon is a separate executable packaged beside it.
 
 Closing the window is not the same as stopping agents. That is the product
-rule. In this Beta the Tauri process can locate `cli-masterd`; the typed
-IPC handshake (`system.hello`) is owned by the daemon and is not a Tauri
-command named `protocol_info`. If a build still shows only the shell UI,
-the sidecar is present for the next wiring step. Do not treat
-`protocol_info` as proof that sessions are live.
+rule. The Tauri process locates `cli-masterd` and connects through the typed
+IPC handshake (`system.hello`). `protocol_info` only reports the local catalog;
+use Diagnostics to confirm the daemon connection.
 
 ## 4. Add a Git project
 
-Pick a repository you already have. CLI Master records metadata. It does
+Pick a repository you already have. Jig records metadata. It does
 not copy the repo and it does not delete it when you remove the project
 from the app.
 
@@ -66,6 +64,9 @@ Linux:
 | Socket | `$XDG_RUNTIME_DIR/cli-master/daemon.sock` |
 
 macOS:
+
+Jig keeps the legacy `CLI Master` directory names in Beta v0.2 so existing
+installations continue to use their current data.
 
 | Kind | Location |
 |---|---|

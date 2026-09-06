@@ -162,7 +162,7 @@ async fn snapshot_reports_applied_migration_and_builtin_terminal_agents() {
     let snapshot: StateSnapshot = serde_json::from_value(data).expect("snapshot should decode");
     assert_eq!(snapshot.schema_version, LATEST_SCHEMA_VERSION);
     assert!(snapshot.projects.is_empty());
-    assert_eq!(snapshot.agents.len(), 4);
+    assert_eq!(snapshot.agents.len(), 5);
     assert!(snapshot.agents.iter().all(|agent| agent.enabled));
     assert!(
         snapshot
@@ -176,6 +176,17 @@ async fn snapshot_reports_applied_migration_and_builtin_terminal_agents() {
             .iter()
             .any(|agent| agent.display_name.as_str() == "Shell")
     );
+    let gemini = snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.id == cli_master_core::builtin_agent_ids::gemini())
+        .expect("Gemini should be seeded in the daemon catalog");
+    assert_eq!(gemini.id.as_uuid().get_version_num(), 7);
+    assert_eq!(gemini.display_name.as_str(), "Gemini CLI");
+    assert_eq!(gemini.description.as_deref(), Some("Google Gemini CLI"));
+    assert_eq!(gemini.command.executable(), "gemini");
+    assert!(gemini.command.args().is_empty());
+    assert!(gemini.command.env().is_empty());
     assert!(snapshot.sessions.is_empty());
     assert!(snapshot.worktrees.is_empty());
 

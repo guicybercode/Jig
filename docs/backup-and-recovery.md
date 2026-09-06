@@ -43,7 +43,7 @@ truth for committed history.
 3. Start the app again.
 
 Migrations are forward-only. A backup from a newer schema will not open in
-an older Beta. Keep the matching `0.1.0` application version.
+an older Beta. Keep the matching `0.2.0` application version.
 
 ## Daemon crash
 

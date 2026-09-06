@@ -41,6 +41,49 @@ fn version_probe_times_out_on_hanging_executable() {
 }
 
 #[test]
+fn an_exhausted_probe_budget_reports_timeout_instead_of_io_failure() {
+    let temp = TempDir::new().expect("temporary directory should be created");
+    executable(temp.path(), "codex");
+    let report = test_executable(
+        "codex",
+        &isolated_env(&temp),
+        ProbeOptions::default().with_timeout(Duration::ZERO),
+    );
+
+    assert!(report.installed);
+    assert_eq!(report.launch_test, LaunchTestStatus::Timeout);
+    assert!(report.version.is_none());
+}
+
+#[test]
+fn a_missing_script_interpreter_reports_safe_os_diagnostics() {
+    let temp = TempDir::new().expect("temporary directory should be created");
+    let path = script(temp.path(), "private-agent-name", "echo must-not-run");
+    let interpreter = temp.path().join("private-missing-interpreter");
+    std::fs::write(
+        &path,
+        format!("#!{}\necho must-not-run\n", interpreter.display()),
+    )
+    .expect("fixture should retain executable permissions with an absent interpreter");
+
+    let report = test_executable(&path, &isolated_env(&temp), ProbeOptions::default());
+    assert!(report.installed);
+    assert!(report.version.is_none());
+    let LaunchTestStatus::Failed { message } = &report.launch_test else {
+        panic!("missing interpreter must fail the probe: {report:?}");
+    };
+    let errno = nix::errno::Errno::ENOENT as i32;
+    assert_eq!(
+        message,
+        &format!("version probe could not complete (kind: NotFound, os error: {errno})")
+    );
+    let diagnostics = format!("{:?} {:?}", report.launch_test, report.warning);
+    assert!(!diagnostics.contains("private-agent-name"));
+    assert!(!diagnostics.contains("private-missing-interpreter"));
+    assert!(!diagnostics.contains("must-not-run"));
+}
+
+#[test]
 fn test_executable_does_not_depend_on_real_agents() {
     let temp = TempDir::new().expect("temporary directory should be created");
     let report = test_executable("codex", &isolated_env(&temp), ProbeOptions::default());

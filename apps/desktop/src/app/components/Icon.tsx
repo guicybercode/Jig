@@ -15,7 +15,6 @@ export type IconName =
   | "diagnostics"
   | "external-link"
   | "folder"
-  | "grid"
   | "layers"
   | "link"
   | "map"
@@ -31,7 +30,6 @@ export type IconName =
   | "repository"
   | "sidebar"
   | "search"
-  | "session"
   | "settings"
   | "stop"
   | "terminal"
@@ -131,15 +129,6 @@ function getIconPaths(name: IconName): ReactNode {
       return (
         <path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2h8.5A1.5 1.5 0 0 1 21 8.5v8A2.5 2.5 0 0 1 18.5 19h-14A1.5 1.5 0 0 1 3 17.5v-11Z" />
       );
-    case "grid":
-      return (
-        <>
-          <rect x="3" y="3" width="7" height="7" rx="1" />
-          <rect x="14" y="3" width="7" height="7" rx="1" />
-          <rect x="3" y="14" width="7" height="7" rx="1" />
-          <rect x="14" y="14" width="7" height="7" rx="1" />
-        </>
-      );
     case "layers":
       return (
         <>
@@ -229,7 +218,6 @@ function getIconPaths(name: IconName): ReactNode {
           <path d="m16 16 4 4" />
         </>
       );
-    case "session":
     case "terminal":
       return (
         <>

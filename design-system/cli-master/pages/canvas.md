@@ -1,9 +1,9 @@
-# Canvas workspace override
+# Canvas-only shell
 
-This page intentionally departs from the dark-first application shell because
-the requested spatial workspace is modeled after a light macOS canvas. The
-underlying terminal surfaces remain dark and high contrast; dialogs and legacy
-project/session views continue to use the master system until migrated.
+This page specializes the light-first application system for the spatial
+workspace. The canvas is the only shell: its sidebar, action chrome, dialogs,
+palette, banners, settings, diagnostics, and status bar all use the light
+palette. Only xterm terminal surfaces remain dark and high contrast.
 
 ## Product model
 
@@ -19,6 +19,8 @@ project/session views continue to use the master system until migrated.
 - Canvas: warm white with a 16px fine grid and a 128px major grid.
 - Sidebar: translucent off-white surface with a solid fallback and a restrained
   shadow only where it separates from the canvas.
+- Project rows: separate selection, rename, and remove buttons. Both project
+  actions are always visible and keyboard reachable rather than hover-revealed.
 - Nodes: white terminal cards and pale-yellow notes with 8px corners, one-pixel
   borders, compact macOS-style headers, and soft elevation.
 - Selection: coral-red outline plus a visible `Selected` label; never color
@@ -41,9 +43,17 @@ project/session views continue to use the master system until migrated.
 | Primary text | `--canvas-text` | `#26282b` |
 | Secondary text | `--canvas-text-muted` | `#6d7075` |
 | Border | `--canvas-border` | `#d9dadc` |
-| Selection/action | `--canvas-accent` | `#ef4b55` |
+| Selection outline | `--canvas-accent` | `#ef4b55` |
+| Action text/hover | `--canvas-accent-ink` | `#9d242d` |
+| Action fill | `--canvas-accent-fill` | `#c8323c` |
 | Connection | `--canvas-connector` | `#8b8e93` |
+| Control border | `--canvas-control-border` | `#85878b` |
 | Focus ring | `--canvas-focus` | `#1b63d9` |
+
+The coral selection outline passes non-text contrast on white, but it does not
+pass normal-text contrast with white text. Use `--canvas-accent-ink` for coral
+text and `--canvas-accent-fill` behind white labels. Use the stronger control
+border wherever a field or option needs its boundary to identify the control.
 
 ## Interaction constraints
 
@@ -61,9 +71,14 @@ project/session views continue to use the master system until migrated.
 
 ## Responsive behavior
 
-- At 1024px and above, the workspace sidebar is persistent.
-- Below 1024px, the sidebar becomes an overlay opened from the toolbar.
-- Below 768px, new nodes open near the viewport origin and node widths clamp to
-  the available canvas; the canvas itself remains pannable.
+- At `48rem` and above, the workspace sidebar is persistent and may be
+  collapsed without losing the navigation trigger.
+- Below `48rem`, the sidebar is a modal drawer with a backdrop, focus trap,
+  Escape dismissal, and focus restoration to its trigger.
+- At `68rem` and below, navigation/palette/create actions occupy the first
+  chrome row; the canvas toolbar moves to a second row and the workspace context
+  follows it, so the groups never overlap as the workspace narrows.
+- Below `48rem`, new nodes open near the viewport origin and terminal node width
+  clamps to the available canvas; the canvas itself remains pannable.
 - Zoom controls remain reachable in the lower-right corner and never obscure a
   focused node.

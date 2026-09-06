@@ -30,7 +30,10 @@ pub use config::{
     DEFAULT_REPLAY_MAX_BYTES, DEFAULT_REPLAY_MAX_CHUNKS, MAX_EVENT_CAPACITY, MAX_TRACKED_PROCESSES,
     SessionManagerConfig,
 };
-pub use create::{CreateFaults, CreateSession, CreateStep, CreatedSession, LockHook, PlanHook};
+pub use create::{
+    CreateFaults, CreateSession, CreateStep, CreatedSession, LockHook, PlanHook,
+    resolve_session_directory,
+};
 pub use error::{SagaError, SagaErrorKind, SessionError};
 pub use event::{
     IoOperation, OutputChunk, ReconnectSnapshot, SessionEvent, SessionHandle, SessionSnapshot,

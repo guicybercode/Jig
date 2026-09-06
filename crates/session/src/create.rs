@@ -1,7 +1,7 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cli_master_core::wire::SessionIsolation;
+use cli_master_core::wire::{RelativeDirectory, SessionIsolation};
 use cli_master_core::{
     AgentId, ProjectId, Session, SessionId, SessionStatus, Worktree, WorktreeId,
 };
@@ -17,6 +17,25 @@ use crate::token::now_ms;
 
 const DEFAULT_PTY_COLS: u16 = 80;
 const DEFAULT_PTY_ROWS: u16 = 24;
+
+#[derive(Clone, Copy)]
+pub(crate) enum Launch<'a> {
+    Prepare(Option<&'a RelativeDirectory>),
+    Start,
+}
+
+impl<'a> Launch<'a> {
+    fn relative_directory(self) -> Option<&'a RelativeDirectory> {
+        match self {
+            Self::Prepare(relative) => relative,
+            Self::Start => None,
+        }
+    }
+
+    fn starts_process(self) -> bool {
+        matches!(self, Self::Start)
+    }
+}
 
 /// Named saga effect after which tests may inject a failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -82,7 +101,7 @@ pub struct CreateSession {
 /// Durable result of a completed create saga.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreatedSession {
-    /// Persisted session, including daemon-observed pid after spawn.
+    /// Persisted session; preparing metadata alone never assigns a pid.
     pub session: Session,
     /// Managed worktree when isolation requested one.
     pub worktree: Option<Worktree>,
@@ -94,10 +113,11 @@ pub(crate) fn create<S: SessionSpawner>(
     saga: &SessionWorktreeSaga<S>,
     request: &CreateSession,
     faults: &CreateFaults,
+    launch: Launch<'_>,
 ) -> Result<CreatedSession, SagaError> {
     match request.isolation {
-        SessionIsolation::Current => create_current(saga, request, faults),
-        SessionIsolation::NewWorktree => create_worktree(saga, request, faults),
+        SessionIsolation::Current => create_current(saga, request, faults, launch),
+        SessionIsolation::NewWorktree => create_worktree(saga, request, faults, launch),
     }
 }
 
@@ -105,21 +125,31 @@ fn create_current<S: SessionSpawner>(
     saga: &SessionWorktreeSaga<S>,
     request: &CreateSession,
     faults: &CreateFaults,
+    launch: Launch<'_>,
 ) -> Result<CreatedSession, SagaError> {
     let now = now_ms();
     let project = require_project(saga, request.project_id)?;
     let agent = require_agent(saga, request.agent_id)?;
+    let cwd = resolve_session_directory(&project.path, launch.relative_directory())?;
+    let command = agent
+        .command_for_cwd(cwd.clone())
+        .map_err(SagaError::from)?;
     maybe_fail(faults, CreateStep::Plan)?;
     maybe_fail(faults, CreateStep::PersistCreating)?;
     maybe_fail(faults, CreateStep::GitAdd)?;
     let session_id = SessionId::new();
-    insert_starting_session(saga, session_id, request, project.path.clone(), now)?;
+    let session = session_row(saga, session_id, request, cwd, now, launch);
+    saga.storage().insert_session(&session)?;
     maybe_fail(faults, CreateStep::PersistActive).inspect_err(|_| {
         discard_session(saga, session_id);
     })?;
-    let command = agent
-        .command_for_cwd(project.path.clone())
-        .map_err(SagaError::from)?;
+    if !launch.starts_process() {
+        return Ok(CreatedSession {
+            session: session_dto(session, None, None),
+            worktree: None,
+            plan: None,
+        });
+    }
     let spawned = saga
         .spawner
         .spawn(SpawnRequest {
@@ -159,10 +189,11 @@ fn create_worktree<S: SessionSpawner>(
     saga: &SessionWorktreeSaga<S>,
     request: &CreateSession,
     faults: &CreateFaults,
+    launch: Launch<'_>,
 ) -> Result<CreatedSession, SagaError> {
     let now = now_ms();
     let project = require_project(saga, request.project_id)?;
-    let agent = require_agent(saga, request.agent_id)?;
+    require_agent(saga, request.agent_id)?;
     let worktree_id = WorktreeId::new();
     let session_id = SessionId::new();
     let short_id = request
@@ -170,11 +201,22 @@ fn create_worktree<S: SessionSpawner>(
         .clone()
         .unwrap_or_else(|| short_id_for(worktree_id));
     let plan = saga.git.plan_worktree(
-        &project.path,
+        project.repository_root.as_ref().unwrap_or(&project.path),
         &request.managed_root,
         &request.name,
         &short_id,
     )?;
+    let selected_directory = canonical_directory(&project.path)?;
+    let project_relative = selected_directory
+        .strip_prefix(plan.repository_root())
+        .map_err(|_| {
+            SagaError::new(
+                SagaErrorKind::InvalidInput,
+                "selected project directory is outside its Git repository root",
+                "Register a directory inside the repository and try again",
+            )
+            .with_path(&project.path)
+        })?;
     if let Some(hook) = &faults.after_plan {
         hook(&plan);
     }
@@ -208,10 +250,10 @@ fn create_worktree<S: SessionSpawner>(
         saga,
         request,
         faults,
-        &agent,
         &plan,
-        (worktree_id, session_id),
+        (worktree_id, session_id, project_relative),
         now,
+        launch,
     )
 }
 
@@ -219,33 +261,50 @@ fn persist_spawn_and_run<S: SessionSpawner>(
     saga: &SessionWorktreeSaga<S>,
     request: &CreateSession,
     faults: &CreateFaults,
-    agent: &cli_master_storage::StoredAgent,
     plan: &WorktreePlan,
-    ids: (WorktreeId, SessionId),
+    ids: (WorktreeId, SessionId, &Path),
     now: i64,
+    launch: Launch<'_>,
 ) -> Result<CreatedSession, SagaError> {
-    let (worktree_id, session_id) = ids;
-    if let Err(error) = insert_starting_session(
-        saga,
-        session_id,
-        request,
-        plan.destination().to_path_buf(),
-        now,
-    ) {
-        return Err(compensate(saga, plan, worktree_id, None, error));
-    }
-    if let Err(error) = activate_worktree(saga, worktree_id, session_id, now) {
-        discard_session(saga, session_id);
-        return Err(compensate(saga, plan, worktree_id, None, error));
+    let (worktree_id, session_id, project_relative) = ids;
+    let selected_root = resolve_directory(
+        plan.destination(),
+        &plan.destination().join(project_relative),
+    )
+    .map_err(|error| compensate(saga, plan, worktree_id, None, error))?;
+    let cwd = resolve_session_directory(&selected_root, launch.relative_directory())
+        .map_err(|error| compensate(saga, plan, worktree_id, None, error))?;
+    let agent = require_agent(saga, request.agent_id)
+        .map_err(|error| compensate(saga, plan, worktree_id, None, error))?;
+    let command = agent
+        .command_for_cwd(cwd.clone())
+        .map_err(|error| compensate(saga, plan, worktree_id, None, SagaError::from(error)))?;
+    let session = session_row(saga, session_id, request, cwd, now, launch);
+    let persisted =
+        saga.storage()
+            .insert_prepared_session_with_worktree(&session, worktree_id, now);
+    if let Err(error) = persisted {
+        return Err(compensate(
+            saga,
+            plan,
+            worktree_id,
+            None,
+            SagaError::from(error),
+        ));
     }
     if let Err(error) = maybe_fail(faults, CreateStep::PersistActive) {
-        discard_session(saga, session_id);
         return Err(compensate(saga, plan, worktree_id, Some(session_id), error));
     }
 
-    let command = agent
-        .command_for_cwd(plan.destination().to_path_buf())
-        .map_err(SagaError::from)?;
+    if !launch.starts_process() {
+        let worktree = require_worktree(saga, worktree_id)
+            .map_err(|error| compensate(saga, plan, worktree_id, Some(session_id), error))?;
+        return Ok(CreatedSession {
+            session: session_dto(session, Some(&worktree), None),
+            worktree: Some(worktree_dto(worktree)),
+            plan: Some(plan.clone()),
+        });
+    }
     let spawned = match saga.spawner.spawn(SpawnRequest {
         session_id,
         project_id: request.project_id,
@@ -311,46 +370,35 @@ fn persist_creating<S: SessionSpawner>(
         .map_err(SagaError::from)
 }
 
-fn insert_starting_session<S: SessionSpawner>(
+fn session_row<S: SessionSpawner>(
     saga: &SessionWorktreeSaga<S>,
     session_id: SessionId,
     request: &CreateSession,
     cwd: PathBuf,
     now: i64,
-) -> Result<(), SagaError> {
-    let row = StoredSession {
+    launch: Launch<'_>,
+) -> StoredSession {
+    StoredSession {
         id: session_id,
         project_id: request.project_id,
         agent_id: request.agent_id,
         name: request.name.clone(),
         cwd,
-        status: SessionStatus::Starting,
+        status: if launch.starts_process() {
+            SessionStatus::Starting
+        } else {
+            SessionStatus::Unknown
+        },
         runtime_pid: None,
-        daemon_instance_id: Some(saga.daemon_instance_id.clone()),
+        daemon_instance_id: launch
+            .starts_process()
+            .then(|| saga.daemon_instance_id.clone()),
         exit_code: None,
         error_code: None,
         created_at_ms: now,
         updated_at_ms: now,
-        last_activity_at_ms: Some(now),
-    };
-    saga.storage().insert_session(&row).map_err(SagaError::from)
-}
-
-fn activate_worktree<S: SessionSpawner>(
-    saga: &SessionWorktreeSaga<S>,
-    worktree_id: WorktreeId,
-    session_id: SessionId,
-    now: i64,
-) -> Result<(), SagaError> {
-    saga.storage()
-        .update_worktree_state(
-            worktree_id,
-            WorktreeState::Active,
-            false,
-            Some(session_id),
-            now,
-        )
-        .map_err(SagaError::from)
+        last_activity_at_ms: launch.starts_process().then_some(now),
+    }
 }
 
 fn persist_running<S: SessionSpawner>(
@@ -424,7 +472,15 @@ fn compensate<S: SessionSpawner>(
             original
         }
         Err(error) => {
-            mark_orphaned(saga, worktree_id, session_id);
+            // Successful session deletion clears the foreign-key association;
+            // do not try to reattach an identifier that no longer exists.
+            let remaining_session = saga
+                .storage()
+                .get_worktree(worktree_id)
+                .ok()
+                .flatten()
+                .and_then(|worktree| worktree.session_id);
+            mark_orphaned(saga, worktree_id, remaining_session);
             if error.kind() == cli_master_git::GitErrorKind::PartialWorktree {
                 return SagaError::from(error).with_worktree_id(worktree_id);
             }
@@ -509,4 +565,59 @@ pub(crate) fn require_worktree<S: SessionSpawner>(
         )
         .with_worktree_id(worktree_id)
     })
+}
+
+/// Resolves an existing session directory inside its daemon-selected root.
+///
+/// Both paths are canonicalized so a child symlink cannot escape the project
+/// or managed worktree. The typed relative directory has already passed wire
+/// validation for parent traversal and absolute paths.
+///
+/// # Errors
+///
+/// Returns an error when either directory is unavailable or the resolved child
+/// is outside the canonical root.
+pub fn resolve_session_directory(
+    root: &Path,
+    relative_directory: Option<&RelativeDirectory>,
+) -> Result<PathBuf, SagaError> {
+    let directory = relative_directory.map_or_else(
+        || root.to_path_buf(),
+        |relative| root.join(relative.as_str()),
+    );
+    resolve_directory(root, &directory)
+}
+
+fn resolve_directory(root: &Path, directory: &Path) -> Result<PathBuf, SagaError> {
+    let canonical_root = canonical_directory(root)?;
+    let canonical_directory = canonical_directory(directory)?;
+    if !canonical_directory.starts_with(&canonical_root) {
+        return Err(SagaError::new(
+            SagaErrorKind::InvalidInput,
+            "session directory resolves outside its project or worktree root",
+            "Choose an existing directory inside the session root",
+        )
+        .with_path(directory));
+    }
+    Ok(canonical_directory)
+}
+
+fn canonical_directory(directory: &Path) -> Result<PathBuf, SagaError> {
+    let resolved = directory.canonicalize().map_err(|error| {
+        SagaError::new(
+            SagaErrorKind::InvalidInput,
+            format!("session directory could not be opened: {error}"),
+            "Choose an existing directory inside the session root and check its permissions",
+        )
+        .with_path(directory)
+    })?;
+    if !resolved.is_dir() {
+        return Err(SagaError::new(
+            SagaErrorKind::InvalidInput,
+            "session working directory is not a directory",
+            "Choose an existing directory inside the session root",
+        )
+        .with_path(directory));
+    }
+    Ok(resolved)
 }

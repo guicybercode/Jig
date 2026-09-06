@@ -24,6 +24,11 @@ export interface MockIpcClientOptions {
 
 /** An injected IPC fake whose unconfigured application calls fail loudly. */
 export interface MockIpcClient extends IpcClient {
+  readonly listKnowledge: Mock<IpcClient["listKnowledge"]>;
+  readonly saveKnowledge: Mock<IpcClient["saveKnowledge"]>;
+  readonly deleteKnowledge: Mock<IpcClient["deleteKnowledge"]>;
+  readonly discoverKnowledge: Mock<IpcClient["discoverKnowledge"]>;
+  readonly readKnowledge: Mock<IpcClient["readKnowledge"]>;
   readonly initialize: Mock<IpcClient["initialize"]>;
   readonly subscribe: Mock<IpcClient["subscribe"]>;
   readonly subscribeTerminal: Mock<IpcClient["subscribeTerminal"]>;
@@ -44,6 +49,7 @@ export interface MockIpcClient extends IpcClient {
     IpcClient["prepareWorktreeRemoval"]
   >;
   readonly removeWorktree: Mock<IpcClient["removeWorktree"]>;
+  readonly listWorktrees: Mock<IpcClient["listWorktrees"]>;
   readonly getDiagnostics: Mock<IpcClient["getDiagnostics"]>;
   readonly openPath: Mock<IpcClient["openPath"]>;
   emit(event: string, payload?: unknown, sequence?: number): void;
@@ -140,12 +146,18 @@ export function createMockIpcClient(
       handlers.prepareWorktreeRemoval ??
         (() => rejectUnhandled("prepareWorktreeRemoval")),
     ),
+    listWorktrees: vi.fn<IpcClient["listWorktrees"]>(handlers.listWorktrees ?? (() => rejectUnhandled("listWorktrees"))),
     removeWorktree: vi.fn<IpcClient["removeWorktree"]>(
       handlers.removeWorktree ?? (() => rejectUnhandled("removeWorktree")),
     ),
     getDiagnostics: vi.fn<IpcClient["getDiagnostics"]>(
       handlers.getDiagnostics ?? (() => rejectUnhandled("getDiagnostics")),
     ),
+    listKnowledge: vi.fn<IpcClient["listKnowledge"]>(handlers.listKnowledge ?? (() => rejectUnhandled("listKnowledge"))),
+    saveKnowledge: vi.fn<IpcClient["saveKnowledge"]>(handlers.saveKnowledge ?? (() => rejectUnhandled("saveKnowledge"))),
+    deleteKnowledge: vi.fn<IpcClient["deleteKnowledge"]>(handlers.deleteKnowledge ?? (() => rejectUnhandled("deleteKnowledge"))),
+    discoverKnowledge: vi.fn<IpcClient["discoverKnowledge"]>(handlers.discoverKnowledge ?? (() => rejectUnhandled("discoverKnowledge"))),
+    readKnowledge: vi.fn<IpcClient["readKnowledge"]>(handlers.readKnowledge ?? (() => rejectUnhandled("readKnowledge"))),
     openPath: vi.fn<IpcClient["openPath"]>(
       handlers.openPath ?? (() => rejectUnhandled("openPath")),
     ),

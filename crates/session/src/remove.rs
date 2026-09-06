@@ -15,6 +15,26 @@ use crate::saga::{SessionWorktreeSaga, require_project};
 use crate::spawn::SessionSpawner;
 use crate::token::now_ms;
 
+pub(crate) fn cancel_pending_removal<S: SessionSpawner>(
+    saga: &SessionWorktreeSaga<S>,
+    worktree_id: WorktreeId,
+) -> Result<(), SagaError> {
+    let _mutation = lock_mutation(&saga.mutations, worktree_id)?;
+    let stored = require_worktree(saga, worktree_id)?;
+    let _destination = lock_destination(&saga.destinations, stored.path.clone())?;
+    saga.tokens.discard_for(worktree_id);
+    if stored.state == WorktreeState::RemovePending {
+        saga.storage().update_worktree_state(
+            worktree_id,
+            WorktreeState::Active,
+            stored.is_dirty,
+            stored.session_id,
+            now_ms(),
+        )?;
+    }
+    Ok(())
+}
+
 pub(crate) fn prepare_remove<S: SessionSpawner>(
     saga: &SessionWorktreeSaga<S>,
     worktree_id: WorktreeId,

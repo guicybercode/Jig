@@ -3,6 +3,8 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
+  useMemo,
   useReducer,
   useRef,
 } from "react";
@@ -56,8 +58,6 @@ import type {
 /** Main application destinations controlled independently from dialog state. */
 export type WorkspaceView =
   | "canvas"
-  | "session"
-  | "grid"
   | "settings"
   | "diagnostics";
 
@@ -125,6 +125,8 @@ export interface WorkspaceOperations {
 
 /** Stable state and actions consumed by project/session UI features. */
 export interface WorkspaceContextValue extends WorkspaceOperations {
+  readonly knowledgeClient: Pick<IpcClient, "listKnowledge" | "saveKnowledge" | "deleteKnowledge" | "discoverKnowledge" | "readKnowledge">;
+  refreshWorktrees(): Promise<readonly Worktree[]>;
   readonly platform: AppPlatform;
   readonly connection: DaemonConnection;
   readonly isConnected: boolean;
@@ -158,7 +160,7 @@ export interface WorkspaceProviderProps {
   readonly children: ReactNode;
   /** Production uses the shared Tauri client; tests inject a strict fake. */
   readonly client?: IpcClient;
-  /** Allows legacy/detail surfaces to opt in while canvas remains the default. */
+  /** Allows tests or launchers to select a canvas utility destination. */
   readonly initialView?: WorkspaceView;
 }
 
@@ -224,6 +226,10 @@ type WorkspaceAction =
       readonly exitCode?: number;
     }
   | {
+      readonly type: "metadata/worktrees-refreshed";
+      readonly worktrees: readonly Worktree[];
+    }
+  | {
       readonly type: "metadata/worktree-upserted";
       readonly worktree: Worktree;
     }
@@ -287,8 +293,11 @@ export function WorkspaceProvider({
     (view): WorkspaceState => ({ ...INITIAL_WORKSPACE_STATE, view }),
   );
   const requestGenerationRef = useRef(0);
+  const worktreeRefreshSequenceRef = useRef(0);
   const navigationRevisionRef = useRef(state.navigationRevision);
-  navigationRevisionRef.current = state.navigationRevision;
+  useLayoutEffect(() => {
+    navigationRevisionRef.current = state.navigationRevision;
+  }, [state.navigationRevision]);
 
   useEffect(() => {
     requestGenerationRef.current += 1;
@@ -573,6 +582,29 @@ export function WorkspaceProvider({
     [client, execute],
   );
 
+  const refreshWorktrees = useCallback(() => {
+    const sequence = ++worktreeRefreshSequenceRef.current;
+    return execute(() => client.listWorktrees(), (worktrees) => {
+      if (sequence === worktreeRefreshSequenceRef.current) {
+        dispatch({ type: "metadata/worktrees-refreshed", worktrees });
+      }
+    });
+  }, [client, execute]);
+
+  const refreshWorktreesAfterMutation = useCallback(() => {
+    // The mutation already succeeded; failed refresh must not invite duplicate creation.
+    // execute reports the refresh error while preserving the last known metadata.
+    void refreshWorktrees().catch(() => undefined);
+  }, [refreshWorktrees]);
+
+  const knowledgeClient = useMemo<WorkspaceContextValue["knowledgeClient"]>(() => ({
+    listKnowledge: (input) => execute(() => client.listKnowledge(input), undefined, true, false),
+    saveKnowledge: (input) => execute(() => client.saveKnowledge(input), undefined, true, false),
+    deleteKnowledge: (input) => execute(() => client.deleteKnowledge(input), undefined, true, false),
+    discoverKnowledge: (input) => execute(() => client.discoverKnowledge(input), undefined, true, false),
+    readKnowledge: (input) => execute(() => client.readKnowledge(input), undefined, true, false),
+  }), [client, execute]);
+
   const createSession = useCallback(
     (
       input: CreateSessionInput,
@@ -584,26 +616,25 @@ export function WorkspaceProvider({
           : navigationRevisionRef.current;
       return execute(
         () => client.createSession(input),
-        (session) => dispatch({
-          type: "metadata/session-upserted",
-          session,
-          selectIfRevision,
-        }),
+        (session) => {
+          dispatch({ type: "metadata/session-upserted", session, selectIfRevision });
+          if (session.worktreeId) refreshWorktreesAfterMutation();
+        },
       );
     },
-    [client, execute],
+    [client, execute, refreshWorktreesAfterMutation],
   );
 
   const startSession = useCallback(
     (input: SessionIdInput) =>
       execute(
         () => client.startSession(input),
-        (session) => dispatch({
-          type: "metadata/session-upserted",
-          session,
-        }),
+        (session) => {
+          dispatch({ type: "metadata/session-upserted", session });
+          if (session.worktreeId) refreshWorktreesAfterMutation();
+        },
       ),
-    [client, execute],
+    [client, execute, refreshWorktreesAfterMutation],
   );
 
   const stopSession = useCallback(
@@ -669,12 +700,12 @@ export function WorkspaceProvider({
     (input: RemoveWorktreeInput) =>
       execute(
         () => client.removeWorktree(input),
-        () => dispatch({
-          type: "metadata/worktree-removed",
-          worktreeId: input.worktreeId,
-        }),
+        () => {
+          dispatch({ type: "metadata/worktree-removed", worktreeId: input.worktreeId });
+          refreshWorktreesAfterMutation();
+        },
       ),
-    [client, execute],
+    [client, execute, refreshWorktreesAfterMutation],
   );
 
   const getDiagnostics = useCallback(
@@ -716,10 +747,15 @@ export function WorkspaceProvider({
     projects.find((project) => project.id === state.selectedProjectId) ?? null;
   const selectedSession =
     sessions.find((session) => session.id === state.selectedSessionId) ?? null;
-  const selectedWorktree =
-    worktrees.find(
-      (worktree) => worktree.id === selectedSession?.worktreeId,
-    ) ?? null;
+  const selectedWorktree = selectedSession
+    ? (selectedSession.worktreeId
+        ? worktrees.find(
+            (worktree) => worktree.id === selectedSession.worktreeId,
+          )
+        : undefined) ??
+      worktrees.find((worktree) => worktree.sessionId === selectedSession.id) ??
+      null
+    : null;
   const projectSessions =
     state.selectedProjectId === null
       ? EMPTY_SESSIONS
@@ -729,6 +765,8 @@ export function WorkspaceProvider({
   const hello = getConnectionHello(state.connection);
 
   const value: WorkspaceContextValue = {
+    knowledgeClient,
+    refreshWorktrees,
     platform: client.platform,
     connection: state.connection,
     isConnected: state.connection.status === "connected",
@@ -861,6 +899,13 @@ function workspaceReducer(
       return removeSessionFromState(state, action.sessionId);
     case "metadata/session-lifecycle-patched":
       return patchSessionLifecycle(state, action);
+    case "metadata/worktrees-refreshed":
+      return updateSnapshot(state, (snapshot) => ({
+        ...snapshot,
+        worktrees: action.worktrees.filter((worktree) => snapshot.projects.some(
+          (project) => project.id === worktree.projectId,
+        )),
+      }));
     case "metadata/worktree-upserted":
       return updateSnapshot(state, (snapshot) => ({
         ...snapshot,
@@ -943,7 +988,7 @@ function upsertProject(
     navigationRevision: shouldSelect
       ? state.navigationRevision + 1
       : state.navigationRevision,
-    view: shouldSelect ? "session" : state.view,
+    view: shouldSelect ? "canvas" : state.view,
   };
 }
 
@@ -970,7 +1015,7 @@ function upsertSession(
     navigationRevision: shouldSelect
       ? state.navigationRevision + 1
       : state.navigationRevision,
-    view: shouldSelect ? "session" : state.view,
+    view: shouldSelect ? "canvas" : state.view,
   };
 }
 
@@ -1113,7 +1158,7 @@ function selectProjectInState(
     selectedProjectId: projectId,
     selectedSessionId,
     navigationRevision: state.navigationRevision + 1,
-    view: "session",
+    view: state.view,
   };
 }
 
@@ -1126,7 +1171,7 @@ function selectSessionInState(
       ...state,
       selectedSessionId: null,
       navigationRevision: state.navigationRevision + 1,
-      view: "session",
+      view: state.view,
     };
   }
   const session = state.snapshot?.sessions.find(
@@ -1140,7 +1185,7 @@ function selectSessionInState(
     selectedProjectId: session.projectId,
     selectedSessionId: session.id,
     navigationRevision: state.navigationRevision + 1,
-    view: "session",
+    view: state.view,
   };
 }
 

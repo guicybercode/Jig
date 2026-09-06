@@ -1,12 +1,12 @@
-import { useEffect, useReducer } from "react";
+import { useEffect, useMemo, useReducer, useState } from "react";
 
 import {
   CANVAS_STORAGE_KEY,
   CANVAS_DOCUMENT_UPDATED_EVENT,
+  CANVAS_DOCUMENT_VERSION,
   canvasReducer,
   createInitialCanvasState,
   parseCanvasDocument,
-  serializeCanvasDocument,
   toCanvasDocument,
 } from "./canvas-state";
 import type { CanvasAction, CanvasState } from "./canvas-state";
@@ -30,20 +30,29 @@ export function useCanvasState(): CanvasStateController {
         ),
       ),
   );
+  const [persistenceAvailable, setPersistenceAvailable] = useState(storage !== null);
+  const { nodes, connections, zoom, hiddenSessionIds } = state;
+  const document = useMemo(() => toCanvasDocument({
+    version: CANVAS_DOCUMENT_VERSION,
+    nodes,
+    connections,
+    zoom,
+    hiddenSessionIds,
+  }), [nodes, connections, zoom, hiddenSessionIds]);
 
   useEffect(() => {
-    safelyWrite(storage, CANVAS_STORAGE_KEY, serializeCanvasDocument(state));
+    setPersistenceAvailable(safelyWrite(storage, CANVAS_STORAGE_KEY, JSON.stringify(document)));
     globalThis.dispatchEvent?.(
       new CustomEvent(CANVAS_DOCUMENT_UPDATED_EVENT, {
-        detail: toCanvasDocument(state),
+        detail: document,
       }),
     );
-  }, [state, storage]);
+  }, [document, storage]);
 
   return {
     state,
     dispatch,
-    persistenceAvailable: storage !== null,
+    persistenceAvailable,
   };
 }
 
@@ -67,10 +76,13 @@ function safelyWrite(
   storage: Storage | null,
   key: string,
   value: string,
-): void {
+): boolean {
   try {
-    storage?.setItem(key, value);
+    if (!storage) return false;
+    storage.setItem(key, value);
+    return true;
   } catch {
     // Private browsing or a full quota must not make the canvas unusable.
+    return false;
   }
 }
